@@ -3,26 +3,21 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <getopt.h>
-
 #if !defined(AMIGA) && !defined(__mac_os)
 #include <malloc.h>
 #endif
-
 #include <string.h>
 #include <signal.h>
 #include <math.h>
 #include <time.h>
 #include <ctype.h>
-
 #if defined(__mac_os)
 #include <types.h>
 #include <Speech.h>
 #else
 #include <sys/types.h>
 #endif
-
 #include "megahal.h"
-
 #if defined(DEBUG)
 #include "debug.h"
 #endif
@@ -36,15 +31,13 @@
 /* extern errorfp;
 extern statusfp;
   */
-/*
-extern bool noprompt;
-extern bool nowrap;
-extern bool nobanner;
-extern bool typing_delay;
-extern bool speech;
-*/
-int myquiet=0;
- 
+/* extern noprompt;
+extern nowrap;
+extern nobanner;
+extern typing_delay;
+extern speech;
+extern quiet;
+  */
 static struct option long_options[] = {
     {"no-prompt", 0, NULL, 'p'},
     {"no-wrap", 0, NULL, 'w'},
@@ -58,12 +51,11 @@ void usage()
 {
     puts("usage: megahal [-[pqrgwbh]]\n" \
 	 "\t-h : show usage\n" \
-	 "\t-p --no-prompt:  inhibit prompts\n" \
+	 "\t-p : inhibit prompts\n" \
 	 "\t-q : quiet mode (no replies) enabled at start\n" \
 	 "\t-r : inhibit progress display\n" \
 	 "\t-g : inhibit initial greeting\n" \
-	 "\t-b --no-banner: inhibit banner display at startup\n" \
-	 "\t-t -value: set timeout to value\n" \
+	 "\t-b : inhibit banner display at startup\n" \
          "\t-d : sets the directory where your megahal files are\n");
 }
 
@@ -88,23 +80,16 @@ int main(int argc, char **argv)
     directory_set = 0;
 
     while(1) {
-	if((c = getopt_long(argc, argv, "hpqrgbd:t:", long_options,
+	if((c = getopt_long(argc, argv, "hpwbd:", long_options,
 			    &option_index)) == -1)
 	    break;
 	switch(c) {
-	case 'q':
-		myquiet = 1;
-	    megahal_setquiet();
-		break;
 	case 'p':
 	    megahal_setnoprompt();
 	    break;
-	case 'r':
-	    megahal_setnoprogress();
+	case 'w':
+	    megahal_setnowrap();
 	    break;
-        case 't':
-            megahal_settimeout(optarg);
-            break;
         case 'd':
             megahal_setdirectory (optarg);
             directory_set = 1;
@@ -118,7 +103,8 @@ int main(int argc, char **argv)
 	}
     }
 
-    if (!directory_set) {
+    if (directory_set == 0)
+    {
         if ((my_directory = getenv("MEGAHAL_DIR")))
         {
             megahal_setdirectory (my_directory);
@@ -137,7 +123,8 @@ int main(int argc, char **argv)
             my_directory = malloc (12 + strlen (my_directory));
             strcpy (my_directory, getenv ("HOME"));
             strcat (my_directory, "/.megahal");
-            if (stat (my_directory, &dir_stat)) {
+            if (stat (my_directory, &dir_stat))
+            {
                 if (errno == ENOENT)
                 {
                     directory_set = mkdir (my_directory, S_IRWXU);
@@ -150,12 +137,16 @@ int main(int argc, char **argv)
                     megahal_setdirectory (my_directory);
                     directory_set = 1;
                 }
-            } else {
+            }
+            else
+            {
                 if (S_ISDIR(dir_stat.st_mode))
                 {
                     megahal_setdirectory (my_directory);
                     directory_set = 1;
-                } else {
+                }
+                else
+                {
                     fprintf (stderr, "Could not use megahal directory %s.\n", 
                              my_directory);
                     exit (1);
@@ -164,30 +155,40 @@ int main(int argc, char **argv)
         }
     }
 	
-    fprintf (stderr, "mypid=%d\n", getpid() );
-    fprintf (stderr, "myquiet=%d\n", myquiet);
     /*
      *		Do some initialisation 
      */
     megahal_initialize();
+    
+	
+    /*
+     *		Create a dictionary which will be used to hold the segmented
+     *		version of the user's input.
+     */
 
+    /*
+     *		Load the default MegaHAL personality.
+     */
+    output = megahal_initial_greeting();
+    megahal_output(output);
     /*
      *		Read input, formulate a reply and display it as output
      */
     while(1) {
 
 	input = megahal_input("> ");
-	if (!input) break;
+	
+	/*
+	 *		If the input was a command, then execute it
+	 */
 
-	if (myquiet) { megahal_learn_no_reply(input, 0); }
-	else 	{
-		output = megahal_do_reply(input, 0);
-    /* fprintf (stderr, "Output=%s\n", output? output : "NoThing!"); */
-		if (output) megahal_output(output);
-		}
+	if (megahal_command(input) != 0)
+	    continue;
 
+	output = megahal_do_reply(input, 1);
+
+	megahal_output(output);
     }
-quit:
 
     megahal_cleanup();
     exit(0);
