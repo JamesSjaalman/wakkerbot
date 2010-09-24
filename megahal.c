@@ -131,7 +131,7 @@
 #define MIN(a,b) ((a)<(b))?(a):(b)
 
 #define COOKIE "MegaHALv8"
-#define TIMEOUT 1
+#define TIMEOUT 10
 
 #define DEFAULT "."
 
@@ -172,15 +172,41 @@
 typedef enum { FALSE, TRUE } bool;
 #endif
 
+typedef unsigned char StrLen;
+typedef unsigned short WordNum;
+typedef unsigned short ChildIndex;
+typedef unsigned int DictSize;
+typedef unsigned int UsageCnt;
+
+#undef WANT_HASHTAB
+
+#ifdef WANT_HASHTAB
+#define DICT_SIZE_INITIAL 16
+#define WORD_NIL ((WordNum)-1)
+unsigned hash_mem(void *dat, size_t len);
+#endif
+
 typedef struct {
-    BYTE1 length;
+    StrLen length;
     char *word;
 } STRING;
 
+
+struct	dictslot {
+	WordNum head;
+	WordNum link;
+	WordNum num;
+	STRING string;
+	};
 typedef struct {
-    BYTE4 size;
+    DictSize size;
+#ifdef WANT_HASHTAB
+    DictSize used;
+    struct dictslot *entry;
+#else
     STRING *entry;
-    BYTE2 *index;
+    WordNum *index;
+#endif
 } DICTIONARY;
 
 typedef struct {
@@ -189,12 +215,18 @@ typedef struct {
     STRING *to;
 } SWAP;
 
-typedef struct NODE {
-    BYTE2 symbol;
-    BYTE4 usage;
-    BYTE2 count;
-    BYTE2 branch;
-    struct NODE **tree;
+struct treeslot {
+    ChildIndex tab;
+    ChildIndex link;
+    /* Hashvalue ? */
+    struct node *node;
+	};
+typedef struct node {
+    UsageCnt usage;
+    UsageCnt count;
+    WordNum symbol;
+    ChildIndex branch;
+    struct node **tree;
 } TREE;
 
 typedef struct {
@@ -215,33 +247,35 @@ typedef struct {
 
 /*===========================================================================*/
 
-static int width=75;
-static int order=5;
+static int width = 75;
+static int order = 5;
 
-static bool typing_delay=FALSE;
-static bool noprompt=FALSE;
-static bool speech=FALSE;
-static bool quiet=FALSE;
-static bool nowrap=FALSE;
-static bool nobanner=FALSE;
+static bool typing_delay = FALSE;
+static bool noprompt = FALSE;
+static bool speech = FALSE;
+static bool nowrap = FALSE;
+static bool nobanner = FALSE;
+
+bool quiet = FALSE;
 
 static char *errorfilename = "megahal.log";
 static char *statusfilename = "megahal.txt";
-static DICTIONARY *words=NULL;
-static DICTIONARY *greets=NULL;
-static MODEL *model=NULL;
+static DICTIONARY *words = NULL;
+static DICTIONARY *greets = NULL;
+static MODEL *model = NULL;
 
 static FILE *errorfp;
 static FILE *statusfp;
 
-static DICTIONARY *ban=NULL;
-static DICTIONARY *aux=NULL;
-/*static DICTIONARY *fin=NULL; not used */
-static DICTIONARY *grt=NULL;
-static SWAP *swp=NULL;
+static DICTIONARY *ban = NULL;
+static DICTIONARY *aux = NULL;
+/*static DICTIONARY *fin = NULL; not used */
+static DICTIONARY *grt = NULL;
+
+static SWAP *swp = NULL;
 static bool used_key;
-static char *directory=NULL;
-static char *last=NULL;
+static char *directory = NULL;
+static char *last_directory = NULL;
 
 static COMMAND command[] = {
     { { 4, "QUIT" }, "quits the program and saves MegaHAL's brain", QUIT },
@@ -258,7 +292,8 @@ static COMMAND command[] = {
       { { 5, "STATS" }, "Display stats", STATS},
       { { 5, "STATS-SESSION" }, "Display stats for this session only",STATS_SESSION},
       { { 5, "STATS-ALL" },"Display stats for the whole lifetime",STATS-ALL},
-    */
+	*/
+
 };
 
 #ifdef AMIGA
@@ -272,14 +307,15 @@ SpeechChannel gSpeechChannel = nil;
 
 /* FIXME - these need to be static  */
 
-static void add_aux(MODEL *, DICTIONARY *, STRING);
-static void add_key(MODEL *, DICTIONARY *, STRING);
-static void add_node(TREE *, TREE *, int);
-static void add_swap(SWAP *, char *, char *);
-static TREE *add_symbol(TREE *, BYTE2);
-static BYTE2 add_word(DICTIONARY *, STRING);
-static int babble(MODEL *, DICTIONARY *, DICTIONARY *);
-static bool boundary(char *, int);
+static void add_aux(MODEL *model, DICTIONARY *keys, STRING word);
+static void add_key(MODEL *model, DICTIONARY *keys, STRING word);
+static void add_node(TREE *tree, TREE *node, int position);
+static void add_swap(SWAP *list, char *s, char *d);
+static TREE *add_symbol(TREE *, WordNum);
+static WordNum add_word(DICTIONARY *, STRING);
+static WordNum babble(MODEL *, DICTIONARY *, DICTIONARY *);
+static bool boundary(char *, size_t);
+
 static void capitalize(char *);
 static void changevoice(DICTIONARY *, int);
 static void change_personality(DICTIONARY *, unsigned int, MODEL **);
@@ -290,9 +326,9 @@ static void error(char *, char *, ...);
 static float evaluate_reply(MODEL *, DICTIONARY *, DICTIONARY *);
 static COMMAND_WORDS execute_command(DICTIONARY *, int *);
 static void exithal(void);
-static TREE *find_symbol(TREE *, int);
-static TREE *find_symbol_add(TREE *, int);
-static BYTE2 find_word(DICTIONARY *, STRING);
+static TREE *find_symbol(TREE *node, WordNum symbol);
+static TREE *find_symbol_add(TREE *, WordNum);
+static WordNum find_word(DICTIONARY *, STRING);
 static char *generate_reply(MODEL *, DICTIONARY *);
 static void help(void);
 static void ignore(int);
@@ -307,7 +343,7 @@ static void make_greeting(DICTIONARY *);
 static void make_words(char *, DICTIONARY *);
 static DICTIONARY *new_dictionary(void);
 
-static char *read_input(char *);
+static char *read_input(char * prompt);
 static void save_model(char *, MODEL *);
 #ifdef __mac_os
 static char *strdup(const char *);
@@ -324,8 +360,9 @@ static char *format_output(char *);
 static void free_dictionary(DICTIONARY *);
 static void free_model(MODEL *);
 static void free_tree(TREE *);
-static void free_word(STRING);
-static void free_words(DICTIONARY *);
+static void free_word(STRING word);
+static void free_words(DICTIONARY *words);
+
 static void initialize_context(MODEL *);
 static void initialize_dictionary(DICTIONARY *);
 static DICTIONARY *initialize_list(char *);
@@ -341,25 +378,26 @@ static MODEL *new_model(int);
 static TREE *new_node(void);
 static SWAP *new_swap(void);
 static bool print_header(FILE *);
-static bool progress(char *, int, int);
+bool progress(char *message, int done, int total);
 static DICTIONARY *reply(MODEL *, DICTIONARY *);
 static void save_dictionary(FILE *, DICTIONARY *);
 static void save_tree(FILE *, TREE *);
 static void save_word(FILE *, STRING);
 static int search_dictionary(DICTIONARY *, STRING, bool *);
-static int search_node(TREE *, int, bool *);
-static int seed(MODEL *, DICTIONARY *);
+/* static */ int search_node(TREE *node, int symbol, bool *found_symbol); /* For profiling: avoid inlining of static function. */
+static WordNum seed(MODEL *, DICTIONARY *);
+
 static void show_dictionary(DICTIONARY *);
 static void speak(char *);
 static bool status(char *, ...);
 static void train(MODEL *, char *);
 static void typein(char);
-static void update_context(MODEL *, int);
-static void update_model(MODEL *, int);
+static void update_context(MODEL *, WordNum symbol);
+static void update_model(MODEL *model, WordNum symbol);
 static bool warn(char *, char *, ...);
-static int wordcmp(STRING, STRING);
+static int wordcmp(STRING word1, STRING word2);
 static bool word_exists(DICTIONARY *, STRING);
-static int rnd(int);
+static unsigned int urnd(unsigned int range);
 
 
 /* Function: setnoprompt
@@ -367,6 +405,11 @@ static int rnd(int);
    Purpose: Set noprompt variable.
 
  */
+void megahal_setquiet(void)
+{
+    quiet = TRUE;
+}
+
 void megahal_setnoprompt(void)
 {
     noprompt = TRUE;
@@ -416,12 +459,12 @@ void megahal_initialize(void)
     ignore(0);
 
 #ifdef AMIGA
-    _AmigaLocale=OpenLocale(NULL);
+    _AmigaLocale = OpenLocale(NULL);
 #endif
 #ifdef __mac_os
     gSpeechExists = initialize_speech();
 #endif
-    if(!nobanner)
+    if (!nobanner)
 	fprintf(stdout,
 		"+------------------------------------------------------------------------+\n"
 		"|                                                                        |\n"
@@ -462,7 +505,7 @@ char *megahal_do_reply(char *input, int log)
 
     learn(model, words);
     output = generate_reply(model, words);
-    capitalize(output);
+    // capitalize(output);
     return output;
 }
 
@@ -513,7 +556,7 @@ char *megahal_initial_greeting(void)
 
 void megahal_output(char *output)
 {
-    if(!quiet)
+    if (!quiet)
 	write_output(output);
 }
 
@@ -527,7 +570,7 @@ void megahal_output(char *output)
 char *megahal_input(char *prompt)
 {
     if (noprompt)
-	return read_input("");
+	return read_input(NULL);
     else
 	return read_input(prompt);
 }
@@ -559,11 +602,11 @@ int megahal_command(char *input)
 	save_model("megahal.brn", model);
 	break;
     case DELAY:
-	typing_delay=!typing_delay;
+	typing_delay = !typing_delay;
 	printf("MegaHAL typing is now %s.\n", typing_delay?"on":"off");
 	return 1;
     case SPEECH:
-	speech=!speech;
+	speech = !speech;
 	printf("MegaHAL speech is now %s.\n", speech?"on":"off");
 	return 1;
     case HELP:
@@ -578,11 +621,11 @@ int megahal_command(char *input)
     case BRAIN:
 	change_personality(words, position, &model);
 	make_greeting(greets);
-	output=generate_reply(model, greets);
+	output = generate_reply(model, greets);
 	write_output(output);
 	return 1;
     case QUIET:
-	quiet=!quiet;
+	quiet = !quiet;
 	return 1;
     default:
 	return 0;
@@ -624,8 +667,8 @@ COMMAND_WORDS execute_command(DICTIONARY *words, int *position)
     /*
      *		If there is only one word, then it can't be a command.
      */
-    *position=words->size+1;
-    if(words->size<=1) return(UNKNOWN);
+    *position = words->size+1;
+    if (words->size <= 1) return UNKNOWN;
 
     /*
      *		Search through the word array.  If a command prefix is found,
@@ -634,22 +677,22 @@ COMMAND_WORDS execute_command(DICTIONARY *words, int *position)
      *		Following word is a number, then change the judge.  Otherwise,
      *		continue the search.
      */
-    for(i=0; i<words->size-1; ++i)
+    for(i = 0; i<words->size-1; ++i)
 	/*
 	 *		The command prefix was found.
 	 */
-	if(words->entry[i].word[words->entry[i].length - 1] == '#') {
+	if (words->entry[i].word[words->entry[i].length - 1] == '#') {
 	    /*
 	     *		Look for a command word.
 	     */
 	    for(j = 0; j < COMMAND_SIZE; ++j)
-		if(wordcmp(command[j].word, words->entry[i + 1]) == 0) {
+		if (!wordcmp(command[j].word, words->entry[i + 1]) ) {
 		    *position = i + 1;
-		    return(command[j].command);
+		    return command[j].command;
 		}
 	}
 
-    return(UNKNOWN);
+    return UNKNOWN;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -684,7 +727,7 @@ void exithal(void)
  */
 char *read_input(char *prompt)
 {
-    static char *input=NULL;
+    static char *input = NULL;
     bool finish;
     int length;
     int c;
@@ -694,32 +737,27 @@ char *read_input(char *prompt)
      *		to detect a double line-feed, while length contains the number of
      *		characters in the input string.
      */
-    finish=FALSE;
-    length=0;
-    if(input==NULL) {
-	input=(char *)malloc(sizeof(char));
-	if(input==NULL) {
-	    error("read_input", "Unable to allocate the input string");
-	    return(input);
-	}
-    }
+    finish = FALSE;
+    length = 0;
 
     /*
      *		Display the prompt to the user.
      */
-    fprintf(stdout, prompt);
-    fflush(stdout);
+    if (prompt) {
+	fprintf(stdout, "%s", prompt);
+    	fflush(stdout);
+	}
 
     /*
      *		Loop forever, reading characters and putting them into the input
      *		string.
      */
-    while(TRUE) {
+    while(1) {
 
 	/*
 	 *		Read a single character from stdin.
 	 */
-	c=getc(stdin);
+	c = getc(stdin);
 
 	/*
 	 *		If the character is a line-feed, then set the finish variable
@@ -728,41 +766,40 @@ char *read_input(char *prompt)
 	 *		prompt again, and set the character to the space character, as
 	 *		we don't permit linefeeds to appear in the input.
 	 */
-	if((char)(c)=='\n') {
-	    if(finish==TRUE) break;
-	    fprintf(stdout, prompt);
-	    fflush(stdout);
-	    finish=TRUE;
-	    c=32;
+	if (c == -1 || c == '\n') {
+	    if (finish == TRUE) break;
+	    if (prompt) { fprintf(stdout, "%s", prompt); fflush(stdout); }
+	    finish = TRUE;
+	    c = ' ';
 	} else {
-	    finish=FALSE;
+	    finish = FALSE;
 	}
 
 	/*
 	 *		Re-allocate the input string so that it can hold one more
 	 *		character.
 	 */
-	++length;
-	input=(char *)realloc((char *)input,sizeof(char)*(length+1));
-	if(input==NULL) {
+	// if (finish && !length) return NULL;
+	input = realloc(input,length+2);
+	if (input == NULL) {
 	    error("read_input", "Unable to re-allocate the input string");
-	    return(NULL);
+	    return NULL;
 	}
 
 	/*
 	 *		Add the character just read to the input string.
 	 */
-	input[length-1]=(char)c;
-	input[length]='\0';
+	input[length++] =c;
+	input[length] ='\0';
     }
 
-    while(isspace(input[length-1])) --length;
-    input[length]='\0';
+    while(length > 0 && isspace(input[length-1])) --length;
+    input[length] ='\0';
 
     /*
      *		We have finished, so return the input string.
      */
-    return(input);
+    return input;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -774,16 +811,16 @@ char *read_input(char *prompt)
  */
 bool initialize_error(char *filename)
 {
-    if(errorfp!=stderr) fclose(errorfp);
+    if (errorfp != stderr) fclose(errorfp);
 
-    if(filename==NULL) return(TRUE);
+    if (filename == NULL) return TRUE;
 
     errorfp = fopen(filename, "a");
-    if(errorfp==NULL) {
-	errorfp=stderr;
-	return(FALSE);
+    if (errorfp == NULL) {
+	errorfp = stderr;
+	return FALSE;
     }
-    return(print_header(errorfp));
+    return print_header(errorfp);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -824,7 +861,7 @@ bool warn(char *title, char *fmt, ...)
 
     fprintf(stderr, "MegaHAL emitted a warning; check the error log.\n");
 
-    return(TRUE);
+    return TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -836,14 +873,14 @@ bool warn(char *title, char *fmt, ...)
  */
 bool initialize_status(char *filename)
 {
-    if(statusfp!=stdout) fclose(statusfp);
-    if(filename==NULL) return(FALSE);
-    statusfp=fopen(filename, "a");
-    if(statusfp==NULL) {
-	statusfp=stdout;
-	return(FALSE);
+    if (statusfp != stdout) fclose(statusfp);
+    if (filename == NULL) return FALSE;
+    statusfp = fopen(filename, "a");
+    if (statusfp == NULL) {
+	statusfp = stdout;
+	return FALSE;
     }
-    return(print_header(statusfp));
+    return print_header(statusfp);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -862,7 +899,7 @@ bool status(char *fmt, ...)
     va_end(argp);
     fflush(statusfp);
 
-    return(TRUE);
+    return TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -878,16 +915,15 @@ bool print_header(FILE *file)
     char timestamp[1024];
     struct tm *local;
 
-    clock=time(NULL);
-    local=localtime(&clock);
+    clock = time(NULL);
+    local = localtime(&clock);
     strftime(timestamp, 1024, "Start at: [%Y/%m/%d %H:%M:%S]\n", local);
 
     fprintf(file, "MegaHALv8\n");
-    fprintf(file, "Copyright (C) 1998 Jason Hutchens\n");
-    fprintf(file, timestamp);
+    fprintf(file, "Copyright (C) 1998 Jason Hutchens\n%s", timestamp);
     fflush(file);
 
-    return(TRUE);
+    return TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -905,17 +941,17 @@ void write_output(char *output)
     capitalize(output);
     speak(output);
 
-    width=75;
-    formatted=format_output(output);
+    width = 75;
+    formatted = format_output(output);
     delay(formatted);
-    width=64;
-    formatted=format_output(output);
+    width = 64;
+    formatted = format_output(output);
 
-    bit=strtok(formatted, "\n");
-    if(bit==NULL) (void)status("MegaHAL: %s\n", formatted);
-    while(bit!=NULL) {
+    bit = strtok(formatted, "\n");
+    if (bit == NULL) (void)status("MegaHAL: %s\n", formatted);
+    while(bit != NULL) {
 	(void)status("MegaHAL: %s\n", bit);
-	bit=strtok(NULL, "\n");
+	bit = strtok(NULL, "\n");
     }
 }
 
@@ -928,17 +964,19 @@ void write_output(char *output)
  */
 void capitalize(char *string)
 {
-    register unsigned int i;
-    bool start=TRUE;
+    size_t len, ii;
+    unsigned char *ucp = (unsigned char *) string;
+    bool start = TRUE;
 
-    for(i=0; i<strlen(string); ++i) {
-	if(isalpha(string[i])) {
-	    if(start==TRUE) string[i]=(char)toupper((int)string[i]);
-	    else string[i]=(char)tolower((int)string[i]);
-	    start=FALSE;
+    len = strlen(string);
+    for(ii = 0; ii < len; ii++) {
+	if (isalpha(ucp[ii])) {
+	    if (start == TRUE) ucp[ii] = toupper(ucp[ii]);
+	    else ucp[ii] = tolower(ucp[ii]);
+	    start = FALSE;
 	}
-	if((i>2)&&(strchr("!.?", string[i-1])!=NULL)&&(isspace(string[i])))
-	    start=TRUE;
+	if (ii>2 && strchr("!.?", ucp[ii-1]) != NULL && isspace(ucp[ii]))
+	    start = TRUE;
     }
 }
 
@@ -951,9 +989,11 @@ void capitalize(char *string)
  */
 void upper(char *string)
 {
-    register unsigned int i;
+    size_t len, ii;
+    unsigned char *ucp = (unsigned char *) string;
 
-    for(i=0; i<strlen(string); ++i) string[i]=(char)toupper((int)string[i]);
+    len = strlen(string);
+    for(ii = 0; ii < len; ii++) ucp[ii] = toupper(ucp[ii]);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -968,14 +1008,14 @@ void write_input(char *input)
     char *formatted;
     char *bit;
 
-    width=64;
-    formatted=format_output(input);
+    width = 64;
+    formatted = format_output(input);
 
-    bit=strtok(formatted, "\n");
-    if(bit==NULL) (void)status("User:    %s\n", formatted);
-    while(bit!=NULL) {
+    bit = strtok(formatted, "\n");
+    if (bit == NULL) (void)status("User:    %s\n", formatted);
+    while(bit != NULL) {
 	(void)status("User:    %s\n", bit);
-	bit=strtok(NULL, "\n");
+	bit = strtok(NULL, "\n");
     }
 }
 
@@ -989,46 +1029,40 @@ void write_input(char *input)
  */
 static char *format_output(char *output)
 {
-    static char *formatted=NULL;
+    static char *formatted = NULL;
     register unsigned int i,j,c;
     int l;
-    if(formatted==NULL) {
-	formatted=(char *)malloc(sizeof(char));
-	if(formatted==NULL) {
-	    error("format_output", "Unable to allocate formatted");
-	    return("ERROR");
-	}
-    }
+    size_t len;
 
-    formatted=(char *)realloc((char *)formatted, sizeof(char)*(strlen(output)+2));
-    if(formatted==NULL) {
+    len = strlen(output);
+    formatted = realloc(formatted, len+2);
+    if (formatted == NULL) {
 	error("format_output", "Unable to re-allocate formatted");
-	return("ERROR");
+	return "ERROR";
     }
 
-    l=0;
-    j=0;
-    for(i=0; i<strlen(output); ++i) {
-	if((l==0)&&(isspace(output[i]))) continue;
-	formatted[j]=output[i];
+    l = 0;
+    j = 0;
+    for(i = 0; i < len ; ++i) {
+	if (l == 0 && isspace(output[i])) continue;
+	formatted[j] = output[i];
 	++j;
 	++l;
-	if(!nowrap)
-	    if(l>=width)
-		for(c=j-1; c>0; --c)
-		    if(formatted[c]==' ') {
-			formatted[c]='\n';
-			l=j-c-1;
+	if (!nowrap && l >= width)
+		for(c = j-1; c>0; --c)
+		    if (formatted[c] == ' ') {
+			formatted[c] = '\n';
+			l = j-c-1;
 			break;
 		    }
     }
-    if((j>0)&&(formatted[j-1]!='\n')) {
-	formatted[j]='\n';
+    if (j > 0 && formatted[j-1] != '\n') {
+	formatted[j] = '\n';
 	++j;
     }
-    formatted[j]='\0';
+    formatted[j] = '\0';
 
-    return(formatted);
+    return formatted;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1041,8 +1075,14 @@ static char *format_output(char *output)
  *						the dictionary, then return its current identifier
  *						without adding it again.
  */
-BYTE2 add_word(DICTIONARY *dictionary, STRING word)
+WordNum add_word(DICTIONARY *dictionary, STRING word)
 {
+#ifdef WANT_HASHTAB
+unsigned hash,slot, ii;
+
+hash = hash_mem(word.word, word.length);
+
+#else
     register int i;
     int position;
     bool found;
@@ -1050,25 +1090,24 @@ BYTE2 add_word(DICTIONARY *dictionary, STRING word)
     /*
      *		If the word's already in the dictionary, there is no need to add it
      */
-    position=search_dictionary(dictionary, word, &found);
-    if(found==TRUE) goto succeed;
+    position = search_dictionary(dictionary, word, &found);
+    if (found == TRUE) goto succeed;
 
     /*
      *		Increase the number of words in the dictionary
      */
-    dictionary->size+=1;
+    dictionary->size += 1;
+    if (dictionary->size  == 0) {
+    	dictionary->size -= 1;
+	error("add_word", "Size overflow.");
+        goto fail;
+    }
 
     /*
      *		Allocate one more entry for the word index
      */
-    if(dictionary->index==NULL) {
-	dictionary->index=(BYTE2 *)malloc(sizeof(BYTE2)*
-					  (dictionary->size));
-    } else {
-	dictionary->index=(BYTE2 *)realloc((BYTE2 *)
-					   (dictionary->index),sizeof(BYTE2)*(dictionary->size));
-    }
-    if(dictionary->index==NULL) {
+    dictionary->index = realloc(dictionary->index, dictionary->size * sizeof *dictionary->index );
+    if (dictionary->index == NULL) {
 	error("add_word", "Unable to reallocate the index.");
 	goto fail;
     }
@@ -1076,13 +1115,8 @@ BYTE2 add_word(DICTIONARY *dictionary, STRING word)
     /*
      *		Allocate one more entry for the word array
      */
-    if(dictionary->entry==NULL) {
-	dictionary->entry=(STRING *)malloc(sizeof(STRING)*(dictionary->size));
-    } else {
-	dictionary->entry=(STRING *)realloc((STRING *)(dictionary->entry),
-					    sizeof(STRING)*(dictionary->size));
-    }
-    if(dictionary->entry==NULL) {
+    dictionary->entry = realloc(dictionary->entry, dictionary->size * sizeof *dictionary->entry);
+    if (dictionary->entry == NULL) {
 	error("add_word", "Unable to reallocate the dictionary to %d elements.", dictionary->size);
 	goto fail;
     }
@@ -1090,32 +1124,33 @@ BYTE2 add_word(DICTIONARY *dictionary, STRING word)
     /*
      *		Copy the new word into the word array
      */
-    dictionary->entry[dictionary->size-1].length=word.length;
-    dictionary->entry[dictionary->size-1].word=(char *)malloc(sizeof(char)*
-							      (word.length));
-    if(dictionary->entry[dictionary->size-1].word==NULL) {
+    dictionary->entry[dictionary->size-1].length = word.length;
+    dictionary->entry[dictionary->size-1].word = malloc(word.length);
+    if (dictionary->entry[dictionary->size-1].word == NULL) {
 	error("add_word", "Unable to allocate the word.");
 	goto fail;
     }
-    for(i=0; i<word.length; ++i)
-	dictionary->entry[dictionary->size-1].word[i]=word.word[i];
+    for(i = 0; i<word.length; ++i)
+	dictionary->entry[dictionary->size-1].word[i] = word.word[i];
 
     /*
      *		Shuffle the word index to keep it sorted alphabetically
      */
-    for(i=(dictionary->size-1); i>position; --i)
-	dictionary->index[i]=dictionary->index[i-1];
+    for(i =(dictionary->size-1); i>position; --i)
+	dictionary->index[i] = dictionary->index[i-1];
 
     /*
      *		Copy the new symbol identifier into the word index
      */
-    dictionary->index[position]=dictionary->size-1;
+    dictionary->index[position] = dictionary->size-1;
 
 succeed:
-    return(dictionary->index[position]);
+    return dictionary->index[position];
 
 fail:
-    return(0);
+    return 0;
+#endif
+
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1138,16 +1173,16 @@ int search_dictionary(DICTIONARY *dictionary, STRING word, bool *find)
     /*
      *		If the dictionary is empty, then obviously the word won't be found
      */
-    if(dictionary->size==0) {
-	position=0;
+    if (dictionary->size == 0) {
+	position = 0;
 	goto notfound;
     }
 
     /*
      *		Initialize the lower and upper bounds of the search
      */
-    min=0;
-    max=dictionary->size-1;
+    min = 0;
+    max = dictionary->size-1;
     /*
      *		Search repeatedly, halving the search space each time, until either
      *		the entry is found, or the search space becomes empty
@@ -1157,37 +1192,37 @@ int search_dictionary(DICTIONARY *dictionary, STRING word, bool *find)
 	 *		See whether the middle element of the search space is greater
 	 *		than, equal to, or less than the element being searched for.
 	 */
-	middle=(min+max)/2;
-	compar=wordcmp(word, dictionary->entry[dictionary->index[middle]]);
+	middle = (min+max)/2;
+	compar = wordcmp(word, dictionary->entry[dictionary->index[middle]]);
 	/*
 	 *		If it is equal then we have found the element.  Otherwise we
 	 *		can halve the search space accordingly.
 	 */
-	if(compar==0) {
-	    position=middle;
+	if (compar == 0) {
+	    position = middle;
 	    goto found;
-	} else if(compar>0) {
-	    if(max==middle) {
-		position=middle+1;
+	} else if (compar>0) {
+	    if (max == middle) {
+		position = middle+1;
 		goto notfound;
 	    }
-	    min=middle+1;
+	    min = middle+1;
 	} else {
-	    if(min==middle) {
-		position=middle;
+	    if (min == middle) {
+		position = middle;
 		goto notfound;
 	    }
-	    max=middle-1;
+	    max = middle-1;
 	}
     }
 
 found:
-    *find=TRUE;
-    return(position);
+    *find = TRUE;
+    return position;
 
 notfound:
-    *find=FALSE;
-    return(position);
+    *find = FALSE;
+    return position;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1199,15 +1234,15 @@ notfound:
  *						We assume that the word with index zero is equal to a
  *						NULL word, indicating an error condition.
  */
-BYTE2 find_word(DICTIONARY *dictionary, STRING word)
+WordNum find_word(DICTIONARY *dictionary, STRING word)
 {
     int position;
     bool found;
 
-    position=search_dictionary(dictionary, word, &found);
+    position = search_dictionary(dictionary, word, &found);
 
-    if(found==TRUE) return(dictionary->index[position]);
-    else return(0);
+    if (found == TRUE) return dictionary->index[position];
+    else return 0;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1224,16 +1259,22 @@ int wordcmp(STRING word1, STRING word2)
     register int i;
     int bound;
 
-    bound=MIN(word1.length,word2.length);
+    bound = MIN(word1.length,word2.length);
 
-    for(i=0; i<bound; ++i)
-	if(toupper(word1.word[i])!=toupper(word2.word[i]))
-	    return((int)(toupper(word1.word[i])-toupper(word2.word[i])));
+#if 0
+    for(i = 0; i<bound; ++i)
+	if (toupper(word1.word[i]) != toupper(word2.word[i]))
+	    return (int)(toupper(word1.word[i])-toupper(word2.word[i]));
+#else
+#include <strings.h>
+    i = strncasecmp(word1.word, word2.word, bound);
+    if (i) return i;
+#endif
 
-    if(word1.length<word2.length) return(-1);
-    if(word1.length>word2.length) return(1);
+    if (word1.length<word2.length) return -1;
+    if (word1.length>word2.length) return 1;
 
-    return(0);
+    return 0;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1245,33 +1286,38 @@ int wordcmp(STRING word1, STRING word2)
  */
 void free_dictionary(DICTIONARY *dictionary)
 {
-    if(dictionary==NULL) return;
-    if(dictionary->entry!=NULL) {
+#ifdef WANT_HASHTAB
+    wipe_dictionary(dictionary, dictionary->used);
+    dictionary->used = 0;
+#else
+    if (dictionary == NULL) return;
+    if (dictionary->entry != NULL) {
 	free(dictionary->entry);
-	dictionary->entry=NULL;
+	dictionary->entry = NULL;
     }
-    if(dictionary->index!=NULL) {
+    if (dictionary->index != NULL) {
 	free(dictionary->index);
-	dictionary->index=NULL;
+	dictionary->index = NULL;
     }
-    dictionary->size=0;
+    dictionary->size = 0;
+#endif
 }
 
 /*---------------------------------------------------------------------------*/
 
 void free_model(MODEL *model)
 {
-    if(model==NULL) return;
-    if(model->forward!=NULL) {
+    if (model == NULL) return;
+    if (model->forward != NULL) {
 	free_tree(model->forward);
     }
-    if(model->backward!=NULL) {
+    if (model->backward != NULL) {
 	free_tree(model->backward);
     }
-    if(model->context!=NULL) {
+    if (model->context != NULL) {
 	free(model->context);
     }
-    if(model->dictionary!=NULL) {
+    if (model->dictionary != NULL) {
 	free_dictionary(model->dictionary);
 	free(model->dictionary);
     }
@@ -1282,20 +1328,20 @@ void free_model(MODEL *model)
 
 void free_tree(TREE *tree)
 {
-    static int level=0;
+    static int level = 0;
     register unsigned int i;
 
-    if(tree==NULL) return;
+    if (tree == NULL) return;
 
-    if(tree->tree!=NULL) {
-	if(level==0) progress("Freeing tree", 0, 1);
-	for(i=0; i<tree->branch; ++i) {
+    if (tree->tree != NULL) {
+	if (level == 0) progress("Freeing tree", 0, 1);
+	for(i = 0; i < tree->branch; ++i) {
 	    ++level;
 	    free_tree(tree->tree[i]);
 	    --level;
-	    if(level==0) progress(NULL, i, tree->branch);
+	    if (level == 0) progress(NULL, i, tree->branch);
 	}
-	if(level==0) progress(NULL, 1, 1);
+	if (level == 0) progress(NULL, 1, 1);
 	free(tree->tree);
     }
     free(tree);
@@ -1310,8 +1356,8 @@ void free_tree(TREE *tree)
  */
 void initialize_dictionary(DICTIONARY *dictionary)
 {
-    STRING word={ 7, "<ERROR>" };
-    STRING end={ 5, "<FIN>" };
+    STRING word ={ 7, "<ERROR>" };
+    STRING end ={ 5, "<FIN>" };
 
     (void)add_word(dictionary, word);
     (void)add_word(dictionary, end);
@@ -1324,23 +1370,61 @@ void initialize_dictionary(DICTIONARY *dictionary)
  *
  *		Purpose:		Allocate room for a new dictionary.
  */
+#ifdef WANT_HASHTAB
+
 DICTIONARY *new_dictionary(void)
 {
-    DICTIONARY *dictionary=NULL;
+    DICTIONARY *dictionary = NULL;
 
-    dictionary=(DICTIONARY *)malloc(sizeof(DICTIONARY));
-    if(dictionary==NULL) {
+    dictionary = malloc(sizeof *dictionary);
+    if (dictionary == NULL) {
 	error("new_dictionary", "Unable to allocate dictionary.");
-	return(NULL);
+	return NULL;
     }
 
-    dictionary->size=0;
-    dictionary->index=NULL;
-    dictionary->entry=NULL;
+    dictionary->entry = malloc (DICT_SIZE_INITIAL * sizeof *dictionary->entry);
+    if (!dictionary->entry) {
+	error("new_dictionary", "Unable to allocate dictionary->slots.");
+	return NULL;
+	}
+    dictionary->size = DICT_SIZE_INITIAL;
+    dictionary->used = 0;
+    wipe_dictionary(dicdictionary, dictionary->size);
 
-    return(dictionary);
+    return dictionary;
 }
 
+static void wipe_dictionary(DICTIONARY * dict, unsigned size)
+{
+    unsigned ii;
+
+    for (ii = 0; ii < DICT_SIZE_INITIAL; ii++) {
+	dictionary->entry[ii].head = WORD_NIL;
+	dictionary->entry[ii].link = WORD_NIL;
+	dictionary->entry[ii].num = WORD_NIL;
+	dictionary->entry[ii].string.length = 0;
+	dictionary->entry[ii].string.word = NULL;
+	}
+
+}
+#else
+DICTIONARY *new_dictionary(void)
+{
+    DICTIONARY *dictionary = NULL;
+
+    dictionary = malloc(sizeof *dictionary);
+    if (dictionary == NULL) {
+	error("new_dictionary", "Unable to allocate dictionary.");
+	return NULL;
+    }
+
+    dictionary->size = 0;
+    dictionary->index = NULL;
+    dictionary->entry = NULL;
+
+    return dictionary;
+}
+#endif
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -1352,9 +1436,9 @@ void save_dictionary(FILE *file, DICTIONARY *dictionary)
 {
     register unsigned int i;
 
-    fwrite(&(dictionary->size), sizeof(BYTE4), 1, file);
+    fwrite(&dictionary->size, sizeof dictionary->size, 1, file);
     progress("Saving dictionary", 0, 1);
-    for(i=0; i<dictionary->size; ++i) {
+    for(i = 0; i<dictionary->size; ++i) {
 	save_word(file, dictionary->entry[i]);
 	progress(NULL, i, dictionary->size);
     }
@@ -1373,9 +1457,9 @@ void load_dictionary(FILE *file, DICTIONARY *dictionary)
     register int i;
     int size;
 
-    fread(&size, sizeof(BYTE4), 1, file);
+    fread(&size, sizeof size, 1, file);
     progress("Loading dictionary", 0, 1);
-    for(i=0; i<size; ++i) {
+    for(i = 0; i < size; ++i) {
 	load_word(file, dictionary);
 	progress(NULL, i, size);
     }
@@ -1391,11 +1475,9 @@ void load_dictionary(FILE *file, DICTIONARY *dictionary)
  */
 void save_word(FILE *file, STRING word)
 {
-    register unsigned int i;
 
-    fwrite(&(word.length), sizeof(BYTE1), 1, file);
-    for(i=0; i<word.length; ++i)
-	fwrite(&(word.word[i]), sizeof(char), 1, file);
+    fwrite(&word.length, sizeof word.length, 1, file);
+    fwrite(&word.word[0], word.length, 1, file);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1407,17 +1489,15 @@ void save_word(FILE *file, STRING word)
  */
 void load_word(FILE *file, DICTIONARY *dictionary)
 {
-    register unsigned int i;
     STRING word;
 
-    fread(&(word.length), sizeof(BYTE1), 1, file);
-    word.word=(char *)malloc(sizeof(char)*word.length);
-    if(word.word==NULL) {
+    fread(&word.length, sizeof word.length, 1, file);
+    word.word = malloc(word.length);
+    if (word.word == NULL) {
 	error("load_word", "Unable to allocate word");
 	return;
     }
-    for(i=0; i<word.length; ++i)
-	fread(&(word.word[i]), sizeof(char), 1, file);
+    fread(&word.word[0], word.length, 1, file);
     add_word(dictionary, word);
     free(word.word);
 }
@@ -1432,13 +1512,13 @@ void load_word(FILE *file, DICTIONARY *dictionary)
  */
 TREE *new_node(void)
 {
-    TREE *node=NULL;
+    TREE *node = NULL;
 
     /*
      *		Allocate memory for the new node
      */
-    node=(TREE *)malloc(sizeof(TREE));
-    if(node==NULL) {
+    node = malloc(sizeof *node);
+    if (node == NULL) {
 	error("new_node", "Unable to allocate the node.");
 	goto fail;
     }
@@ -1446,17 +1526,17 @@ TREE *new_node(void)
     /*
      *		Initialise the contents of the node
      */
-    node->symbol=0;
-    node->usage=0;
-    node->count=0;
-    node->branch=0;
-    node->tree=NULL;
+    node->symbol = 0;
+    node->usage = 0;
+    node->count = 0;
+    node->branch = 0;
+    node->tree = NULL;
 
-    return(node);
+    return node;
 
 fail:
-    if(node!=NULL) free(node);
-    return(NULL);
+    if (node != NULL) free(node);
+    return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1468,30 +1548,30 @@ fail:
  */
 MODEL *new_model(int order)
 {
-    MODEL *model=NULL;
+    MODEL *model = NULL;
 
-    model=(MODEL *)malloc(sizeof(MODEL));
-    if(model==NULL) {
+    model = malloc(sizeof *model);
+    if (model == NULL) {
 	error("new_model", "Unable to allocate model.");
 	goto fail;
     }
 
-    model->order=order;
-    model->forward=new_node();
-    model->backward=new_node();
-    model->context=(TREE **)malloc(sizeof(TREE *)*(order+2));
-    if(model->context==NULL) {
+    model->order = order;
+    model->forward = new_node();
+    model->backward = new_node();
+    model->context = malloc( (order+2) *sizeof *model->context);
+    if (model->context == NULL) {
 	error("new_model", "Unable to allocate context array.");
 	goto fail;
     }
     initialize_context(model);
-    model->dictionary=new_dictionary();
+    model->dictionary = new_dictionary();
     initialize_dictionary(model->dictionary);
 
-    return(model);
+    return model;
 
 fail:
-    return(NULL);
+    return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1501,7 +1581,7 @@ fail:
  *
  *		Purpose:		Update the model with the specified symbol.
  */
-void update_model(MODEL *model, int symbol)
+static void update_model(MODEL *model, WordNum symbol)
 {
     register unsigned int i;
 
@@ -1509,9 +1589,9 @@ void update_model(MODEL *model, int symbol)
      *		Update all of the models in the current context with the specified
      *		symbol.
      */
-    for(i=(model->order+1); i>0; --i)
-	if(model->context[i-1]!=NULL)
-	    model->context[i]=add_symbol(model->context[i-1], (BYTE2)symbol);
+    for(i =(model->order+1); i>0; --i)
+	if (model->context[i-1] != NULL)
+	    model->context[i] = add_symbol(model->context[i-1], symbol);
 
     return;
 }
@@ -1523,13 +1603,13 @@ void update_model(MODEL *model, int symbol)
  *
  *		Purpose:		Update the context of the model without adding the symbol.
  */
-void update_context(MODEL *model, int symbol)
+void update_context(MODEL *model, WordNum symbol)
 {
     register unsigned int i;
 
-    for(i=(model->order+1); i>0; --i)
-	if(model->context[i-1]!=NULL)
-	    model->context[i]=find_symbol(model->context[i-1], symbol);
+    for(i = model->order+1; i > 0; --i)
+	if (model->context[i-1] != NULL)
+	    model->context[i] = find_symbol(model->context[i-1], symbol);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1541,24 +1621,26 @@ void update_context(MODEL *model, int symbol)
  *						specified symbol, which may mean growing the tree if the
  *						symbol hasn't been seen in this context before.
  */
-TREE *add_symbol(TREE *tree, BYTE2 symbol)
+TREE *add_symbol(TREE *tree, WordNum symbol)
 {
-    TREE *node=NULL;
+    TREE *node = NULL;
 
     /*
      *		Search for the symbol in the subtree of the tree node.
      */
-    node=find_symbol_add(tree, symbol);
+    node = find_symbol_add(tree, symbol);
 
     /*
      *		Increment the symbol counts
+     *		Stop incrementing when wraparound detected.
      */
-    if((node->count<65535)) {
-	node->count+=1;
-	tree->usage+=1;
+    node->count += 1; tree->usage += 1;
+    if (!node->count) {
+	warn("add_symbol", "Count wants to wrap");
+	node->count -= 1; tree->usage -= 1;
     }
 
-    return(node);
+    return node;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1569,19 +1651,19 @@ TREE *add_symbol(TREE *tree, BYTE2 symbol)
  *		Purpose:		Return a pointer to the child node, if one exists, which
  *						contains the specified symbol.
  */
-TREE *find_symbol(TREE *node, int symbol)
+TREE *find_symbol(TREE *node, WordNum symbol)
 {
     register unsigned int i;
-    TREE *found=NULL;
-    bool found_symbol=FALSE;
+    TREE *found = NULL;
+    bool found_symbol = FALSE;
 
     /*
      *		Perform a binary search for the symbol.
      */
-    i=search_node(node, symbol, &found_symbol);
-    if(found_symbol==TRUE) found=node->tree[i];
+    i = search_node(node, symbol, &found_symbol);
+    if (found_symbol == TRUE) found = node->tree[i];
 
-    return(found);
+    return found;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1594,26 +1676,26 @@ TREE *find_symbol(TREE *node, int symbol)
  *						a new node is automatically allocated and added to the
  *						tree.
  */
-TREE *find_symbol_add(TREE *node, int symbol)
+TREE *find_symbol_add(TREE *node, WordNum symbol)
 {
     register unsigned int i;
-    TREE *found=NULL;
-    bool found_symbol=FALSE;
+    TREE *found = NULL;
+    bool found_symbol = FALSE;
 
     /*
      *		Perform a binary search for the symbol.  If the symbol isn't found,
      *		attach a new sub-node to the tree node so that it remains sorted.
      */
-    i=search_node(node, symbol, &found_symbol);
-    if(found_symbol==TRUE) {
-	found=node->tree[i];
+    i = search_node(node, symbol, &found_symbol);
+    if (found_symbol) {
+	found = node->tree[i];
     } else {
-	found=new_node();
-	found->symbol=symbol;
+	found = new_node();
+	found->symbol = symbol;
 	add_node(node, found, i);
     }
 
-    return(found);
+    return found;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1632,13 +1714,9 @@ void add_node(TREE *tree, TREE *node, int position)
      *		Allocate room for one more child node, which may mean allocating
      *		the sub-tree from scratch.
      */
-    if(tree->tree==NULL) {
-	tree->tree=(TREE **)malloc(sizeof(TREE *)*(tree->branch+1));
-    } else {
-	tree->tree=(TREE **)realloc((TREE **)(tree->tree),sizeof(TREE *)*
-				    (tree->branch+1));
-    }
-    if(tree->tree==NULL) {
+    tree->tree = realloc(tree->tree, (tree->branch+1) * sizeof *tree->tree );
+
+    if (tree->tree == NULL) {
 	error("add_node", "Unable to reallocate subtree.");
 	return;
     }
@@ -1647,14 +1725,14 @@ void add_node(TREE *tree, TREE *node, int position)
      *		Shuffle the nodes down so that we can insert the new node at the
      *		subtree index given by position.
      */
-    for(i=tree->branch; i>position; --i)
-	tree->tree[i]=tree->tree[i-1];
+    for(i = tree->branch; i > position; --i)
+	tree->tree[i] = tree->tree[i-1];
 
     /*
      *		Add the new node to the sub-tree.
      */
-    tree->tree[position]=node;
-    tree->branch+=1;
+    tree->tree[position] = node;
+    tree->branch += 1;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1679,44 +1757,44 @@ int search_node(TREE *node, int symbol, bool *found_symbol)
     /*
      *		Handle the special case where the subtree is empty.
      */
-    if(node->branch==0) {
-	position=0;
+    if (node->branch == 0) {
+	position = 0;
 	goto notfound;
     }
 
     /*
      *		Perform a binary search on the subtree.
      */
-    min=0;
-    max=node->branch-1;
-    while(TRUE) {
-	middle=(min+max)/2;
-	compar=symbol-node->tree[middle]->symbol;
-	if(compar==0) {
-	    position=middle;
+    min = 0;
+    max = node->branch-1;
+    while( 1 ) {
+	middle = (min+max)/2;
+	compar = symbol - node->tree[middle]->symbol;
+	if (compar == 0) {
+	    position = middle;
 	    goto found;
-	} else if(compar>0) {
-	    if(max==middle) {
-		position=middle+1;
+	} else if (compar > 0) {
+	    if (max == middle) {
+		position = middle+1;
 		goto notfound;
 	    }
-	    min=middle+1;
+	    min = middle+1;
 	} else {
-	    if(min==middle) {
-		position=middle;
+	    if (min == middle) {
+		position = middle;
 		goto notfound;
 	    }
-	    max=middle-1;
+	    max = middle-1;
 	}
     }
 
 found:
-    *found_symbol=TRUE;
-    return(position);
+    *found_symbol = TRUE;
+    return position;
 
 notfound:
-    *found_symbol=FALSE;
-    return(position);
+    *found_symbol = FALSE;
+    return position;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1730,7 +1808,7 @@ void initialize_context(MODEL *model)
 {
     register unsigned int i;
 
-    for(i=0; i<=model->order; ++i) model->context[i]=NULL;
+    for(i = 0; i<= model->order; ++i) model->context[i] =NULL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1744,25 +1822,25 @@ void learn(MODEL *model, DICTIONARY *words)
 {
     register unsigned int i;
     register int j;
-    BYTE2 symbol;
+    WordNum symbol;
 
     /*
      *		We only learn from inputs which are long enough
      */
-    if(words->size<=(model->order)) return;
+    if (words->size<=(model->order)) return;
 
     /*
      *		Train the model in the forwards direction.  Start by initializing
      *		the context of the model.
      */
     initialize_context(model);
-    model->context[0]=model->forward;
-    for(i=0; i<words->size; ++i) {
+    model->context[0] = model->forward;
+    for(i = 0; i<words->size; ++i) {
 	/*
 	 *		Add the symbol to the model's dictionary if necessary, and then
 	 *		update the forward model accordingly.
 	 */
-	symbol=add_word(model->dictionary, words->entry[i]);
+	symbol = add_word(model->dictionary, words->entry[i]);
 	update_model(model, symbol);
     }
     /*
@@ -1775,13 +1853,13 @@ void learn(MODEL *model, DICTIONARY *words)
      *		the context of the model.
      */
     initialize_context(model);
-    model->context[0]=model->backward;
-    for(j=words->size-1; j>=0; --j) {
+    model->context[0] = model->backward;
+    for(j = words->size-1; j>= 0; --j) {
 	/*
 	 *		Find the symbol in the model's dictionary, and then update
 	 *		the backward model accordingly.
 	 */
-	symbol=find_word(model->dictionary, words->entry[j]);
+	symbol = find_word(model->dictionary, words->entry[j]);
 	update_model(model, symbol);
     }
     /*
@@ -1802,31 +1880,29 @@ void learn(MODEL *model, DICTIONARY *words)
 void train(MODEL *model, char *filename)
 {
     FILE *file;
-    char buffer[1024];
-    DICTIONARY *words=NULL;
+    char buffer[16*1024];
+    DICTIONARY *words = NULL;
     int length;
 
-    if(filename==NULL) return;
+    if (filename == NULL) return;
 
-    file=fopen(filename, "r");
-    if(file==NULL) {
+    file = fopen(filename, "r");
+    if (file == NULL) {
 	printf("Unable to find the personality %s\n", filename);
 	return;
     }
 
     fseek(file, 0, 2);
-    length=ftell(file);
+    length = ftell(file);
     rewind(file);
 
-    words=new_dictionary();
+    words = new_dictionary();
 
     progress("Training from file", 0, 1);
-    while(!feof(file)) {
+    while( fgets(buffer, sizeof buffer, file) ) {
+	if (buffer[0] == '#') continue;
 
-	if(fgets(buffer, 1024, file)==NULL) break;
-	if(buffer[0]=='#') continue;
-
-	buffer[strlen(buffer)-1]='\0';
+	buffer[strlen(buffer)-1] ='\0';
 
 	upper(buffer);
 	make_words(buffer, words);
@@ -1854,14 +1930,14 @@ void show_dictionary(DICTIONARY *dictionary)
     register unsigned int j;
     FILE *file;
 
-    file=fopen("megahal.dic", "w");
-    if(file==NULL) {
+    file = fopen("megahal.dic", "w");
+    if (file == NULL) {
 	warn("show_dictionary", "Unable to open file");
 	return;
     }
 
-    for(i=0; i<dictionary->size; ++i) {
-	for(j=0; j<dictionary->entry[i].length; ++j)
+    for(i = 0; i<dictionary->size; ++i) {
+	for(j = 0; j < dictionary->entry[i].length; ++j)
 	    fprintf(file, "%c", dictionary->entry[i].word[j]);
 	fprintf(file, "\n");
     }
@@ -1879,29 +1955,26 @@ void show_dictionary(DICTIONARY *dictionary)
 void save_model(char *modelname, MODEL *model)
 {
     FILE *file;
-    static char *filename=NULL;
-
-    if(filename==NULL) filename=(char *)malloc(sizeof(char)*1);
+    static char *filename = NULL;
 
     /*
      *    Allocate memory for the filename
      */
-    filename=(char *)realloc(filename,
-			     sizeof(char)*(strlen(directory)+strlen(SEP)+12));
-    if(filename==NULL) error("save_model","Unable to allocate filename");
+    filename = realloc(filename, strlen(directory)+strlen(SEP)+12);
+    if (filename == NULL) error("save_model","Unable to allocate filename");
 
     show_dictionary(model->dictionary);
-    if(filename==NULL) return;
+    if (filename == NULL) return;
 
     sprintf(filename, "%s%smegahal.brn", directory, SEP);
-    file=fopen(filename, "wb");
-    if(file==NULL) {
+    file = fopen(filename, "wb");
+    if (file == NULL) {
 	warn("save_model", "Unable to open file `%s'", filename);
 	return;
     }
 
     fwrite(COOKIE, sizeof(char), strlen(COOKIE), file);
-    fwrite(&(model->order), sizeof(BYTE1), 1, file);
+    fwrite(&model->order, sizeof model->order, 1, file);
     save_tree(file, model->forward);
     save_tree(file, model->backward);
     save_dictionary(file, model->dictionary);
@@ -1918,22 +1991,22 @@ void save_model(char *modelname, MODEL *model)
  */
 void save_tree(FILE *file, TREE *node)
 {
-    static int level=0;
+    static int level = 0;
     register unsigned int i;
 
-    fwrite(&(node->symbol), sizeof(BYTE2), 1, file);
-    fwrite(&(node->usage), sizeof(BYTE4), 1, file);
-    fwrite(&(node->count), sizeof(BYTE2), 1, file);
-    fwrite(&(node->branch), sizeof(BYTE2), 1, file);
+    fwrite(&node->symbol, sizeof node->symbol, 1, file);
+    fwrite(&node->usage, sizeof node->usage, 1, file);
+    fwrite(&node->count, sizeof node->count, 1, file);
+    fwrite(&node->branch, sizeof node->branch, 1, file);
 
-    if(level==0) progress("Saving tree", 0, 1);
-    for(i=0; i<node->branch; ++i) {
+    if (level == 0) progress("Saving tree", 0, 1);
+    for(i = 0; i<node->branch; ++i) {
 	++level;
 	save_tree(file, node->tree[i]);
 	--level;
-	if(level==0) progress(NULL, i, node->branch);
+	if (level == 0) progress(NULL, i, node->branch);
     }
-    if(level==0) progress(NULL, 1, 1);
+    if (level == 0) progress(NULL, 1, 1);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1945,31 +2018,31 @@ void save_tree(FILE *file, TREE *node)
  */
 void load_tree(FILE *file, TREE *node)
 {
-    static int level=0;
+    static int level = 0;
     register unsigned int i;
 
-    fread(&(node->symbol), sizeof(BYTE2), 1, file);
-    fread(&(node->usage), sizeof(BYTE4), 1, file);
-    fread(&(node->count), sizeof(BYTE2), 1, file);
-    fread(&(node->branch), sizeof(BYTE2), 1, file);
+    fread(&node->symbol, sizeof node->symbol, 1, file);
+    fread(&node->usage, sizeof node->usage, 1, file);
+    fread(&node->count, sizeof node->count, 1, file);
+    fread(&node->branch, sizeof node->branch, 1, file);
 
-    if(node->branch==0) return;
+    if (node->branch == 0) return;
 
-    node->tree=(TREE **)malloc(sizeof(TREE *)*(node->branch));
-    if(node->tree==NULL) {
+    node->tree = malloc(node->branch * sizeof *node->tree );
+    if (node->tree == NULL) {
 	error("load_tree", "Unable to allocate subtree");
 	return;
     }
 
-    if(level==0) progress("Loading tree", 0, 1);
-    for(i=0; i<node->branch; ++i) {
-	node->tree[i]=new_node();
+    if (level == 0) progress("Loading tree", 0, 1);
+    for(i = 0; i<node->branch; ++i) {
+	node->tree[i] = new_node();
 	++level;
 	load_tree(file, node->tree[i]);
 	--level;
-	if(level==0) progress(NULL, i, node->branch);
+	if (level == 0) progress(NULL, i, node->branch);
     }
-    if(level==0) progress(NULL, 1, 1);
+    if (level == 0) progress(NULL, 1, 1);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1985,32 +2058,32 @@ bool load_model(char *filename, MODEL *model)
     char cookie[16];
 
 
-    if(filename==NULL) return(FALSE);
+    if (filename == NULL) return FALSE;
 
-    file=fopen(filename, "rb");
+    file = fopen(filename, "rb");
 
-    if(file==NULL) {
+    if (file == NULL) {
 	warn("load_model", "Unable to open file `%s'", filename);
-	return(FALSE);
+	return FALSE;
     }
 
 
     fread(cookie, sizeof(char), strlen(COOKIE), file);
-    if(strncmp(cookie, COOKIE, strlen(COOKIE))!=0) {
+    if (memcmp(cookie, COOKIE, strlen(COOKIE)) ) {
 	warn("load_model", "File `%s' is not a MegaHAL brain", filename);
 	goto fail;
     }
 
-    fread(&(model->order), sizeof(BYTE1), 1, file);
+    fread(&model->order, sizeof model->order, 1, file);
     load_tree(file, model->forward);
     load_tree(file, model->backward);
     load_dictionary(file, model->dictionary);
 
-    return(TRUE);
+    return TRUE;
 fail:
     fclose(file);
 
-    return(FALSE);
+    return FALSE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2018,11 +2091,14 @@ fail:
 /*
  *    Function:   Make_Words
  *
- *    Purpose:    Break a string into an array of words.
+ *    Purpose:    Break a string into an array of words,
+ *	and put them into a dict, sequentially.
+ *	NOTE No memory for the STRINGS is allocated: the DICT points to the input string.
  */
 void make_words(char *input, DICTIONARY *words)
 {
-    int offset=0;
+    size_t offset = 0;
+    size_t len = strlen(input);
 
     /*
      *		Clear the entries in the dictionary
@@ -2032,7 +2108,7 @@ void make_words(char *input, DICTIONARY *words)
     /*
      *		If the string is empty then do nothing, for it contains no words.
      */
-    if(strlen(input)==0) return;
+    if (len == 0) return;
 
     /*
      *		Loop forever.
@@ -2044,27 +2120,28 @@ void make_words(char *input, DICTIONARY *words)
 	 *		character, then include it in the word.  Otherwise, terminate
 	 *		the current word.
 	 */
-	if(boundary(input, offset)) {
+	if (boundary(input, offset)) {
 	    /*
 	     *		Add the word to the dictionary
 	     */
-	    if(words->entry==NULL)
-		words->entry=(STRING *)malloc((words->size+1)*sizeof(STRING));
-	    else
-		words->entry=(STRING *)realloc(words->entry, (words->size+1)*sizeof(STRING));
+#ifdef WANT_HASHTAB
+#else
+            words->entry = realloc(words->entry, (words->size+1)*sizeof *words->entry);
 
-	    if(words->entry==NULL) {
+	    if (words->entry == NULL) {
 		error("make_words", "Unable to reallocate dictionary");
 		return;
 	    }
 
-	    words->entry[words->size].length=offset;
-	    words->entry[words->size].word=input;
-	    words->size+=1;
+	    words->entry[words->size].length = offset;
+	    words->entry[words->size].word = input;
+	    words->size += 1;
+#endif
 
-	    if(offset==(int)strlen(input)) break;
-	    input+=offset;
-	    offset=0;
+	    if (offset == len) break;
+	    input += offset;
+	    len -= offset;
+	    offset = 0;
 	} else {
 	    ++offset;
 	}
@@ -2074,23 +2151,20 @@ void make_words(char *input, DICTIONARY *words)
      *		If the last word isn't punctuation, then replace it with a
      *		full-stop character.
      */
-    if(isalnum(words->entry[words->size-1].word[0])) {
-	if(words->entry==NULL)
-	    words->entry=(STRING *)malloc((words->size+1)*sizeof(STRING));
-	else
-	    words->entry=(STRING *)realloc(words->entry, (words->size+1)*sizeof(STRING));
-	if(words->entry==NULL) {
+    if (isalnum(words->entry[words->size-1].word[0])) {
+	words->entry = realloc(words->entry, (words->size+1)*sizeof(*words->entry));
+	if (words->entry == NULL) {
 	    error("make_words", "Unable to reallocate dictionary");
 	    return;
 	}
 
-	words->entry[words->size].length=1;
-	words->entry[words->size].word=".";
+	words->entry[words->size].length = 1;
+	words->entry[words->size].word = ".";
 	++words->size;
     }
-    else if(strchr("!.?", words->entry[words->size-1].word[words->entry[words->size-1].length-1])==NULL) {
-	words->entry[words->size-1].length=1;
-	words->entry[words->size-1].word=".";
+    else if (strchr("!.?", words->entry[words->size-1].word[words->entry[words->size-1].length-1]) == NULL) {
+	words->entry[words->size-1].length = 1;
+	words->entry[words->size-1].word =".";
     }
 
     return;
@@ -2103,45 +2177,44 @@ void make_words(char *input, DICTIONARY *words)
  *		Purpose:		Return whether or not a word boundary exists in a string
  *						at the specified location.
  */
-bool boundary(char *string, int position)
+bool boundary(char *string, size_t position)
 {
-    if(position==0)
-	return(FALSE);
+    unsigned char *ucp = (unsigned char *) string;
+    if (position == 0) return FALSE;
 
-    if(position==(int)strlen(string))
-	return(TRUE);
+    if (ucp[position] == '\0' ) return TRUE;
 
-    if(
-	(string[position]=='\'')&&
-	(isalpha(string[position-1])!=0)&&
-	(isalpha(string[position+1])!=0)
+    if (
+	ucp[position] == '\''
+	&& isalpha(ucp[position-1])
+	&& isalpha(ucp[position+1])
 	)
-	return(FALSE);
+	return FALSE;
 
-    if(
-	(position>1)&&
-	(string[position-1]=='\'')&&
-	(isalpha(string[position-2])!=0)&&
-	(isalpha(string[position])!=0)
+    if (
+	position>1
+	&& ucp[position-1] == '\''
+	&& isalpha(ucp[position-2])
+	&& isalpha(ucp[position]) 
 	)
-	return(FALSE);
+	return FALSE;
 
-    if(
-	(isalpha(string[position])!=0)&&
-	(isalpha(string[position-1])==0)
+    if (
+	isalpha(ucp[position])
+	&& !isalpha(ucp[position-1])
 	)
-	return(TRUE);
+	return TRUE;
 
-    if(
-	(isalpha(string[position])==0)&&
-	(isalpha(string[position-1])!=0)
+    if (
+	!isalpha(ucp[position])
+	&& isalpha(ucp[position-1])
 	)
-	return(TRUE);
+	return TRUE;
 
-    if(isdigit(string[position])!=isdigit(string[position-1]))
-	return(TRUE);
+    if (isdigit(ucp[position]) != isdigit(ucp[position-1]))
+	return TRUE;
 
-    return(FALSE);
+    return FALSE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2155,9 +2228,9 @@ void make_greeting(DICTIONARY *words)
 {
     register unsigned int i;
 
-    for(i=0; i<words->size; ++i) free(words->entry[i].word);
+    for(i = 0; i < words->size; ++i) free(words->entry[i].word);
     free_dictionary(words);
-    if(grt->size>0) (void)add_word(words, grt->entry[rnd(grt->size)]);
+    if (grt->size > 0) (void)add_word(words, grt->entry[urnd(grt->size)]);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2170,13 +2243,13 @@ void make_greeting(DICTIONARY *words)
  */
 char *generate_reply(MODEL *model, DICTIONARY *words)
 {
-    static DICTIONARY *dummy=NULL;
+    static DICTIONARY *dummy = NULL;
     DICTIONARY *replywords;
     DICTIONARY *keywords;
     float surprise;
     float max_surprise;
     char *output;
-    static char *output_none=NULL;
+    static char *output_none = NULL;
     int count;
     int basetime;
     int timeout = TIMEOUT;
@@ -2184,45 +2257,45 @@ char *generate_reply(MODEL *model, DICTIONARY *words)
     /*
      *		Create an array of keywords from the words in the user's input
      */
-    keywords=make_keywords(model, words);
+    keywords = make_keywords(model, words);
 
     /*
      *		Make sure some sort of reply exists
      */
-    if(output_none==NULL) {
-	output_none=malloc(40);
-	if(output_none!=NULL)
+    if (output_none == NULL) {
+	output_none = malloc(40);
+	if (output_none != NULL)
 	    strcpy(output_none, "I don't know enough to answer you yet!");
     }
-    output=output_none;
-    if(dummy == NULL) dummy = new_dictionary();
+    output = output_none;
+    if (dummy == NULL) dummy = new_dictionary();
     replywords = reply(model, dummy);
-    if(dissimilar(words, replywords) == TRUE) output = make_output(replywords);
+    if (dissimilar(words, replywords)) output = make_output(replywords);
 
     /*
      *		Loop for the specified waiting period, generating and evaluating
      *		replies
      */
-    max_surprise=(float)-1.0;
-    count=0;
-    basetime=time(NULL);
-/*     progress("Generating reply", 0, 1);  */
+    max_surprise = -1.0;
+    count = 0;
+    basetime = time(NULL);
+    progress("Generating reply", 0, 1); 
     do {
-	replywords=reply(model, keywords);
-	surprise=evaluate_reply(model, keywords, replywords);
+	replywords = reply(model, keywords);
+	surprise = evaluate_reply(model, keywords, replywords);
 	++count;
-	if((surprise>max_surprise)&&(dissimilar(words, replywords)==TRUE)) {
-	    max_surprise=surprise;
-	    output=make_output(replywords);
+	if (surprise > max_surprise && dissimilar(words, replywords) ) {
+	    max_surprise = surprise;
+	    output = make_output(replywords);
 	}
-/*  	progress(NULL, (time(NULL)-basetime),timeout); */
-    } while((time(NULL)-basetime)<timeout);
+ 	progress(NULL, (time(NULL)-basetime),timeout);
+    } while(time(NULL)-basetime < timeout);
     progress(NULL, 1, 1);
 
     /*
      *		Return the best answer we generated
      */
-    return(output);
+    return output;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2237,10 +2310,10 @@ bool dissimilar(DICTIONARY *words1, DICTIONARY *words2)
 {
     register unsigned int i;
 
-    if(words1->size!=words2->size) return(TRUE);
-    for(i=0; i<words1->size; ++i)
-	if(wordcmp(words1->entry[i], words2->entry[i])!=0) return(TRUE);
-    return(FALSE);
+    if (words1->size != words2->size) return TRUE;
+    for(i = 0; i<words1->size; ++i)
+	if (wordcmp(words1->entry[i], words2->entry[i]) ) return TRUE;
+    return FALSE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2254,43 +2327,43 @@ bool dissimilar(DICTIONARY *words1, DICTIONARY *words2)
  */
 DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
 {
-    static DICTIONARY *keys=NULL;
+    static DICTIONARY *keys = NULL;
     register unsigned int i;
     register unsigned int j;
-    int c;
+    unsigned swapped;
 
-    if(keys==NULL) keys=new_dictionary();
-    for(i=0; i<keys->size; ++i) free(keys->entry[i].word);
+    if (keys == NULL) keys = new_dictionary();
+    for(i = 0; i<keys->size; ++i) free(keys->entry[i].word);
     free_dictionary(keys);
 
-    for(i=0; i<words->size; ++i) {
+    for(i = 0; i<words->size; ++i) {
 	/*
 	 *		Find the symbol ID of the word.  If it doesn't exist in
 	 *		the model, or if it begins with a non-alphanumeric
 	 *		character, or if it is in the exclusion array, then
 	 *		skip over it.
 	 */
-	c=0;
-	for(j=0; j<swp->size; ++j)
-	    if(wordcmp(swp->from[j], words->entry[i])==0) {
+	swapped = 0;
+	for(j = 0; j < swp->size; ++j)
+	    if (!wordcmp(swp->from[j], words->entry[i]) ) {
 		add_key(model, keys, swp->to[j]);
-		++c;
+		swapped++;
 	    }
-	if(c==0) add_key(model, keys, words->entry[i]);
+	if (!swapped) add_key(model, keys, words->entry[i]);
     }
 
-    if(keys->size>0) for(i=0; i<words->size; ++i) {
+    if (keys->size>0) for(i = 0; i<words->size; ++i) {
 
-	c=0;
-	for(j=0; j<swp->size; ++j)
-	    if(wordcmp(swp->from[j], words->entry[i])==0) {
+	swapped = 0;
+	for(j = 0; j < swp->size; ++j)
+	    if (!wordcmp(swp->from[j], words->entry[i])) {
 		add_aux(model, keys, swp->to[j]);
-		++c;
+		swapped++;
 	    }
-	if(c==0) add_aux(model, keys, words->entry[i]);
+	if (!swapped) add_aux(model, keys, words->entry[i]);
     }
 
-    return(keys);
+    return keys;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2304,13 +2377,13 @@ void add_key(MODEL *model, DICTIONARY *keys, STRING word)
 {
     int symbol;
 
-    symbol=find_word(model->dictionary, word);
-    if(symbol==0) return;
-    if(isalnum(word.word[0])==0) return;
-    symbol=find_word(ban, word);
-    if(symbol!=0) return;
-    symbol=find_word(aux, word);
-    if(symbol!=0) return;
+    symbol = find_word(model->dictionary, word);
+    if (symbol == 0) return;
+    if (isalnum(word.word[0]) == 0) return;
+    symbol = find_word(ban, word);
+    if (symbol != 0) return;
+    symbol = find_word(aux, word);
+    if (symbol != 0) return;
 
     add_word(keys, word);
 }
@@ -2326,11 +2399,11 @@ void add_aux(MODEL *model, DICTIONARY *keys, STRING word)
 {
     int symbol;
 
-    symbol=find_word(model->dictionary, word);
-    if(symbol==0) return;
-    if(isalnum(word.word[0])==0) return;
-    symbol=find_word(aux, word);
-    if(symbol==0) return;
+    symbol = find_word(model->dictionary, word);
+    if (symbol == 0) return;
+    if (isalnum(word.word[0]) == 0) return;
+    symbol = find_word(aux, word);
+    if (symbol == 0) return;
 
     add_word(keys, word);
 }
@@ -2345,50 +2418,47 @@ void add_aux(MODEL *model, DICTIONARY *keys, STRING word)
  */
 DICTIONARY *reply(MODEL *model, DICTIONARY *keys)
 {
-    static DICTIONARY *replies=NULL;
+    static DICTIONARY *replies = NULL;
     register int i;
-    int symbol;
-    bool start=TRUE;
+    WordNum symbol;
+    bool start = TRUE;
 
-    if(replies==NULL) replies=new_dictionary();
+    if (replies == NULL) replies = new_dictionary();
     free_dictionary(replies);
 
     /*
      *		Start off by making sure that the model's context is empty.
      */
     initialize_context(model);
-    model->context[0]=model->forward;
-    used_key=FALSE;
+    model->context[0] = model->forward;
+    used_key = FALSE;
 
     /*
      *		Generate the reply in the forward direction.
      */
-    while(TRUE) {
+    while(1) {
 	/*
 	 *		Get a random symbol from the current context.
 	 */
-	if(start==TRUE) symbol=seed(model, keys);
-	else symbol=babble(model, keys, replies);
-	if((symbol==0)||(symbol==1)) break;
-	start=FALSE;
+	if (start == TRUE) symbol = seed(model, keys);
+	else symbol = babble(model, keys, replies);
+	if (symbol == 0 || symbol == 1) break;
+	start = FALSE;
 
 	/*
 	 *		Append the symbol to the reply dictionary.
 	 */
-	if(replies->entry==NULL)
-	    replies->entry=(STRING *)malloc((replies->size+1)*sizeof(STRING));
-	else
-	    replies->entry=(STRING *)realloc(replies->entry, (replies->size+1)*sizeof(STRING));
-	if(replies->entry==NULL) {
+   replies->entry = realloc(replies->entry, (replies->size+1)*sizeof *replies->entry);
+	if (replies->entry == NULL) {
 	    error("reply", "Unable to reallocate dictionary");
-	    return(NULL);
+	    return NULL;
 	}
 
-	replies->entry[replies->size].length=
+	replies->entry[replies->size].length = 
 	    model->dictionary->entry[symbol].length;
-	replies->entry[replies->size].word=
+	replies->entry[replies->size].word = 
 	    model->dictionary->entry[symbol].word;
-	replies->size+=1;
+	replies->size += 1;
 
 	/*
 	 *		Extend the current context of the model with the current symbol.
@@ -2400,51 +2470,48 @@ DICTIONARY *reply(MODEL *model, DICTIONARY *keys)
      *		Start off by making sure that the model's context is empty.
      */
     initialize_context(model);
-    model->context[0]=model->backward;
+    model->context[0] = model->backward;
 
     /*
      *		Re-create the context of the model from the current reply
      *		dictionary so that we can generate backwards to reach the
      *		beginning of the string.
      */
-    if(replies->size>0) for(i=MIN(replies->size-1, model->order); i>=0; --i) {
-	symbol=find_word(model->dictionary, replies->entry[i]);
+    if (replies->size>0) for(i = MIN(replies->size-1, model->order); i>= 0; --i) {
+	symbol = find_word(model->dictionary, replies->entry[i]);
 	update_context(model, symbol);
     }
 
     /*
      *		Generate the reply in the backward direction.
      */
-    while(TRUE) {
+    while(1) {
 	/*
 	 *		Get a random symbol from the current context.
 	 */
-	symbol=babble(model, keys, replies);
-	if((symbol==0)||(symbol==1)) break;
+	symbol = babble(model, keys, replies);
+	if (symbol == 0 || symbol == 1) break;
 
 	/*
 	 *		Prepend the symbol to the reply dictionary.
 	 */
-	if(replies->entry==NULL)
-	    replies->entry=(STRING *)malloc((replies->size+1)*sizeof(STRING));
-	else
-	    replies->entry=(STRING *)realloc(replies->entry, (replies->size+1)*sizeof(STRING));
-	if(replies->entry==NULL) {
+	replies->entry = realloc(replies->entry, (replies->size+1)*sizeof *replies->entry);
+	if (replies->entry == NULL) {
 	    error("reply", "Unable to reallocate dictionary");
-	    return(NULL);
+	    return NULL;
 	}
 
 	/*
 	 *		Shuffle everything up for the prepend.
 	 */
-	for(i=replies->size; i>0; --i) {
-	    replies->entry[i].length=replies->entry[i-1].length;
-	    replies->entry[i].word=replies->entry[i-1].word;
+	for(i = replies->size; i>0; --i) {
+	    replies->entry[i].length = replies->entry[i-1].length;
+	    replies->entry[i].word = replies->entry[i-1].word;
 	}
 
-	replies->entry[0].length=model->dictionary->entry[symbol].length;
-	replies->entry[0].word=model->dictionary->entry[symbol].word;
-	replies->size+=1;
+	replies->entry[0].length = model->dictionary->entry[symbol].length;
+	replies->entry[0].word = model->dictionary->entry[symbol].word;
+	replies->size += 1;
 
 	/*
 	 *		Extend the current context of the model with the current symbol.
@@ -2452,7 +2519,7 @@ DICTIONARY *reply(MODEL *model, DICTIONARY *keys)
 	update_context(model, symbol);
     }
 
-    return(replies);
+    return replies;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2468,66 +2535,66 @@ float evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
     register unsigned int i;
     register int j;
     register int k;
-    int symbol;
+    WordNum symbol;
     float probability;
-    int count;
-    float entropy=(float)0.0;
+    unsigned count;
+    float entropy = 0.0;
     TREE *node;
-    int num=0;
+    int num = 0;
 
-    if(words->size<=0) return((float)0.0);
+    if (words->size<= 0) return 0.0;
     initialize_context(model);
-    model->context[0]=model->forward;
-    for(i=0; i<words->size; ++i) {
-	symbol=find_word(model->dictionary, words->entry[i]);
+    model->context[0] = model->forward;
+    for(i = 0; i < words->size; ++i) {
+	symbol = find_word(model->dictionary, words->entry[i]);
 
-	if(find_word(keys, words->entry[i])!=0) {
-	    probability=(float)0.0;
-	    count=0;
+	if (find_word(keys, words->entry[i]) != 0) {
+	    probability = 0.0;
+	    count = 0;
 	    ++num;
-	    for(j=0; j<model->order; ++j) if(model->context[j]!=NULL) {
+	    for(j = 0; j < model->order; ++j) {
+		if (model->context[j] == NULL) continue;
 
-		node=find_symbol(model->context[j], symbol);
-		probability+=(float)(node->count)/
-		    (float)(model->context[j]->usage);
+		node = find_symbol(model->context[j], symbol);
+		probability += (float)node->count / model->context[j]->usage;
 		++count;
 
 	    }
 
-	    if(count>0.0) entropy-=(float)log(probability/(float)count);
+	    if (count > 0) entropy -= log(probability / count);
 	}
 
 	update_context(model, symbol);
     }
 
     initialize_context(model);
-    model->context[0]=model->backward;
-    for(k=words->size-1; k>=0; --k) {
-	symbol=find_word(model->dictionary, words->entry[k]);
+    model->context[0] = model->backward;
+    for(k = words->size-1; k >= 0; --k) {
+	symbol = find_word(model->dictionary, words->entry[k]);
 
-	if(find_word(keys, words->entry[k])!=0) {
-	    probability=(float)0.0;
-	    count=0;
+	if (find_word(keys, words->entry[k]) != 0) {
+	    probability = 0.0;
+	    count = 0;
 	    ++num;
-	    for(j=0; j<model->order; ++j) if(model->context[j]!=NULL) {
+	    for(j = 0; j < model->order; ++j) {
+		if (model->context[j] == NULL) continue;
 
-		node=find_symbol(model->context[j], symbol);
-		probability+=(float)(node->count)/
-		    (float)(model->context[j]->usage);
+		node = find_symbol(model->context[j], symbol);
+		probability += (float)node->count / model->context[j]->usage;
 		++count;
 
 	    }
 
-	    if(count>0.0) entropy-=(float)log(probability/(float)count);
+	    if (count > 0) entropy -= log(probability/count);
 	}
 
 	update_context(model, symbol);
     }
 
-    if(num>=8) entropy/=(float)sqrt(num-1);
-    if(num>=16) entropy/=(float)num;
+    if (num >= 8) entropy /= sqrt(num-1);
+    if (num >= 16) entropy /= num;
 
-    return(entropy);
+    return entropy;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2539,47 +2606,39 @@ float evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
  */
 char *make_output(DICTIONARY *words)
 {
-    static char *output=NULL;
+    static char *output = NULL;
     register unsigned int i;
     register int j;
     int length;
-    static char *output_none=NULL;
+    static char *output_none = NULL;
 
-    if(output_none==NULL) output_none=malloc(40);
+    if (output_none == NULL) output_none = malloc(40);
 
-    if(output==NULL) {
-	output=(char *)malloc(sizeof(char));
-	if(output==NULL) {
-	    error("make_output", "Unable to allocate output");
-	    return(output_none);
-	}
-    }
-
-    if(words->size==0) {
-	if(output_none!=NULL)
+    if (words->size == 0) {
+	if (output_none != NULL)
 	    strcpy(output_none, "I am utterly speechless!");
-	return(output_none);
+	return output_none;
     }
 
-    length=1;
-    for(i=0; i<words->size; ++i) length+=words->entry[i].length;
+    length = 1;
+    for(i = 0; i<words->size; ++i) length += words->entry[i].length;
 
-    output=(char *)realloc(output, sizeof(char)*length);
-    if(output==NULL) {
+    output = realloc(output, length);
+    if (output == NULL) {
 	error("make_output", "Unable to reallocate output.");
-	if(output_none!=NULL)
+	if (output_none != NULL)
 	    strcpy(output_none, "I forgot what I was going to say!");
-	return(output_none);
+	return output_none;
     }
 
-    length=0;
-    for(i=0; i<words->size; ++i)
-	for(j=0; j<words->entry[i].length; ++j)
-	    output[length++]=words->entry[i].word[j];
+    length = 0;
+    for(i = 0; i < words->size; ++i)
+	for(j = 0; j < words->entry[i].length; ++j)
+	    output[length++] = words->entry[i].word[j];
 
-    output[length]='\0';
+    output[length] = '\0';
 
-    return(output);
+    return output;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2593,50 +2652,50 @@ char *make_output(DICTIONARY *words)
  *						on probabilities, favouring keywords.  In all cases,
  *						use the longest available context to choose the symbol.
  */
-int babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
+WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 {
     TREE *node;
-    register int i;
+    unsigned int idx;
     int count;
-    int symbol = 0;
+    WordNum symbol = 0;
 
     node = NULL;
 
     /*
      *		Select the longest available context.
      */
-    for(i=0; i<=model->order; ++i)
-	if(model->context[i]!=NULL)
-	    node=model->context[i];
+    for(idx = 0; idx<= model->order; idx++)
+	if (model->context[idx] != NULL)
+	    node = model->context[idx];
 
-    if(node->branch==0) return(0);
+    if (node->branch == 0) return 0;
 
     /*
      *		Choose a symbol at random from this context.
      */
-    i=rnd(node->branch);
-    count=rnd(node->usage);
-    while(count>=0) {
+    idx = urnd(node->branch);
+    count = urnd(node->usage);
+    while(count >= 0) {
 	/*
 	 *		If the symbol occurs as a keyword, then use it.  Only use an
 	 *		auxilliary keyword if a normal keyword has already been used.
 	 */
-	symbol=node->tree[i]->symbol;
+	symbol = node->tree[idx]->symbol;
 
-	if(
-	    (find_word(keys, model->dictionary->entry[symbol])!=0)&&
-	    ((used_key==TRUE)||
-	     (find_word(aux, model->dictionary->entry[symbol])==0))&&
-	    (word_exists(words, model->dictionary->entry[symbol])==FALSE)
+	if (
+	    (find_word(keys, model->dictionary->entry[symbol]))
+	    && (used_key == TRUE || (!find_word(aux, model->dictionary->entry[symbol]) ))
+	    && !word_exists(words, model->dictionary->entry[symbol]) 
 	    ) {
-	    used_key=TRUE;
+	    used_key = TRUE;
 	    break;
 	}
-	count-=node->tree[i]->count;
-	i=(i>=(node->branch-1))?0:i+1;
+	count -= node->tree[idx]->count;
+	// idx = (idx>=(node->branch-1)) ? 0: idx+1;
+	idx = (idx+1) % node->branch;
     }
 
-    return(symbol);
+    return symbol;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2650,10 +2709,10 @@ bool word_exists(DICTIONARY *dictionary, STRING word)
 {
     register unsigned int i;
 
-    for(i=0; i<dictionary->size; ++i)
-	if(wordcmp(dictionary->entry[i], word)==0)
-	    return(TRUE);
-    return(FALSE);
+    for(i = 0; i < dictionary->size; ++i)
+	if (!wordcmp(dictionary->entry[i], word) )
+	    return TRUE;
+    return FALSE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2664,36 +2723,36 @@ bool word_exists(DICTIONARY *dictionary, STRING word)
  *		Purpose:		Seed the reply by guaranteeing that it contains a
  *						keyword, if one exists.
  */
-int seed(MODEL *model, DICTIONARY *keys)
+WordNum seed(MODEL *model, DICTIONARY *keys)
 {
-    register unsigned int i;
-    int symbol;
+    register unsigned int idx;
+    WordNum symbol;
     unsigned int stop;
 
     /*
      *		Fix, thanks to Mark Tarrabain
      */
-    if(model->context[0]->branch==0) symbol=0;
-    else symbol=model->context[0]->tree[rnd(model->context[0]->branch)]->symbol;
+    if (model->context[0]->branch == 0) symbol = 0;
+    else symbol = model->context[0]->tree[urnd(model->context[0]->branch)]->symbol;
 
-    if(keys->size>0) {
-	i=rnd(keys->size);
-	stop=i;
+    if (keys->size > 0) {
+	idx = urnd(keys->size);
+	stop = idx;
 	while(TRUE) {
-	    if(
-		(find_word(model->dictionary, keys->entry[i])!=0)&&
-		(find_word(aux, keys->entry[i])==0)
+	    if (
+		find_word(model->dictionary, keys->entry[idx])
+		&& !find_word(aux, keys->entry[idx])
 		) {
-		symbol=find_word(model->dictionary, keys->entry[i]);
-		return(symbol);
+		symbol = find_word(model->dictionary, keys->entry[idx]);
+		return symbol;
 	    }
-	    ++i;
-	    if(i==keys->size) i=0;
-	    if(i==stop) return(symbol);
+	    // ++idx; if (idx == keys->size) idx = 0;
+	    idx = (idx+1) % keys->size;
+	    if (idx == stop) return symbol;
 	}
     }
 
-    return(symbol);
+    return symbol;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2707,16 +2766,16 @@ SWAP *new_swap(void)
 {
     SWAP *list;
 
-    list=(SWAP *)malloc(sizeof(SWAP));
-    if(list==NULL) {
+    list = malloc(sizeof *list);
+    if (list == NULL) {
 	error("new_swap", "Unable to allocate swap");
-	return(NULL);
+	return NULL;
     }
-    list->size=0;
-    list->from=NULL;
-    list->to=NULL;
+    list->size = 0;
+    list->from = NULL;
+    list->to = NULL;
 
-    return(list);
+    return list;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2728,40 +2787,24 @@ SWAP *new_swap(void)
  */
 void add_swap(SWAP *list, char *s, char *d)
 {
-    list->size+=1;
+    list->size += 1;
 
-    if(list->from==NULL) {
-	list->from=(STRING *)malloc(sizeof(STRING));
-	if(list->from==NULL) {
-	    error("add_swap", "Unable to allocate list->from");
-	    return;
-	}
-    }
-
-    if(list->to==NULL) {
-	list->to=(STRING *)malloc(sizeof(STRING));
-	if(list->to==NULL) {
-	    error("add_swap", "Unable to allocate list->to");
-	    return;
-	}
-    }
-
-    list->from=(STRING *)realloc(list->from, sizeof(STRING)*(list->size));
-    if(list->from==NULL) {
+    list->from = realloc(list->from, list->size *sizeof *list->from);
+    if (list->from == NULL) {
 	error("add_swap", "Unable to reallocate from");
 	return;
     }
 
-    list->to=(STRING *)realloc(list->to, sizeof(STRING)*(list->size));
-    if(list->to==NULL) {
+    list->to = realloc(list->to, list->size *sizeof *list->to);
+    if (list->to == NULL) {
 	error("add_swap", "Unable to reallocate to");
 	return;
     }
 
-    list->from[list->size-1].length=strlen(s);
-    list->from[list->size-1].word=strdup(s);
-    list->to[list->size-1].length=strlen(d);
-    list->to[list->size-1].word=strdup(d);
+    list->from[list->size-1].length = strlen(s);
+    list->from[list->size-1].word = strdup(s);
+    list->to[list->size-1].length = strlen(d);
+    list->to[list->size-1].word = strdup(d);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2774,30 +2817,28 @@ void add_swap(SWAP *list, char *s, char *d)
 SWAP *initialize_swap(char *filename)
 {
     SWAP *list;
-    FILE *file=NULL;
+    FILE *file = NULL;
     char buffer[1024];
     char *from;
     char *to;
 
-    list=new_swap();
+    list = new_swap();
 
-    if(filename==NULL) return(list);
+    if (filename == NULL) return list;
 
-    file=fopen(filename, "r");
-    if(file==NULL) return(list);
+    file = fopen(filename, "r");
+    if (file == NULL) return list;
 
-    while(!feof(file)) {
-
-	if(fgets(buffer, 1024, file)==NULL) break;
-	if(buffer[0]=='#') continue;
-	from=strtok(buffer, "\t ");
-	to=strtok(NULL, "\t \n#");
+    while (fgets(buffer, sizeof buffer, file) ) {
+	if (buffer[0] == '#') continue;
+	from = strtok(buffer, "\t ");
+	to = strtok(NULL, "\t \n#");
 
 	add_swap(list, from, to);
     }
 
     fclose(file);
-    return(list);
+    return list;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2806,9 +2847,9 @@ void free_swap(SWAP *swap)
 {
     register int i;
 
-    if(swap==NULL) return;
+    if (swap == NULL) return;
 
-    for(i=0; i<swap->size; ++i) {
+    for(i = 0; i<swap->size; ++i) {
 	free_word(swap->from[i]);
 	free_word(swap->to[i]);
     }
@@ -2827,33 +2868,30 @@ void free_swap(SWAP *swap)
 DICTIONARY *initialize_list(char *filename)
 {
     DICTIONARY *list;
-    FILE *file=NULL;
+    FILE *file = NULL;
     STRING word;
     char *string;
     char buffer[1024];
 
-    list=new_dictionary();
+    list = new_dictionary();
 
-    if(filename==NULL) return(list);
+    if (filename == NULL) return list;
 
-    file=fopen(filename, "r");
-    if(file==NULL) return(list);
+    file = fopen(filename, "r");
+    if (file == NULL) return list;
 
-    while(!feof(file)) {
+    while( fgets(buffer, sizeof buffer, file) ) {
+	if (buffer[0] == '#') continue;
+	string = strtok(buffer, "\t \n#");
+	if (string == NULL || !*string) continue;
 
-	if(fgets(buffer, 1024, file)==NULL) break;
-	if(buffer[0]=='#') continue;
-	string=strtok(buffer, "\t \n#");
-
-	if((string!=NULL)&&(strlen(string)>0)) {
-	    word.length=strlen(string);
-	    word.word=strdup(buffer);
-	    add_word(list, word);
-	}
+	word.length = strlen(string);
+	word.word = strdup(buffer);
+	add_word(list, word);
     }
 
     fclose(file);
-    return(list);
+    return list;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2865,21 +2903,22 @@ DICTIONARY *initialize_list(char *filename)
  */
 void delay(char *string)
 {
-    register int i;
+    size_t i,len;
 
     /*
      *		Don't simulate typing if the feature is turned off
      */
-    if(typing_delay==FALSE)	{
-	fprintf(stdout, string);
+    if (typing_delay == FALSE)	{
+	fprintf(stdout, "%s", string);
 	return;
     }
 
     /*
      *		Display the entire string, one character at a time
      */
-    for(i=0; i<(int)strlen(string)-1; ++i) typein(string[i]);
-    usleep((D_THINK+rnd(V_THINK)-rnd(V_THINK))/2);
+    len = strlen(string);
+    for(i = 0; i < len-1; ++i) typein(string[i]);
+    usleep((D_THINK+urnd(V_THINK)-urnd(V_THINK))/2);
     typein(string[i]);
 }
 
@@ -2895,15 +2934,15 @@ void typein(char c)
     /*
      *		Standard keyboard delay
      */
-    usleep(D_KEY+rnd(V_KEY)-rnd(V_KEY));
+    usleep(D_KEY+urnd(V_KEY)-urnd(V_KEY));
     fprintf(stdout, "%c", c);
     fflush(stdout);
 
     /*
      *		A random thinking delay
      */
-    if((!isalnum(c))&&((rnd(100))<P_THINK))
-	usleep(D_THINK+rnd(V_THINK)-rnd(V_THINK));
+    if ((!isalnum(c))&&((urnd(100))<P_THINK))
+	usleep(D_THINK+urnd(V_THINK)-urnd(V_THINK));
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2915,11 +2954,11 @@ void typein(char c)
  */
 void ignore(int sig)
 {
-    if(sig!=0) warn("ignore", "MegaHAL received signal %d", sig);
+    if (sig != 0) warn("ignore", "MegaHAL received signal %d", sig);
 
 #if !defined(DOS)
-    //    signal(SIGINT, saveandexit);
-    //    signal(SIGILL, die);
+    // signal(SIGINT, saveandexit);
+    // signal(SIGILL, die);
     //    signal(SIGSEGV, die);
 #endif
     //    signal(SIGFPE, die);
@@ -2946,22 +2985,22 @@ void die(int sig)
  *
  *		Purpose:		Return a random integer between 0 and range-1.
  */
-int rnd(int range)
+unsigned int urnd(unsigned int range)
 {
-    static bool flag=FALSE;
+    static bool flag = FALSE;
 
-    if(flag==FALSE) {
+    if (flag == FALSE) {
 #if defined(__mac_os) || defined(DOS)
 	srand(time(NULL));
 #else
 	srand48(time(NULL));
 #endif
     }
-    flag=TRUE;
+    flag = TRUE;
 #if defined(__mac_os) || defined(DOS)
-    return(rand()%range);
+    return rand()%range;
 #else
-    return(floor(drand48()*(double)(range)));
+    return floor(drand48()*(double)(range));
 #endif
 }
 
@@ -2982,7 +3021,7 @@ void usleep(int period)
 {
     clock_t goal;
 
-    goal=(clock_t)(period*CLOCKS_PER_SEC)/(clock_t)1000000+clock();
+    goal =(clock_t)(period*CLOCKS_PER_SEC)/(clock_t)1000000+clock();
     while(goal>clock());
 }
 #endif
@@ -2997,11 +3036,11 @@ void usleep(int period)
 #ifdef __mac_os
 char *strdup(const char *str)
 {
-    char *rval=(char *)malloc(strlen(str)+1);
+    char *rval = malloc(strlen(str)+1);
 
-    if(rval!=NULL) strcpy(rval, str);
+    if (rval != NULL) strcpy(rval, str);
 
-    return(rval);
+    return rval;
 }
 #endif
 
@@ -3021,8 +3060,8 @@ bool initialize_speech(void)
 
     err = Gestalt(gestaltSpeechAttr, &response);
 
-    if(!err) {
-	if(response & (1L << gestaltSpeechMgrPresent)) {
+    if (!err) {
+	if (response & (1L << gestaltSpeechMgrPresent)) {
 	    speechExists = true;
 	}
     }
@@ -3041,7 +3080,7 @@ void changevoice(DICTIONARY* words, int position)
 {
 #ifdef __mac_os
     register int i, index;
-    STRING word={ 1, "#" };
+    STRING word ={ 1, "#" };
     char buffer[80];
     VoiceSpec voiceSpec;
     VoiceDescription info;
@@ -3051,10 +3090,10 @@ void changevoice(DICTIONARY* words, int position)
     /*
      *		If there is less than 4 words, no voice specified.
      */
-    if(words->size<=4) return;
+    if (words->size <= 4) return;
 
-    for(i=0; i<words->size-4; ++i)
-	if(wordcmp(word, words->entry[i])==0) {
+    for(i = 0; i<words->size-4; ++i)
+	if (!wordcmp(word, words->entry[i]) ) {
 
 	    err = CountVoices(&voiceCount);
 	    if (!err && voiceCount) {
@@ -3066,7 +3105,7 @@ void changevoice(DICTIONARY* words, int position)
 		    if (err) continue;
 
 
-		    for (temp= info.name; *temp; temp++) {
+		    for (temp =  info.name; *temp; temp++) {
 			if (*temp == ' ')
 			    *temp = '_';
 		    }
@@ -3075,7 +3114,8 @@ void changevoice(DICTIONARY* words, int position)
 		     *		skip command and get voice name
 		     */
 		    index = i + 3;
-		    strcpy(buffer, words->entry[index].word);
+		    memcpy(buffer, words->entry[index].word, sizeof buffer);
+		    buffer[(sizeof buffer) -1] = 0;
 		    c2pstr(buffer);
 		    // compare ignoring case
 		    if (EqualString((StringPtr)buffer, info.name, false, false)) {
@@ -3114,7 +3154,7 @@ void listvoices(void)
     unsigned char* temp;
     OSErr err;
 
-    if(gSpeechExists) {
+    if (gSpeechExists) {
 	err = CountVoices(&voiceCount);
 	if (!err && voiceCount) {
 	    for (count = 1; count <= voiceCount; count++) {
@@ -3126,7 +3166,7 @@ void listvoices(void)
 		if (err) continue;
 
 		p2cstr(info.name);
-		for (temp= info.name; *temp; temp++)
+		for (temp =  info.name; *temp; temp++)
 		    if (*temp == ' ')
 			*temp = '_';
 		printf("%s\n",info.name);
@@ -3143,9 +3183,9 @@ void listvoices(void)
  */
 void speak(char *output)
 {
-    if(speech==FALSE) return;
+    if (speech == FALSE) return;
 #ifdef __mac_os
-    if(gSpeechExists) {
+    if (gSpeechExists) {
 	OSErr err;
 
 	if (gSpeechChannel)
@@ -3168,45 +3208,46 @@ void speak(char *output)
  */
 bool progress(char *message, int done, int total)
 {
-    static int last=0;
-    static bool first=FALSE;
+    static int last = 0;
+    static bool first = FALSE;
 
     /*
      *    We have already hit 100%, and a newline has been printed, so nothing
      *    needs to be done.
      */
-    if((done*100/total==100)&&(first==FALSE)) return(TRUE);
+    if (done*100/total == 100 && first == FALSE) return TRUE;
 
     /*
      *    Nothing has changed since the last time this function was called,
      *    so do nothing, unless it's the first time!
      */
-    if(done*100/total==last) {
-	if((done==0)&&(first==FALSE)) {
+    if (done*100/total == last) {
+	if (done == 0 &&first == FALSE) {
 	    fprintf(stderr, "%s: %3d%%", message, done*100/total);
-	    first=TRUE;
+	    first = TRUE;
 	}
-	return(TRUE);
+	return TRUE;
     }
 
     /*
      *    Erase what we printed last time, and print the new percentage.
      */
-    last=done*100/total;
+    last = done*100/total;
 
-    if(done>0) fprintf(stderr, "%c%c%c%c", 8, 8, 8, 8);
+    // if (done>0) fprintf(stderr, "%c%c%c%c", 8, 8, 8, 8);
+    if (done>0) fprintf(stderr, "\b\b\b\b");
     fprintf(stderr, "%3d%%", done*100/total);
 
     /*
      *    We have hit 100%, so reset static variables and print a newline.
      */
-    if(last==100) {
-	first=FALSE;
-	last=0;
+    if (last == 100) {
+	first = FALSE;
+	last = 0;
 	fprintf(stderr, "\n");
     }
 
-    return(TRUE);
+    return TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3215,7 +3256,7 @@ void help(void)
 {
     unsigned int j;
 
-    for(j=0; j<COMMAND_SIZE; ++j) {
+    for(j = 0; j<COMMAND_SIZE; ++j) {
 	printf("#%-7s: %s\n", command[j].word.word, command[j].helpstring);
     }
 }
@@ -3225,32 +3266,29 @@ void help(void)
 void load_personality(MODEL **model)
 {
     FILE *file;
-    static char *filename=NULL;
-
-    if(filename==NULL) filename=(char *)malloc(sizeof(char)*1);
+    static char *filename = NULL;
 
     /*
      *		Allocate memory for the filename
      */
-    filename=(char *)realloc(filename,
-			     sizeof(char)*(strlen(directory)+strlen(SEP)+12));
-    if(filename==NULL) error("load_personality","Unable to allocate filename");
+    filename = realloc(filename, strlen(directory)+strlen(SEP)+12);
+    if (filename == NULL) error("load_personality","Unable to allocate filename");
 
     /*
      *		Check to see if the brain exists
      */
 
-    if(strcmp(directory, last)!=0) {
+    if (strcmp(directory, last_directory) != 0) {
 	sprintf(filename, "%s%smegahal.brn", directory, SEP);
-	file=fopen(filename, "r");
-	if(file==NULL) {
+	file = fopen(filename, "r");
+	if (file == NULL) {
 	    sprintf(filename, "%s%smegahal.trn", directory, SEP);
-	    file=fopen(filename, "r");
-	    if(file==NULL) {
+	    file = fopen(filename, "r");
+	    if (file == NULL) {
 		fprintf(stdout, "Unable to change MegaHAL personality to \"%s\".\n"
-			"Reverting to MegaHAL personality \"%s\".\n", directory, last);
+			"Reverting to MegaHAL personality \"%s\".\n", directory, last_directory);
 		free(directory);
-		directory=strdup(last);
+		directory = strdup(last_directory);
 		return;
 	    }
 	}
@@ -3273,14 +3311,14 @@ void load_personality(MODEL **model)
     /*
      *		Create a language model.
      */
-    *model=new_model(order);
+    *model = new_model(order);
 
     /*
      *		Train the model on a text if one exists
      */
 
     sprintf(filename, "%s%smegahal.brn", directory, SEP);
-    if(load_model(filename, *model)==FALSE) {
+    if (load_model(filename, *model) == FALSE) {
 	sprintf(filename, "%s%smegahal.trn", directory, SEP);
 	train(*model, filename);
     }
@@ -3290,13 +3328,13 @@ void load_personality(MODEL **model)
      *		greeting keywords and swap keywords
      */
     sprintf(filename, "%s%smegahal.ban", directory, SEP);
-    ban=initialize_list(filename);
+    ban = initialize_list(filename);
     sprintf(filename, "%s%smegahal.aux", directory, SEP);
-    aux=initialize_list(filename);
+    aux = initialize_list(filename);
     sprintf(filename, "%s%smegahal.grt", directory, SEP);
-    grt=initialize_list(filename);
+    grt = initialize_list(filename);
     sprintf(filename, "%s%smegahal.swp", directory, SEP);
-    swp=initialize_swap(filename);
+    swp = initialize_swap(filename);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3304,29 +3342,28 @@ void load_personality(MODEL **model)
 void change_personality(DICTIONARY *command, unsigned int position, MODEL **model)
 {
 
-    if(directory == NULL) {
-	directory = (char *)malloc(sizeof(char)*(strlen(DEFAULT)+1));
-	if(directory == NULL) {
+    if (directory == NULL) {
+	directory = malloc(strlen(DEFAULT)+1);
+	if (directory == NULL) {
 	    error("change_personality", "Unable to allocate directory");
 	} else {
 	    strcpy(directory, DEFAULT);
 	}
     }
 
-    if(last == NULL) {
-	last = strdup(directory);
+    if (last_directory == NULL) {
+	last_directory = strdup(directory);
     }
 
-    if((command == NULL)||((position+2)>=command->size)) {
+    if (command == NULL || position+2 >= command->size) {
 	/* no dir set, so we leave it to whatever was set above */
     } else {
-        directory=(char *)realloc(directory,
-                                  sizeof(char)*(command->entry[position+2].length+1));
-        if(directory == NULL)
+        directory = realloc(directory, command->entry[position+2].length+1);
+        if (directory == NULL)
             error("change_personality", "Unable to allocate directory");
         strncpy(directory, command->entry[position+2].word,
                 command->entry[position+2].length);
-        directory[command->entry[position+2].length]='\0';
+        directory[command->entry[position+2].length] ='\0';
     }
 
     load_personality(model);
@@ -3338,10 +3375,10 @@ void free_words(DICTIONARY *words)
 {
     register unsigned int i;
 
-    if(words == NULL) return;
+    if (words == NULL) return;
 
-    if(words->entry != NULL)
-	for(i=0; i<words->size; ++i) free_word(words->entry[i]);
+    if (words->entry != NULL)
+	for(i = 0; i < words->size; ++i) free_word(words->entry[i]);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3504,3 +3541,18 @@ void free_word(STRING word)
 
 /*===========================================================================*/
 
+
+
+#ifdef WANT_HASHTAB
+unsigned hash_mem(void *dat, size_t len)
+{
+unsigned char *str = (unsigned char*) dat;
+unsigned val=0;
+size_t idx;
+
+for(idx=0; idx < len; idx++ )	{
+	val ^= (val >> 2) ^ (val <<5) ^ (val << 13) ^ str[idx] ^ 0x80001801;
+	}
+return val;
+}
+#endif
