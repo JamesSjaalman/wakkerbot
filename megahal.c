@@ -131,9 +131,8 @@
 #define MIN(a,b) ((a)<(b))?(a):(b)
 
 #define COOKIE "MegaHALv8"
-#define TIMEOUT 10
-
-#define DEFAULT "."
+#define TIMEOUT 4
+#define DEFAULT_DIR "."
 
 #define STATIC static
 #define STATIC /* EMPTY:: For profiling, avoid inlining of STATIC function. */
@@ -214,8 +213,10 @@ typedef struct {
 
 typedef struct {
     BYTE2 size;
-    STRING *from;
-    STRING *to;
+    struct {
+    	STRING from;
+    	STRING to;
+	} *pairs;
 } SWAP;
 
 struct treeslot {
@@ -275,7 +276,7 @@ static DICTIONARY *aux = NULL;
 /*static DICTIONARY *fin = NULL; not used */
 static DICTIONARY *grt = NULL;
 
-static SWAP *swp = NULL;
+static SWAP *glob_swp = NULL;
 static bool used_key;
 static char *directory = NULL;
 static char *last_directory = NULL;
@@ -2347,9 +2348,9 @@ DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
 	 *		skip over it.
 	 */
 	swapped = 0;
-	for(j = 0; j < swp->size; ++j)
-	    if (!wordcmp(swp->from[j], words->entry[i].string ) ) {
-		add_key(model, keys, swp->to[j]);
+	for(j = 0; j < glob_swp->size; ++j)
+	    if (!wordcmp(glob_swp->pairs[j].from , words->entry[i].string ) ) {
+		add_key(model, keys, glob_swp->pairs[j].to );
 		swapped++;
 	    }
 	if (!swapped) add_key(model, keys, words->entry[i].string );
@@ -2358,9 +2359,9 @@ DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
     if (keys->size>0) for(i = 0; i<words->size; ++i) {
 
 	swapped = 0;
-	for(j = 0; j < swp->size; ++j)
-	    if (!wordcmp(swp->from[j], words->entry[i].string )) {
-		add_aux(model, keys, swp->to[j]);
+	for(j = 0; j < glob_swp->size; ++j)
+	    if (!wordcmp(glob_swp->pairs[j].from, words->entry[i].string )) {
+		add_aux(model, keys, glob_swp->pairs[j].to );
 		swapped++;
 	    }
 	if (!swapped) add_aux(model, keys, words->entry[i].string );
@@ -2767,18 +2768,17 @@ WordNum seed(MODEL *model, DICTIONARY *keys)
  */
 SWAP *new_swap(void)
 {
-    SWAP *list;
+    SWAP *swp;
 
-    list = malloc(sizeof *list);
-    if (list == NULL) {
+    swp = malloc(sizeof *swp);
+    if (swp == NULL) {
 	error("new_swap", "Unable to allocate swap");
 	return NULL;
     }
-    list->size = 0;
-    list->from = NULL;
-    list->to = NULL;
+    swp->size = 0;
+    swp->pairs = NULL;
 
-    return list;
+    return swp;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2792,22 +2792,22 @@ void add_swap(SWAP *list, char *s, char *d)
 {
     list->size += 1;
 
-    list->from = realloc(list->from, list->size *sizeof *list->from);
-    if (list->from == NULL) {
-	error("add_swap", "Unable to reallocate from");
+    // list->from = realloc(list->from, list->size *sizeof *list->from);
+    // if (list->from == NULL) {
+	// error("add_swap", "Unable to reallocate from");
+	// return;
+    // }
+
+    list->pairs = realloc(list->pairs, list->size *sizeof *list->pairs);
+    if (list->pairs == NULL) {
+	error("add_swap", "Unable to reallocate pairs");
 	return;
     }
 
-    list->to = realloc(list->to, list->size *sizeof *list->to);
-    if (list->to == NULL) {
-	error("add_swap", "Unable to reallocate to");
-	return;
-    }
-
-    list->from[list->size-1].length = strlen(s);
-    list->from[list->size-1].word = strdup(s);
-    list->to[list->size-1].length = strlen(d);
-    list->to[list->size-1].word = strdup(d);
+    list->pairs[list->size-1].from.length = strlen(s);
+    list->pairs[list->size-1].from.word = strdup(s);
+    list->pairs[list->size-1].to.length = strlen(d);
+    list->pairs[list->size-1].to.word = strdup(d);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2848,16 +2848,17 @@ SWAP *initialize_swap(char *filename)
 
 void free_swap(SWAP *swap)
 {
-    register int i;
+    register unsigned int i;
 
     if (swap == NULL) return;
 
-    for(i = 0; i<swap->size; ++i) {
-	free_word(swap->from[i]);
-	free_word(swap->to[i]);
+    for(i = 0; i < swap->size; ++i) {
+	free_word(swap->pairs[i].from);
+	free_word(swap->pairs[i].to);
     }
-    free(swap->from);
-    free(swap->to);
+    free(swap->pairs);
+    // free(swap->from);
+    // free(swap->to);
     free(swap);
 }
 
@@ -3309,7 +3310,7 @@ void load_personality(MODEL **model)
     free_dictionary(aux);
     free_words(grt);
     free_dictionary(grt);
-    free_swap(swp);
+    free_swap(glob_swp);
 
     /*
      *		Create a language model.
@@ -3337,7 +3338,7 @@ void load_personality(MODEL **model)
     sprintf(filename, "%s%smegahal.grt", directory, SEP);
     grt = initialize_list(filename);
     sprintf(filename, "%s%smegahal.swp", directory, SEP);
-    swp = initialize_swap(filename);
+    glob_swp = initialize_swap(filename);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3346,11 +3347,11 @@ void change_personality(DICTIONARY *command, unsigned int position, MODEL **mode
 {
 
     if (directory == NULL) {
-	directory = malloc(strlen(DEFAULT)+1);
+	directory = malloc(strlen(DEFAULT_DIR)+1);
 	if (directory == NULL) {
 	    error("change_personality", "Unable to allocate directory");
 	} else {
-	    strcpy(directory, DEFAULT);
+	    strcpy(directory, DEFAULT_DIR);
 	}
     }
 
