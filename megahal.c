@@ -103,21 +103,27 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <getopt.h>
+
 #if !defined(AMIGA) && !defined(__mac_os)
 #include <malloc.h>
 #endif
+
 #include <string.h>
+#include <strings.h> /* strncasecmp */
 #include <signal.h>
 #include <math.h>
 #include <time.h>
 #include <ctype.h>
+
 #if defined(__mac_os)
 #include <types.h>
 #include <Speech.h>
 #else
 #include <sys/types.h>
 #endif
+
 #include "megahal.h"
+
 #if defined(DEBUG)
 #include "debug.h"
 #endif
@@ -131,7 +137,7 @@
 #define MIN(a,b) ((a)<(b))?(a):(b)
 /* Changed Cookie and restarted version numbering, because the sizes were changed */
 #define COOKIE "Wakker0.0"
-#define TIMEOUT 4
+#define TIMEOUT 10
 #define DEFAULT_DIR "."
 
 #define STATIC static
@@ -318,19 +324,20 @@ STATIC void add_key(MODEL *model, DICTIONARY *keys, STRING word);
 STATIC void add_node(TREE *tree, TREE *node, int position);
 STATIC void add_swap(SWAP *list, char *s, char *d);
 STATIC TREE *add_symbol(TREE *, WordNum);
-STATIC WordNum add_word(DICTIONARY *dict, STRING word);
+STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word);
+STATIC WordNum add_word_nofuzz(DICTIONARY *dict, STRING word);
 STATIC WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words);
 STATIC bool boundary(char *string, size_t position);
 
 STATIC void capitalize(char *);
-STATIC void changevoice(DICTIONARY *, int);
+STATIC void changevoice(DICTIONARY *, unsigned int);
 STATIC void change_personality(DICTIONARY *, unsigned int, MODEL **);
 STATIC void delay(char *);
 STATIC void die(int);
 STATIC bool dissimilar(DICTIONARY *, DICTIONARY *);
 STATIC void error(char *, char *, ...);
 STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words);
-STATIC COMMAND_WORDS execute_command(DICTIONARY *, int *);
+STATIC COMMAND_WORDS execute_command(DICTIONARY *, unsigned int *position);
 STATIC void exithal(void);
 STATIC TREE *find_symbol(TREE *node, WordNum symbol);
 STATIC TREE *find_symbol_add(TREE *, WordNum);
@@ -343,7 +350,7 @@ STATIC bool initialize_error(char *);
 STATIC bool initialize_speech(void);
 #endif
 STATIC bool initialize_status(char *);
-STATIC void learn(MODEL *, DICTIONARY *);
+STATIC void learn_from_input(MODEL *, DICTIONARY *);
 STATIC void listvoices(void);
 STATIC void make_greeting(DICTIONARY *);
 STATIC void make_words(char *, DICTIONARY *);
@@ -382,7 +389,7 @@ STATIC char *make_output(DICTIONARY *);
 STATIC MODEL *new_model(int);
 STATIC TREE *new_node(void);
 STATIC SWAP *new_swap(void);
-STATIC STRING new_word(char *str, size_t len);
+STATIC STRING new_string(char *str, size_t len);
 STATIC bool print_header(FILE *);
 bool progress(char *message, int done, int total);
 STATIC DICTIONARY *reply(MODEL *, DICTIONARY *);
@@ -509,7 +516,7 @@ char *megahal_do_reply(char *input, int log)
 
     make_words(input, glob_words);
 
-    learn(glob_model, glob_words);
+    learn_from_input(glob_model, glob_words);
     output = generate_reply(glob_model, glob_words);
     // capitalize(output);
     return output;
@@ -531,7 +538,7 @@ void megahal_learn_no_reply(char *input, int log)
 
     make_words(input, glob_words);
 
-    learn(glob_model, glob_words);
+    learn_from_input(glob_model, glob_words);
 }
 
 /*
@@ -592,17 +599,19 @@ char *megahal_input(char *prompt)
 
 int megahal_command(char *input)
 {
-    int position = 0;
+    unsigned int position = 0;
     char *output;
 
     make_words(input,glob_words);
     switch(execute_command(glob_words, &position)) {
     case EXIT:
 	exithal();
+	return 1;
 	break;
     case QUIT:
 	save_model("megahal.brn", glob_model);
 	exithal();
+	return 2;
 	break;
     case SAVE:
 	save_model("megahal.brn", glob_model);
@@ -664,7 +673,7 @@ void megahal_cleanup(void)
  *		Purpose:		Detect whether the user has typed a command, and
  *						execute the corresponding function.
  */
-COMMAND_WORDS execute_command(DICTIONARY *words, int *position)
+COMMAND_WORDS execute_command(DICTIONARY *words, unsigned int *position)
 {
     unsigned int i;
     unsigned int j;
@@ -682,18 +691,19 @@ COMMAND_WORDS execute_command(DICTIONARY *words, int *position)
      *		Following word is a number, then change the judge.  Otherwise,
      *		continue the search.
      */
-    for(i = 0; i < words->size-1; ++i)
+    for(i = 0; i < words->size-1; ++i) {
 	/*
 	 *		The command prefix was found.
 	 */
-	if (words->entry[i].string.word[words->entry[i].string.length - 1] == '#') {
+	if (words->entry[i].string.word[words->entry[i].string.length - 1] != '#') continue;
 	    /*
 	     *		Look for a command word.
 	     */
-	    for(j = 0; j < COMMAND_SIZE; ++j)
-		if (!wordcmp(command[j].word, words->entry[i + 1].string) ) {
-		    *position = i + 1;
-		    return command[j].command;
+	for(j = 0; j < COMMAND_SIZE; ++j)
+	// if (!wordcmp(command[j].word, words->entry[i + 1].string) ) {
+	if (!strncasecmp(command[j].word.word, words->entry[i + 1].string.word, words->entry[i + 1].string.length) ) {
+	    *position = i + 1;
+	    return command[j].command;
 		}
 	}
 
@@ -738,16 +748,16 @@ char *read_input(char *prompt)
 {
     static char *input = NULL;
     static size_t size=0;
-    bool finish;
+    bool seen_eol;
     size_t length;
     int c;
 
     /*
-     *		Perform some initializations.  The finish boolean variable is used
+     *		Perform some initializations.  The seen_eol boolean variable is used
      *		to detect a double line-feed, while length contains the number of
      *		characters in the input string.
      */
-    finish = FALSE;
+    seen_eol = FALSE;
     length = 0;
 
     /*
@@ -770,28 +780,30 @@ char *read_input(char *prompt)
 	c = getc(stdin);
 
 	/*
-	 *		If the character is a line-feed, then set the finish variable
+	 *		If the character is a line-feed, then set the seen_eol variable
 	 *		to TRUE.  If it already is TRUE, then this is a double line-feed,
 	 *		in which case we should exit.  After a line-feed, display the
 	 *		prompt again, and set the character to the space character, as
 	 *		we don't permit linefeeds to appear in the input.
 	 */
+	if (c == -1 ) {
+	    if (seen_eol == TRUE) break; else return NULL;
+		}
 	if (c == -1 || c == '\n') {
-	    if (finish == TRUE) break;
+	    if (seen_eol == TRUE) break;
 	    if (prompt) { fprintf(stdout, "%s", prompt); fflush(stdout); }
-	    finish = TRUE;
+	    seen_eol = TRUE;
 	    c = ' ';
 	} else {
-	    finish = FALSE;
+	    seen_eol = FALSE;
 	}
 
 	/*
 	 *		Re-allocate the input string so that it can hold one more
 	 *		character.
 	 */
-	// if (finish && !length) return NULL;
+	if (seen_eol && !length) return NULL;
 	if (length +2 >= size) {
-		fprintf(stderr, "Resize: %u\n", size);
 		input = realloc(input, size? 2*size: 16);
 		if (input) size = size ? 2 * size : 16;
 		}
@@ -1080,6 +1092,27 @@ STATIC char *format_output(char *output)
 /*---------------------------------------------------------------------------*/
 
 /*
+ *		Function:	Add_Word_Nofuzz
+ *
+ *		Purpose:		Append a word to a dictionary, and return the identifier assigned to the word.
+ *						The index is not searched or updated, and the new word is not dupped, only referenced.
+ */
+STATIC WordNum add_word_nofuzz(DICTIONARY *dict, STRING word)
+{
+dict->entry = realloc(dict->entry, (dict->size+1)*sizeof *dict->entry);
+
+if (dict->entry == NULL) {
+	error("add_word_nofuzz", "Unable to reallocate dictionary");
+	return 0 ;
+	}
+
+dict->entry[dict->size].string = word;
+dict->size += 1;
+return dict->size - 1;
+}
+/*---------------------------------------------------------------------------*/
+
+/*
  *		Function:	Add_Word
  *
  *		Purpose:		Add a word to a dictionary, and return the identifier
@@ -1087,7 +1120,7 @@ STATIC char *format_output(char *output)
  *						the dictionary, then return its current identifier
  *						without adding it again.
  */
-WordNum add_word(DICTIONARY *dict, STRING word)
+STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word)
 {
 #ifdef WANT_HASHTAB
 unsigned hash,slot, ii;
@@ -1110,7 +1143,7 @@ hash = hash_mem(word.word, word.length);
     dict->size += 1;
     if (dict->size  == 0) {
     	dict->size -= 1;
-	error("add_word", "Size overflow.");
+	error("add_word_dodup", "Size overflow.");
         goto fail;
     }
 
@@ -1119,7 +1152,7 @@ hash = hash_mem(word.word, word.length);
      */
     dict->index = realloc(dict->index, dict->size * sizeof *dict->index );
     if (dict->index == NULL) {
-	error("add_word", "Unable to reallocate the index.");
+	error("add_word_dodup", "Unable to reallocate the index.");
 	goto fail;
     }
 
@@ -1128,33 +1161,27 @@ hash = hash_mem(word.word, word.length);
      */
     dict->entry = realloc(dict->entry, dict->size * sizeof *dict->entry);
     if (dict->entry == NULL) {
-	error("add_word", "Unable to reallocate the dictionary to %d elements.", dict->size);
+	error("add_word_dodup", "Unable to reallocate the dictionary to %d elements.", dict->size);
 	goto fail;
     }
 
     /*
      *		Copy the new word into the word array
      */
-    dict->entry[dict->size-1].string.length = word.length;
-    dict->entry[dict->size-1].string.word = malloc(word.length);
+    // dict->entry[dict->size-1].string.length = word.length;
+    // dict->entry[dict->size-1].string.word = malloc(word.length);
+    dict->entry[dict->size-1].string = new_string(word.word, word.length);
     if (dict->entry[dict->size-1].string.word == NULL) {
-	error("add_word", "Unable to allocate the word.");
+	error("add_word_dodup", "Unable to allocate the word.");
 	goto fail;
     }
-#if 0
-    for(i = 0; i < word.length; ++i)
-	dict->entry[dict->size-1].string.word[i] = word.word[i];
 
+    memcpy(dict->entry[dict->size-1].string.word, word.word, word.length);
     /*
      *		Shuffle the word index to keep it sorted alphabetically
      */
-    for(i = dict->size-1; i > position; --i)
-	dict->index[i] = dict->index[i-1];
-#else
-    memcpy(dict->entry[dict->size-1].string.word, word.word, word.length);
     // fprintf(stderr, "Pos=%u, newSiz=%u Move(%u,%u,%u)\n", position, dict->size, position+1, position, dict->size-1-position);
     memmove( & dict->index[position+1], & dict->index[position], (dict->size-1-position) * sizeof dict->index[0] );
-#endif
 
     /*
      *		Copy the new symbol identifier into the word index
@@ -1181,14 +1208,14 @@ fail:
  */
 unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find)
 {
-    unsigned position, min, max, middle;
+    unsigned min, max, middle;
     int compar;
 
     /*
      *		If the dictionary is empty, then obviously the word won't be found
      */
     if (dict->size == 0) {
-	position = 0;
+	middle = 0;
 	goto notfound;
     }
 
@@ -1206,24 +1233,23 @@ unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find)
 	 *		See whether the middle element of the search space is greater
 	 *		than, equal to, or less than the element being searched for.
 	 */
-	middle = (min+max)/2;
+	// middle = (min+max) / 2;
+	middle = min + (max-min) / 2;
 	compar = wordcmp(word, dict->entry[ dict->index[middle] ].string );
 	/*
 	 *		If it is equal then we have found the element.  Otherwise we
 	 *		can halve the search space accordingly.
 	 */
 	if (compar == 0) {
-	    position = middle;
 	    goto found;
 	} else if (compar > 0) {
 	    if (max == middle) {
-		position = middle+1;
+		middle += 1;
 		goto notfound;
 	    }
 	    min = middle+1;
 	} else {
 	    if (min == middle) {
-		position = middle;
 		goto notfound;
 	    }
 	    max = middle-1;
@@ -1232,11 +1258,11 @@ unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find)
 
 found:
     *find = TRUE;
-    return position;
+    return middle;
 
 notfound:
     *find = FALSE;
-    return position;
+    return middle;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1259,7 +1285,7 @@ WordNum find_word(DICTIONARY *dict, STRING string)
     else return 0;
 }
 
-STATIC STRING new_word(char *str, size_t len)
+STATIC STRING new_string(char *str, size_t len)
 {
 STRING this;
 
@@ -1292,8 +1318,8 @@ int wordcmp(STRING one, STRING two)
 
     siz = MIN(one.length,two.length);
 
-#include <strings.h>
-    i = strncasecmp(one.word, two.word, siz);
+    // i = strncasecmp(one.word, two.word, siz);
+    i = memcmp(one.word, two.word, siz);
     if (i) return i;
 
     if (one.length < two.length) return -1;
@@ -1374,8 +1400,8 @@ void initialize_dictionary(DICTIONARY *dict)
     STRING word ={ 7, "<ERROR>" };
     STRING end ={ 5, "<FIN>" };
 
-    (void)add_word(dict, word);
-    (void)add_word(dict, end);
+    add_word_dodup(dict, word);
+    add_word_dodup(dict, end);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1513,7 +1539,7 @@ void load_word(FILE *file, DICTIONARY *dict)
 	return;
     }
     fread(&word.word[0], word.length, 1, file);
-    add_word(dict, word);
+    add_word_dodup(dict, word);
     free(word.word);
 }
 
@@ -1835,7 +1861,7 @@ void initialize_context(MODEL *model)
  *
  *		Purpose:		Learn from the user's input.
  */
-void learn(MODEL *model, DICTIONARY *words)
+void learn_from_input(MODEL *model, DICTIONARY *words)
 {
     unsigned int i;
     int j;
@@ -1857,7 +1883,7 @@ void learn(MODEL *model, DICTIONARY *words)
 	 *		Add the symbol to the model's dictionary if necessary, and then
 	 *		update the forward model accordingly.
 	 */
-	symbol = add_word(model->dictionary, words->entry[i].string );
+	symbol = add_word_dodup(model->dictionary, words->entry[i].string );
 	update_model(model, symbol);
     }
     /*
@@ -1923,7 +1949,7 @@ void train(MODEL *model, char *filename)
 
 	// upper(buffer);
 	make_words(buffer, words);
-	learn(model, words);
+	learn_from_input(model, words);
 
 	progress(NULL, ftell(file), length);
 
@@ -1953,13 +1979,7 @@ void show_dictionary(DICTIONARY *dict)
     }
 
     for(i = 0; i < dict->size; ++i) {
-#if 0
-	for(j = 0; j < dict->entry[i].string.length; ++j)
-	    fprintf(file, "%c", dict->entry[i].string.word[j]);
-	fprintf(file, "\n");
-#else
 	    fprintf(file, "%*.*s\n", (int) dict->entry[i].string.length, (int) dict->entry[i].string.length, dict->entry[i].string.word );
-#endif
     }
 
     fclose(file);
@@ -2116,6 +2136,8 @@ void make_words(char *input, DICTIONARY *words)
 {
     size_t offset = 0;
     size_t len = strlen(input);
+    STRING word ; 
+    static STRING period = {1, "." }  ; 
 
     /*
      *		Clear the entries in the dictionary
@@ -2138,22 +2160,12 @@ void make_words(char *input, DICTIONARY *words)
 	 *		the current word.
 	 */
 	if (boundary(input, offset)) {
+		word.length = offset;
+		word.word = input;
 	    /*
 	     *		Add the word to the dictionary
 	     */
-#ifdef WANT_HASHTAB
-#else
-            words->entry = realloc(words->entry, (words->size+1)*sizeof *words->entry);
-
-	    if (words->entry == NULL) {
-		error("make_words", "Unable to reallocate dictionary");
-		return;
-	    }
-
-	    words->entry[words->size].string.length = offset;
-	    words->entry[words->size].string.word = input;
-	    words->size += 1;
-#endif
+	add_word_nofuzz(words, word);
 
 	    if (offset == len) break;
 	    input += offset;
@@ -2169,19 +2181,10 @@ void make_words(char *input, DICTIONARY *words)
      *		full-stop character.
      */
     if (isalnum(words->entry[words->size-1].string.word[0])) {
-	words->entry = realloc(words->entry, (words->size+1)*sizeof(*words->entry));
-	if (words->entry == NULL) {
-	    error("make_words", "Unable to reallocate dictionary");
-	    return;
-	}
-
-	words->entry[words->size].string.length = 1;
-	words->entry[words->size].string.word = ".";
-	++words->size;
+		add_word_nofuzz(words, period);
     }
     else if (!strchr("!.?", words->entry[words->size-1].string.word[ words->entry[words->size-1].string.length-1] )) {
-	words->entry[words->size-1].string.length = 1;
-	words->entry[words->size-1].string.word =".";
+	words->entry[words->size-1].string = period;
     }
 
     return;
@@ -2247,7 +2250,7 @@ void make_greeting(DICTIONARY *words)
 
     for(i = 0; i < words->size; ++i) free(words->entry[i].string.word);
     free_dictionary(words);
-    if (glob_grt->size > 0) (void)add_word(words, glob_grt->entry[ urnd(glob_grt->size) ].string );
+    if (glob_grt->size > 0) (void)add_word_dodup(words, glob_grt->entry[ urnd(glob_grt->size) ].string );
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2280,7 +2283,8 @@ char *generate_reply(MODEL *model, DICTIONARY *words)
      */
     if (!output_none ) {
 	output_none = malloc(40);
-	if (output_none) strcpy(output_none, "I don't know enough to answer you yet!");
+	// if (output_none) strcpy(output_none, "I don't know enough to answer you yet!");
+	if (output_none) strcpy(output_none, "Geert! doe er wat aan!");
     }
     output = output_none;
     if (dummy == NULL) dummy = new_dictionary();
@@ -2359,22 +2363,26 @@ DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
 	 *		character, or if it is in the exclusion array, then
 	 *		skip over it.
 	 */
+	if (!isalnum(words->entry[i].string.word[0] )) continue;
 	swapped = 0;
 	for(j = 0; j < glob_swp->size; ++j)
 	    if (!wordcmp(glob_swp->pairs[j].from , words->entry[i].string ) ) {
 		add_key(model, keys, glob_swp->pairs[j].to );
 		swapped++;
+		break;
 	    }
 	if (!swapped) add_key(model, keys, words->entry[i].string );
     }
 
     if (keys->size > 0) for(i = 0; i < words->size; ++i) {
 
+	if (!isalnum(words->entry[i].string.word[0] )) continue;
 	swapped = 0;
 	for(j = 0; j < glob_swp->size; ++j)
 	    if (!wordcmp(glob_swp->pairs[j].from, words->entry[i].string )) {
 		add_aux(model, keys, glob_swp->pairs[j].to );
 		swapped++;
+		break;
 	    }
 	if (!swapped) add_aux(model, keys, words->entry[i].string );
     }
@@ -2395,13 +2403,13 @@ void add_key(MODEL *model, DICTIONARY *keys, STRING word)
 
     symbol = find_word(model->dictionary, word);
     if (symbol == 0) return;
-    if (isalnum(word.word[0]) == 0) return;
+    if (!isalnum(word.word[0])) return;
     symbol = find_word(glob_ban, word);
     if (symbol != 0) return;
     symbol = find_word(glob_aux, word);
     if (symbol != 0) return;
 
-    add_word(keys, word);
+    add_word_dodup(keys, word);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2421,7 +2429,7 @@ void add_aux(MODEL *model, DICTIONARY *keys, STRING word)
     symbol = find_word(glob_aux, word);
     if (symbol == 0) return;
 
-    add_word(keys, word);
+    add_word_dodup(keys, word);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2464,15 +2472,18 @@ DICTIONARY *reply(MODEL *model, DICTIONARY *keys)
 	/*
 	 *		Append the symbol to the reply dictionary.
 	 */
+#if 0
    replies->entry = realloc(replies->entry, (replies->size+1) * sizeof *replies->entry);
 	if (replies->entry == NULL) {
 	    error("reply", "Unable to reallocate dictionary");
 	    return NULL;
 	}
 
-	replies->entry[replies->size].string = model->dictionary->entry[symbol].string;
+	replies->entry[ replies->size ].string = model->dictionary->entry[symbol].string;
 	replies->size += 1;
-
+#else
+	add_word_nofuzz(replies, model->dictionary->entry[ symbol ].string );
+#endif
 	/*
 	 *		Extend the current context of the model with the current symbol.
 	 */
@@ -2598,10 +2609,8 @@ double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 	update_context(model, symbol);
     }
 
-    // if (totcount >= 8) 
-    // if (totcount >= 3) entropy /= sqrt(totcount-1);
-    // if (totcount >= 16) 
-    if (totcount >= 2) entropy /= totcount;
+    if (totcount >= 8) entropy /= sqrt(totcount-1); 
+    if (totcount >= 16) entropy /= totcount;
 
     return entropy;
 }
@@ -2800,7 +2809,7 @@ SWAP *new_swap(void)
  *
  *		Purpose:		Add a new entry to the swap structure.
  */
-void add_swap(SWAP *list, char *s, char *d)
+void add_swap(SWAP *list, char *from, char *to)
 {
     list->size += 1;
 
@@ -2816,10 +2825,12 @@ void add_swap(SWAP *list, char *s, char *d)
 	return;
     }
 
-    list->pairs[list->size-1].from.length = strlen(s);
-    list->pairs[list->size-1].from.word = strdup(s);
-    list->pairs[list->size-1].to.length = strlen(d);
-    list->pairs[list->size-1].to.word = strdup(d);
+    // list->pairs[list->size-1].from.length = strlen(from);
+    // list->pairs[list->size-1].from.word = strdup(from);
+    // list->pairs[list->size-1].to.length = strlen(to);
+    // list->pairs[list->size-1].to.word = strdup(to);
+    list->pairs[list->size-1].from = new_string(from, 0);
+    list->pairs[list->size-1].to = new_string(to, 0);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2901,9 +2912,10 @@ DICTIONARY *read_dictionary(char *filename)
 	string = strtok(buffer, "\t \n#");
 	if (string == NULL || !*string) continue;
 
-	word.length = strlen(string);
-	word.word = strdup(buffer);
-	add_word(list, word);
+	// word.length = strlen(string);
+	// word.word = strdup(buffer);
+	word = new_string(buffer, 0);
+	add_word_dodup(list, word);
     }
 
     fclose(file);
@@ -3098,7 +3110,7 @@ bool initialize_speech(void)
  *
  *		Purpose:		change voice of speech output.
  */
-void changevoice(DICTIONARY* words, int position)
+void changevoice(DICTIONARY* words, unsigned int position)
 {
 #ifdef __mac_os
     register int i, index;
