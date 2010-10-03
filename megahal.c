@@ -143,9 +143,19 @@
 #define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 
+#undef WANT_DICT_HASH
+#define WANT_DICT_HASH 1
+
+#undef WANT_NODE_HASH
+#define WANT_NODE_HASH 1
+
+
+#define DICT_SIZE_INITIAL 4
+#define NODE_SIZE_INITIAL 2
+
 /* These are not used anymore 
  * Stuctures are padded anyway
- * , and the savings on disk are futile.
+ * , and the savings on disk space are futile.
  * */
 #define BYTE1 unsigned char
 #define BYTE2 unsigned short
@@ -190,10 +200,6 @@ typedef unsigned int Count;
 typedef unsigned int UsageCnt;
 typedef unsigned int HashVal;
 
-#undef WANT_HASHTAB
-#define WANT_HASHTAB 1
-
-
 typedef struct {
     StrLen length;
     char *word;
@@ -201,14 +207,14 @@ typedef struct {
 
 
 struct	dictslot {
-	WordNum head;
+	WordNum tabl;
 	WordNum link;
 	HashVal hash;
 	STRING string;
 	};
 typedef struct {
     DictSize size;
-#ifdef WANT_HASHTAB
+#ifdef WANT_DICT_HASH
     DictSize msize;
     struct dictslot *entry;
 #else
@@ -228,17 +234,21 @@ typedef struct {
 } SWAP;
 
 struct treeslot {
-    ChildIndex tab;
+#if WANT_NODE_HASH
+    ChildIndex tabl;
     ChildIndex link;
-    /* Hashvalue ? */
-    struct node *node;
+    HashVal hash;
+#endif
+    struct node *ptr;
 	};
 typedef struct node {
     UsageCnt usage;
     UsageCnt count;
     WordNum symbol;
+    ChildIndex msize;
     ChildIndex branch;
-    struct node **tree;
+    // struct node **tree;
+    struct treeslot *children;
 } TREE;
 
 typedef struct {
@@ -320,6 +330,8 @@ SpeechChannel gSpeechChannel = nil;
 STATIC void add_aux(MODEL *model, DICTIONARY *keys, STRING word);
 STATIC void add_key(MODEL *model, DICTIONARY *keys, STRING word);
 STATIC void add_node(TREE *tree, TREE *node, int position);
+STATIC int resize_tree(TREE *tree, unsigned newsize);
+
 STATIC void add_swap(SWAP *list, char *s, char *d);
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word);
@@ -394,10 +406,12 @@ STATIC DICTIONARY *one_reply(MODEL *, DICTIONARY *);
 STATIC void save_dictionary(FILE *, DICTIONARY *);
 STATIC void save_tree(FILE *, TREE *);
 STATIC void save_word(FILE *, STRING);
-#ifndef WANT_HASHTAB
+#ifndef WANT_DICT_HASH
 STATIC unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find);
 #endif
+#ifndef WANT_NODE_HASH
 STATIC unsigned int search_node(TREE *node, int symbol, bool *found_symbol);
+#endif
 STATIC WordNum seed(MODEL *, DICTIONARY *);
 
 STATIC void show_dictionary(DICTIONARY *);
@@ -412,8 +426,7 @@ STATIC int wordcmp(STRING one, STRING two);
 STATIC bool word_exists(DICTIONARY *, STRING);
 STATIC unsigned int urnd(unsigned int range);
 
-#ifdef WANT_HASHTAB
-#define DICT_SIZE_INITIAL 2
+#ifdef WANT_DICT_HASH
 #define WORD_NIL ((WordNum)-1)
 
 HashVal hash_mem(void *dat, size_t len);
@@ -425,6 +438,12 @@ STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize);
 STATIC void wipe_dictionary(DICTIONARY * dict, unsigned size);
 #endif
 
+#ifdef WANT_NODE_HASH
+#define CHILD_NIL ((ChildIndex)-1)
+
+ChildIndex *node_hnd(TREE *node, WordNum symbol);
+STATIC void format_children(TREE *node , unsigned size);
+#endif
 
 /* Function: setnoprompt
 
@@ -1112,13 +1131,13 @@ STATIC char *format_output(char *output)
  */
 STATIC WordNum add_word_nofuss(DICTIONARY *dict, STRING word)
 {
-#ifdef WANT_HASHTAB
+#ifdef WANT_DICT_HASH
 WordNum *wp;
 
 if (!dict) return 0; /* WP: should be WORD_NIL */
 
-if (dict->size >= dict->msize && double_dictionary(dict)) return NULL;
-wp = & dict->entry[ dict->size].head ;
+if (dict->size >= dict->msize && double_dictionary(dict)) return WORD_NIL;
+wp = & dict->entry[ dict->size].tabl ;
 
 *wp = dict->size++;
 dict->entry[*wp].string = word;
@@ -1155,7 +1174,7 @@ return dict->size - 1;
  */
 STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word)
 {
-#ifdef WANT_HASHTAB
+#ifdef WANT_DICT_HASH
 WordNum *wp;
 
 wp = dict_hnd(dict, word);
@@ -1251,7 +1270,7 @@ fail:
  *						position in the index if found, or the position where it
  *						should be inserted otherwise.
  */
-#ifndef WANT_HASHTAB
+#ifndef WANT_DICT_HASH
 unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find)
 {
     unsigned min, max, middle;
@@ -1322,7 +1341,7 @@ notfound:
  */
 WordNum find_word(DICTIONARY *dict, STRING string)
 {
-#ifdef WANT_HASHTAB
+#ifdef WANT_DICT_HASH
 WordNum *wp;
 
 if (!dict) return 0; /* WP: should be WORD_NIL */
@@ -1395,8 +1414,7 @@ int wordcmp(STRING one, STRING two)
 void free_dictionary(DICTIONARY *dict)
 {
     if (dict == NULL) return;
-#ifdef WANT_HASHTAB
-    // wipe_dictionary(dict, dict->msize);
+#ifdef WANT_DICT_HASH
     dict->size = 0;
     resize_dictionary(dict, DICT_SIZE_INITIAL);
 #else
@@ -1432,16 +1450,16 @@ void free_tree(TREE *tree)
 
     if (tree == NULL) return;
 
-    if (tree->tree != NULL) {
+    if (tree->children != NULL) {
 	if (level == 0) progress("Freeing tree", 0, 1);
 	for(i = 0; i < tree->branch; ++i) {
 	    ++level;
-	    free_tree(tree->tree[i]);
+	    free_tree(tree->children[i].ptr);
 	    --level;
 	    if (level == 0) progress(NULL, i, tree->branch);
 	}
 	if (level == 0) progress(NULL, 1, 1);
-	free(tree->tree);
+	free(tree->children);
     }
     free(tree);
 }
@@ -1469,7 +1487,7 @@ void initialize_dictionary(DICTIONARY *dict)
  *
  *		Purpose:		Allocate room for a new dictionary.
  */
-#ifdef WANT_HASHTAB
+#ifdef WANT_DICT_HASH
 
 DICTIONARY *new_dictionary(void)
 {
@@ -1498,7 +1516,7 @@ STATIC void wipe_dictionary(DICTIONARY * dict, unsigned size)
     unsigned ii;
 
     for (ii = 0; ii < size; ii++) {
-	dict->entry[ii].head = WORD_NIL;
+	dict->entry[ii].tabl = WORD_NIL;
 	dict->entry[ii].link = WORD_NIL;
 	dict->entry[ii].hash = 0xe;
 	dict->entry[ii].string.length = 0;
@@ -1619,7 +1637,7 @@ TREE *new_node(void)
     node = malloc(sizeof *node);
     if (node == NULL) {
 	error("new_node", "Unable to allocate the node.");
-	goto fail;
+	return NULL;
     }
 
     /*
@@ -1628,14 +1646,12 @@ TREE *new_node(void)
     node->symbol = 0;
     node->usage = 0;
     node->count = 0;
+    node->msize = 0;
     node->branch = 0;
-    node->tree = NULL;
+    node->children = NULL;
 
     return node;
 
-fail:
-    if (node != NULL) free(node);
-    return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1728,6 +1744,7 @@ TREE *add_symbol(TREE *tree, WordNum symbol)
      *		Search for the symbol in the subtree of the tree node.
      */
     node = find_symbol_add(tree, symbol);
+    if (!node) return NULL;
 
     /*
      *		Increment the symbol counts
@@ -1756,6 +1773,16 @@ TREE *add_symbol(TREE *tree, WordNum symbol)
  */
 TREE *find_symbol(TREE *node, WordNum symbol)
 {
+#ifdef WANT_NODE_HASH
+ChildIndex *ip;
+
+ip = node_hnd(node, symbol);
+if (!ip) return NULL;
+
+if (*ip == CHILD_NIL) return NULL;
+return node->children[*ip].ptr ;
+
+#else
     unsigned int pos;
     TREE *found = NULL;
     bool found_symbol = FALSE;
@@ -1764,9 +1791,10 @@ TREE *find_symbol(TREE *node, WordNum symbol)
      *		Perform a binary search for the symbol.
      */
     pos = search_node(node, symbol, &found_symbol);
-    if (found_symbol == TRUE) found = node->tree[pos];
+    if (found_symbol == TRUE) found = node->children[pos].ptr;
 
     return found;
+#endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1781,6 +1809,21 @@ TREE *find_symbol(TREE *node, WordNum symbol)
  */
 TREE *find_symbol_add(TREE *node, WordNum symbol)
 {
+#ifdef WANT_NODE_HASH
+ChildIndex *ip;
+
+ip = node_hnd(node, symbol);
+if (!ip) return NULL;
+
+if (*ip == CHILD_NIL) {
+    *ip = node->branch++;
+     node->children[ *ip ].hash = symbol;
+     node->children[ *ip ].ptr = new_node();
+     node->children[ *ip ].ptr->symbol = symbol;
+     }
+
+     return node->children[ *ip ].ptr ;
+#else
     unsigned int pos;
     TREE *found = NULL;
     bool found_symbol = FALSE;
@@ -1791,7 +1834,7 @@ TREE *find_symbol_add(TREE *node, WordNum symbol)
      */
     pos = search_node(node, symbol, &found_symbol);
     if (found_symbol) {
-	found = node->tree[pos];
+	found = node->children[pos].ptr;
     } else {
 	found = new_node();
 	found->symbol = symbol;
@@ -1799,8 +1842,10 @@ TREE *find_symbol_add(TREE *node, WordNum symbol)
     }
 
     return found;
+#endif
 }
 
+#ifndef WANT_NODE_HASH
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -1809,35 +1854,98 @@ TREE *find_symbol_add(TREE *node, WordNum symbol)
  *		Purpose:		Attach a new child node to the sub-tree of the tree
  *						specified.
  */
-void add_node(TREE *tree, TREE *node, int position)
+STATIC void add_node(TREE *tree, TREE *node, int position)
 {
-    unsigned int i;
+    unsigned int ui;
 
     /*
      *		Allocate room for one more child node, which may mean allocating
      *		the sub-tree from scratch.
      */
-    tree->tree = realloc(tree->tree, (tree->branch+1) * sizeof *tree->tree );
+    if (tree->branch >= tree->msize && resize_tree(tree, 2*tree->branch)) return;
 
-    if (tree->tree == NULL) {
-	error("add_node", "Unable to reallocate subtree.");
-	return;
-    }
 
     /*
      *		Shuffle the nodes down so that we can insert the new node at the
      *		subtree index given by position.
      */
-    for(i = tree->branch; i > position; --i)
-	tree->tree[i] = tree->tree[i-1];
+    for(ui = tree->branch; ui > position; --ui)
+	tree->children[ui] = tree->children[ui-1];
 
     /*
      *		Add the new node to the sub-tree.
      */
-    tree->tree[position] = node;
+    tree->children[position].ptr = node;
     tree->branch += 1;
 }
+#endif
 
+STATIC int resize_tree(TREE *tree, unsigned newsize)
+{
+    ChildIndex item,slot;
+    struct treeslot *old;
+
+// fprintf(stderr, "Tree_resize(%u/%u) %u\n", tree->branch,  tree->msize, newsize);
+    old = tree->children;
+    if (!newsize) newsize = NODE_SIZE_INITIAL;
+
+    tree->children = malloc(newsize * sizeof *tree->children );
+    if (tree->children == NULL) {
+	error("resize_tree", "Unable to reallocate subtree.");
+        tree->children = old;
+	return -1;
+    }
+
+    tree->msize = newsize;
+#ifdef WANT_NODE_HASH
+    format_children(tree, tree->msize);
+
+    if (old) for (item =0 ; item < tree->branch; item++) {
+	ChildIndex *ip;
+	slot = old[item].hash % tree->msize;
+	for( ip = &tree->children[slot].tabl; *ip != CHILD_NIL; ip = &tree->children[*ip].link ) {;}
+	*ip = item;
+	tree->children[item].hash = old[item].hash;
+	tree->children[item].ptr = old[item].ptr;
+	}
+#else
+    if (old) memcpy(tree->children, old, tree->branch * sizeof *tree->children );
+#endif
+    free (old);
+    return 0; /* success */
+}
+
+#ifdef WANT_NODE_HASH
+STATIC void format_children(TREE *node , unsigned size)
+{
+    unsigned ii;
+
+    for (ii = 0; ii < size; ii++) {
+	node->children[ii].tabl = CHILD_NIL;
+	node->children[ii].link = CHILD_NIL;
+	node->children[ii].hash = ii;
+	node->children[ii].ptr = NULL;
+	}
+
+}
+
+
+ChildIndex *node_hnd(TREE *node, WordNum symbol)
+{
+ChildIndex *ip;
+unsigned slot;
+
+if (node->branch >= node->msize && resize_tree( node, node->branch*2)) return NULL;
+
+slot = symbol % node->msize;
+for (ip = &node->children[ slot ].tabl; *ip != CHILD_NIL; ip = &node->children[ *ip ].link ) {
+	if (symbol != node->children[ *ip ].hash) continue;
+	if (! node->children[ *ip ].ptr) continue;
+	if (symbol == node->children[ *ip ].ptr->symbol) break;
+	}
+return ip;
+}
+#else
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -1870,7 +1978,7 @@ unsigned int search_node(TREE *node, int symbol, bool *found_symbol)
     while( 1 ) {
 	// middle = (min+max)/2;
 	middle = min + (max-min)/2;
-	compar = symbol - node->tree[middle]->symbol;
+	compar = symbol - node->children[middle].ptr->symbol;
 	if (compar == 0) {
 	    goto found;
 	} else if (compar > 0) {
@@ -1895,7 +2003,7 @@ notfound:
     *found_symbol = FALSE;
     return middle;
 }
-
+#endif
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -2095,7 +2203,7 @@ void save_tree(FILE *file, TREE *node)
     if (level == 0) progress("Saving tree", 0, 1);
     for(i = 0; i < node->branch; ++i) {
 	++level;
-	save_tree(file, node->tree[i]);
+	save_tree(file, node->children[i].ptr );
 	--level;
 	if (level == 0) progress(NULL, i, node->branch);
     }
@@ -2112,7 +2220,11 @@ void save_tree(FILE *file, TREE *node)
 void load_tree(FILE *file, TREE *node)
 {
     static int level = 0;
-    unsigned int i;
+    unsigned int ui;
+#ifdef WANT_NODE_HASH
+    unsigned int symbol;
+    ChildIndex *ip;
+#endif
 
     fread(&node->symbol, sizeof node->symbol, 1, file);
     fread(&node->usage, sizeof node->usage, 1, file);
@@ -2121,19 +2233,27 @@ void load_tree(FILE *file, TREE *node)
 
     if (node->branch == 0) return;
 
-    node->tree = malloc(node->branch * sizeof *node->tree );
-    if (node->tree == NULL) {
+    // node->children = malloc(node->branch * sizeof *node->children );
+    resize_tree(node , 1+node->branch );
+    if (node->children == NULL) {
 	error("load_tree", "Unable to allocate subtree");
 	return;
     }
 
     if (level == 0) progress("Loading tree", 0, 1);
-    for(i = 0; i < node->branch; ++i) {
-	node->tree[i] = new_node();
+    for(ui = 0; ui < node->branch; ++ui) {
+	node->children[ui].ptr = new_node();
 	++level;
-	load_tree(file, node->tree[i]);
+	load_tree(file, node->children[ui].ptr);
 	--level;
-	if (level == 0) progress(NULL, i, node->branch);
+
+#ifdef WANT_NODE_HASH
+	symbol = node->children[ui].ptr ? node->children[ui].ptr->symbol: ui;
+	ip = node_hnd(node, symbol );
+	if (ip) *ip = ui;
+	node->children[ui].hash = symbol;
+#endif
+	if (level == 0) progress(NULL, ui, node->branch);
     }
     if (level == 0) progress(NULL, 1, 1);
 }
@@ -2619,6 +2739,7 @@ double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 		if (model->context[uj] == NULL) continue;
 
 		node = find_symbol(model->context[uj], symbol);
+    		if (!node) continue;
 		probability += (double)node->count / model->context[uj]->usage;
 		++count;
 
@@ -2643,6 +2764,7 @@ double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 		if (model->context[uj] == NULL) continue;
 
 		node = find_symbol(model->context[uj], symbol);
+    		if (!node) continue;
 		probability += (double)node->count / model->context[uj]->usage;
 		++count;
 
@@ -2751,7 +2873,7 @@ WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 	 *		If the symbol occurs as a keyword, then use it.  Only use an
 	 *		auxilliary keyword if a normal keyword has already been used.
 	 */
-	symbol = node->tree[ui]->symbol;
+	symbol = node->children[ui].ptr->symbol;
 
 	if (
 	    (find_word(keys, model->dictionary->entry[symbol].string ))
@@ -2761,7 +2883,7 @@ WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 	    used_key = TRUE;
 	    break;
 	}
-	count -= node->tree[ui]->count;
+	count -= node->children[ui].ptr->count;
 	ui = (ui+1) % node->branch;
     }
 
@@ -2802,7 +2924,7 @@ WordNum seed(MODEL *model, DICTIONARY *keys)
      *		Fix, thanks to Mark Tarrabain
      */
     if (model->context[0]->branch == 0) symbol = 0;
-    else symbol = model->context[0]->tree[ urnd(model->context[0]->branch) ]->symbol;
+    else symbol = model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol;
 
     if (keys && keys->size > 0) {
 	stop = idx = urnd(keys->size);
@@ -3071,9 +3193,10 @@ unsigned int urnd(unsigned int range)
 #else
 if (range <2) return 0;
 while(1)	{
-    unsigned val;
+    unsigned val, box;
     val =  lrand48();
-    if (val+range < range) continue;
+    box = val / range;
+    if ((1+box) *range < range) continue;
     return val % range;
 	}
 #endif
@@ -3620,7 +3743,7 @@ void free_word(STRING word)
 
 
 
-#ifdef WANT_HASHTAB
+#ifdef WANT_DICT_HASH
 HashVal hash_word(STRING string)
 {
 return hash_mem(string.word, (size_t) string.length);
@@ -3652,7 +3775,7 @@ if (dict->size >= dict->msize && double_dictionary(dict)) return NULL;
 hash = hash_word(word);
 slot = hash % dict->msize;
 
-for (np = &dict->entry[slot].head ; np ; np = &dict->entry[*np].link ) {
+for (np = &dict->entry[slot].tabl ; np ; np = &dict->entry[*np].link ) {
 	if (*np == WORD_NIL) break;
 	if ( dict->entry[*np].hash != hash) continue;
 	if ( wordcmp(dict->entry[*np].string , word)) continue;
@@ -3703,7 +3826,7 @@ STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize)
     for (item =0 ; item < dict->size; item++) {
 		WordNum *np;
 		slot = old[item].hash % dict->msize;
-		for( np = &dict->entry[slot].head; np; np = &dict->entry[*np].link ) {
+		for( np = &dict->entry[slot].tabl; np; np = &dict->entry[*np].link ) {
 			if (*np == WORD_NIL) break;
 			}
 		*np = item;
