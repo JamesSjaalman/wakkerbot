@@ -188,14 +188,11 @@ typedef unsigned short ChildIndex;
 typedef unsigned int DictSize;
 typedef unsigned int Count;
 typedef unsigned int UsageCnt;
+typedef unsigned int HashVal;
 
 #undef WANT_HASHTAB
+#define WANT_HASHTAB 1
 
-#ifdef WANT_HASHTAB
-#define DICT_SIZE_INITIAL 16
-#define WORD_NIL ((WordNum)-1)
-unsigned hash_mem(void *dat, size_t len);
-#endif
 
 typedef struct {
     StrLen length;
@@ -206,6 +203,7 @@ typedef struct {
 struct	dictslot {
 	WordNum head;
 	WordNum link;
+	HashVal hash;
 	STRING string;
 	};
 typedef struct {
@@ -325,7 +323,7 @@ STATIC void add_node(TREE *tree, TREE *node, int position);
 STATIC void add_swap(SWAP *list, char *s, char *d);
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word);
-STATIC WordNum add_word_nofuzz(DICTIONARY *dict, STRING word);
+STATIC WordNum add_word_nofuss(DICTIONARY *dict, STRING word);
 STATIC WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words);
 STATIC bool boundary(char *string, size_t position);
 
@@ -392,11 +390,13 @@ STATIC SWAP *new_swap(void);
 STATIC STRING new_string(char *str, size_t len);
 STATIC bool print_header(FILE *);
 bool progress(char *message, int done, int total);
-STATIC DICTIONARY *reply(MODEL *, DICTIONARY *);
+STATIC DICTIONARY *one_reply(MODEL *, DICTIONARY *);
 STATIC void save_dictionary(FILE *, DICTIONARY *);
 STATIC void save_tree(FILE *, TREE *);
 STATIC void save_word(FILE *, STRING);
+#ifndef WANT_HASHTAB
 STATIC unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find);
+#endif
 STATIC unsigned int search_node(TREE *node, int symbol, bool *found_symbol);
 STATIC WordNum seed(MODEL *, DICTIONARY *);
 
@@ -411,6 +411,19 @@ STATIC bool warn(char *, char *, ...);
 STATIC int wordcmp(STRING one, STRING two);
 STATIC bool word_exists(DICTIONARY *, STRING);
 STATIC unsigned int urnd(unsigned int range);
+
+#ifdef WANT_HASHTAB
+#define DICT_SIZE_INITIAL 2
+#define WORD_NIL ((WordNum)-1)
+
+HashVal hash_mem(void *dat, size_t len);
+STATIC WordNum * dict_hnd(DICTIONARY *dict, STRING word);
+STATIC WordNum * dict_hnd_tail (DICTIONARY *dict, STRING word);
+STATIC HashVal hash_word(STRING word);
+STATIC int double_dictionary(DICTIONARY *dict);
+STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize);
+STATIC void wipe_dictionary(DICTIONARY * dict, unsigned size);
+#endif
 
 
 /* Function: setnoprompt
@@ -1097,18 +1110,33 @@ STATIC char *format_output(char *output)
  *		Purpose:		Append a word to a dictionary, and return the identifier assigned to the word.
  *						The index is not searched or updated, and the new word is not dupped, only referenced.
  */
-STATIC WordNum add_word_nofuzz(DICTIONARY *dict, STRING word)
+STATIC WordNum add_word_nofuss(DICTIONARY *dict, STRING word)
 {
+#ifdef WANT_HASHTAB
+WordNum *wp;
+
+if (!dict) return 0; /* WP: should be WORD_NIL */
+
+wp = dict_hnd_tail(dict, word);
+
+*wp = dict->size++;
+dict->entry[*wp].string = word;
+dict->entry[*wp].hash = hash_word(word);
+
+return *wp;
+
+#else
 dict->entry = realloc(dict->entry, (dict->size+1)*sizeof *dict->entry);
 
 if (dict->entry == NULL) {
-	error("add_word_nofuzz", "Unable to reallocate dictionary");
+	error("add_word_nofuss", "Unable to reallocate dictionary");
 	return 0 ;
 	}
 
 dict->entry[dict->size].string = word;
 dict->size += 1;
 return dict->size - 1;
+#endif
 }
 /*---------------------------------------------------------------------------*/
 
@@ -1123,9 +1151,21 @@ return dict->size - 1;
 STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word)
 {
 #ifdef WANT_HASHTAB
-unsigned hash,slot, ii;
+WordNum *wp;
 
-hash = hash_mem(word.word, word.length);
+wp = dict_hnd(dict, word);
+if (!wp) return 0; /* WP: should be WORD_NIL */
+
+if (*wp == WORD_NIL) {
+	STRING this;
+	*wp = dict->size++;
+	this = new_string(word.word, word.length);
+	dict->entry[*wp].string = this;
+	dict->entry[*wp].hash = hash_word(this);
+	}
+	/* our slotnumber is the index we want */
+// return &dict->entry[*wp] - &dict->entry[0];
+return *wp;
 
 #else
     unsigned position;
@@ -1206,6 +1246,7 @@ fail:
  *						position in the index if found, or the position where it
  *						should be inserted otherwise.
  */
+#ifndef WANT_HASHTAB
 unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find)
 {
     unsigned min, max, middle;
@@ -1264,7 +1305,7 @@ notfound:
     *find = FALSE;
     return middle;
 }
-
+#endif
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -1276,6 +1317,16 @@ notfound:
  */
 WordNum find_word(DICTIONARY *dict, STRING string)
 {
+#ifdef WANT_HASHTAB
+WordNum *wp;
+
+if (!dict) return 0; /* WP: should be WORD_NIL */
+wp = dict_hnd(dict, string);
+
+if (*wp == WORD_NIL) return 0; /* WP: should be WORD_NIL */
+return *wp;
+
+#else
     unsigned position;
     bool found;
 
@@ -1283,6 +1334,7 @@ WordNum find_word(DICTIONARY *dict, STRING string)
 
     if (found == TRUE) return dict->index[position];
     else return 0;
+#endif
 }
 
 STATIC STRING new_string(char *str, size_t len)
@@ -1339,16 +1391,17 @@ void free_dictionary(DICTIONARY *dict)
 {
     if (dict == NULL) return;
 #ifdef WANT_HASHTAB
-    wipe_dictionary(dict, dict->used);
-    dict->used = 0;
+    // wipe_dictionary(dict, dict->msize);
+    dict->size = 0;
+    resize_dictionary(dict, DICT_SIZE_INITIAL);
 #else
     if (dict == NULL) return;
     free(dict->entry);
     dict->entry = NULL;
     free(dict->index);
     dict->index = NULL;
-#endif
     dict->size = 0;
+#endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1417,7 +1470,7 @@ DICTIONARY *new_dictionary(void)
 {
     DICTIONARY *dict = NULL;
 
-    dict = malloc(sizeof *dictionary);
+    dict = malloc(sizeof *dict);
     if (dict == NULL) {
 	error("new_dictionary", "Unable to allocate dictionary.");
 	return NULL;
@@ -1430,7 +1483,7 @@ DICTIONARY *new_dictionary(void)
 	}
     dict->msize = DICT_SIZE_INITIAL;
     dict->size = 0;
-    wipe_dictionary(dict, dict->size);
+    wipe_dictionary(dict, dict->msize);
 
     return dict;
 }
@@ -1442,7 +1495,7 @@ STATIC void wipe_dictionary(DICTIONARY * dict, unsigned size)
     for (ii = 0; ii < size; ii++) {
 	dict->entry[ii].head = WORD_NIL;
 	dict->entry[ii].link = WORD_NIL;
-	dict->entry[ii].num = WORD_NIL;
+	dict->entry[ii].hash = 0xe;
 	dict->entry[ii].string.length = 0;
 	dict->entry[ii].string.word = NULL;
 	}
@@ -2165,7 +2218,7 @@ void make_words(char *input, DICTIONARY *words)
 	    /*
 	     *		Add the word to the dictionary
 	     */
-	add_word_nofuzz(words, word);
+	add_word_nofuss(words, word);
 
 	    if (offset == len) break;
 	    input += offset;
@@ -2181,7 +2234,7 @@ void make_words(char *input, DICTIONARY *words)
      *		full-stop character.
      */
     if (isalnum(words->entry[words->size-1].string.word[0])) {
-		add_word_nofuzz(words, period);
+		add_word_nofuss(words, period);
     }
     else if (!strchr("!.?", words->entry[words->size-1].string.word[ words->entry[words->size-1].string.length-1] )) {
 	words->entry[words->size-1].string = period;
@@ -2250,7 +2303,7 @@ void make_greeting(DICTIONARY *words)
 
     for(i = 0; i < words->size; ++i) free(words->entry[i].string.word);
     free_dictionary(words);
-    if (glob_grt->size > 0) (void)add_word_dodup(words, glob_grt->entry[ urnd(glob_grt->size) ].string );
+    if (glob_grt->size > 0) add_word_dodup(words, glob_grt->entry[ urnd(glob_grt->size) ].string );
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2263,12 +2316,13 @@ void make_greeting(DICTIONARY *words)
  */
 char *generate_reply(MODEL *model, DICTIONARY *words)
 {
+    static char *output_none = "Geert! doe er wat aan!" ;
+    // static char *output_none = NULL;
     static DICTIONARY *dummy = NULL;
     DICTIONARY *replywords;
     DICTIONARY *keywords;
     double surprise, max_surprise;
     char *output;
-    static char *output_none = NULL;
     int count;
     int basetime;
     int timeout = TIMEOUT;
@@ -2284,11 +2338,10 @@ char *generate_reply(MODEL *model, DICTIONARY *words)
     if (!output_none ) {
 	output_none = malloc(40);
 	// if (output_none) strcpy(output_none, "I don't know enough to answer you yet!");
-	if (output_none) strcpy(output_none, "Geert! doe er wat aan!");
     }
     output = output_none;
-    if (dummy == NULL) dummy = new_dictionary();
-    replywords = reply(model, dummy);
+    // if (dummy == NULL) dummy = new_dictionary();
+    replywords = one_reply(model, dummy);
     if (dissimilar(words, replywords)) output = make_output(replywords);
 
     /*
@@ -2300,7 +2353,7 @@ char *generate_reply(MODEL *model, DICTIONARY *words)
     basetime = time(NULL);
     progress("Generating reply", 0, 1); 
     do {
-	replywords = reply(model, keywords);
+	replywords = one_reply(model, keywords);
 	surprise = evaluate_reply(model, keywords, replywords);
 	++count;
 	if (surprise > max_surprise && dissimilar(words, replywords) ) {
@@ -2440,7 +2493,7 @@ void add_aux(MODEL *model, DICTIONARY *keys, STRING word)
  *		Purpose:		Generate a dictionary of reply words appropriate to the
  *						given dictionary of keywords.
  */
-DICTIONARY *reply(MODEL *model, DICTIONARY *keys)
+DICTIONARY *one_reply(MODEL *model, DICTIONARY *keys)
 {
     static DICTIONARY *replies = NULL;
     unsigned int ui;
@@ -2448,7 +2501,7 @@ DICTIONARY *reply(MODEL *model, DICTIONARY *keys)
     bool start = TRUE;
 
     if (replies == NULL) replies = new_dictionary();
-    free_dictionary(replies);
+    else free_dictionary(replies);
 
     /*
      *		Start off by making sure that the model's context is empty.
@@ -2472,18 +2525,7 @@ DICTIONARY *reply(MODEL *model, DICTIONARY *keys)
 	/*
 	 *		Append the symbol to the reply dictionary.
 	 */
-#if 0
-   replies->entry = realloc(replies->entry, (replies->size+1) * sizeof *replies->entry);
-	if (replies->entry == NULL) {
-	    error("reply", "Unable to reallocate dictionary");
-	    return NULL;
-	}
-
-	replies->entry[ replies->size ].string = model->dictionary->entry[symbol].string;
-	replies->size += 1;
-#else
-	add_word_nofuzz(replies, model->dictionary->entry[ symbol ].string );
-#endif
+	add_word_nofuss(replies, model->dictionary->entry[ symbol ].string );
 	/*
 	 *		Extend the current context of the model with the current symbol.
 	 */
@@ -2521,7 +2563,7 @@ DICTIONARY *reply(MODEL *model, DICTIONARY *keys)
 	 */
 	replies->entry = realloc(replies->entry, (replies->size+1)*sizeof *replies->entry);
 	if (replies->entry == NULL) {
-	    error("reply", "Unable to reallocate dictionary");
+	    error("one_reply", "Unable to reallocate dictionary");
 	    return NULL;
 	}
 
@@ -2750,9 +2792,8 @@ bool word_exists(DICTIONARY *dictionary, STRING word)
  */
 WordNum seed(MODEL *model, DICTIONARY *keys)
 {
-    register unsigned int idx;
+    unsigned int idx, stop;
     WordNum symbol;
-    unsigned int stop;
 
     /*
      *		Fix, thanks to Mark Tarrabain
@@ -2760,18 +2801,15 @@ WordNum seed(MODEL *model, DICTIONARY *keys)
     if (model->context[0]->branch == 0) symbol = 0;
     else symbol = model->context[0]->tree[ urnd(model->context[0]->branch) ]->symbol;
 
-    if (keys->size > 0) {
-	idx = urnd(keys->size);
-	stop = idx;
+    if (keys && keys->size > 0) {
+	stop = idx = urnd(keys->size);
 	while(TRUE) {
-	    if (
-		find_word(model->dictionary, keys->entry[idx].string )
+	    if ( find_word(model->dictionary, keys->entry[idx].string )
 		&& !find_word(glob_aux, keys->entry[idx].string )
 		) {
 		symbol = find_word(model->dictionary, keys->entry[idx].string );
 		return symbol;
 	    }
-	    // ++idx; if (idx == keys->size) idx = 0;
 	    idx = (idx+1) % keys->size;
 	    if (idx == stop) return symbol;
 	}
@@ -3580,15 +3618,98 @@ void free_word(STRING word)
 
 
 #ifdef WANT_HASHTAB
-unsigned hash_mem(void *dat, size_t len)
+HashVal hash_word(STRING string)
+{
+return hash_mem(string.word, (size_t) string.length);
+}
+
+HashVal hash_mem(void *dat, size_t len)
 {
 unsigned char *str = (unsigned char*) dat;
 unsigned val=0;
 size_t idx;
 
 for(idx=0; idx < len; idx++ )	{
-	val ^= (val >> 2) ^ (val <<5) ^ (val << 13) ^ str[idx] ^ 0x80001801;
+	val ^= (val >> 2) ^ (val << 5) ^ (val << 13) ^ str[idx] ^ 0x80001801;
 	}
 return val;
 }
+
+WordNum * dict_hnd (DICTIONARY *dict, STRING word)
+{
+WordNum *np;
+unsigned hash,slot;
+
+/* We always assume that the next operation will be an insert.
+ * So even if the wanted element is not present, *wp will point
+ * to the place where it is to be inserted.
+ */
+if (dict->size >= dict->msize && double_dictionary(dict)) return NULL;
+
+hash = hash_word(word);
+slot = hash % dict->msize;
+
+for (np = &dict->entry[slot].head ; np ; np = &dict->entry[*np].link ) {
+	if (*np == WORD_NIL) break;
+	if ( dict->entry[*np].hash != hash) continue;
+	if ( wordcmp(dict->entry[*np].string , word)) continue;
+	break;
+	}
+return np;
+}
+
+WordNum * dict_hnd_tail (DICTIONARY *dict, STRING word)
+{
+WordNum *np;
+
+// hash = hash_word(word);
+
+for (np = dict_hnd(dict,word); np ; np = &dict->entry[*np].link ) {
+	if (*np == WORD_NIL) break;
+	// if ( dict->entry[*np].hash != hash) continue;
+	// if ( wordcmp(dict->entry[*np].string , word)) continue;
+	// continue;
+	}
+return np;
+}
+
+STATIC int double_dictionary(DICTIONARY *dict)
+{
+    unsigned newsize;
+
+    newsize = dict->size ? 2*dict->size : DICT_SIZE_INITIAL;
+    return resize_dictionary(dict, newsize);
+}
+
+
+STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize)
+{
+    struct dictslot *old;
+    WordNum item,slot;
+
+    old = dict->entry ;
+    dict->entry = malloc (newsize * sizeof *dict->entry);
+    if (!dict->entry) {
+	error("resize_dictionary", "Unable to allocate dictionary->slots.");
+    	dict->entry = old;
+	return -1;
+	}
+    dict->msize = newsize;
+    wipe_dictionary(dict, dict->msize);
+
+    for (item =0 ; item < dict->size; item++) {
+		WordNum *np;
+		slot = old[item].hash % dict->msize;
+		for( np = &dict->entry[slot].head; np; np = &dict->entry[*np].link ) {
+			if (*np == WORD_NIL) break;
+			}
+		*np = item;
+		dict->entry[item].hash = old[item].hash;
+		dict->entry[item].string = old[item].string;
+		}
+    free (old);
+    return 0; /* success */
+}
+
 #endif
+
