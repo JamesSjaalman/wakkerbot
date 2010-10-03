@@ -183,8 +183,8 @@ typedef enum { FALSE, TRUE } bool;
 #endif
 
 typedef unsigned char StrLen;
-typedef unsigned short WordNum;
-typedef unsigned short ChildIndex;
+typedef unsigned int WordNum;
+typedef unsigned int ChildIndex;
 typedef unsigned int DictSize;
 typedef unsigned int Count;
 typedef unsigned int UsageCnt;
@@ -1117,11 +1117,16 @@ WordNum *wp;
 
 if (!dict) return 0; /* WP: should be WORD_NIL */
 
-wp = dict_hnd_tail(dict, word);
+if (dict->size >= dict->msize && double_dictionary(dict)) return NULL;
+wp = & dict->entry[ dict->size].head ;
 
 *wp = dict->size++;
 dict->entry[*wp].string = word;
-dict->entry[*wp].hash = hash_word(word);
+/* fake the hash value.
+ * setting it to the identity transform will cause X to be put into slot X.
+ * Degenerate chains, but consistent, even on doubling.
+ */
+dict->entry[*wp].hash = *wp;
 
 return *wp;
 
@@ -1846,7 +1851,6 @@ void add_node(TREE *tree, TREE *node, int position)
  */
 unsigned int search_node(TREE *node, int symbol, bool *found_symbol)
 {
-    unsigned int position;
     unsigned min, max, middle;
     int compar;
 
@@ -1854,7 +1858,7 @@ unsigned int search_node(TREE *node, int symbol, bool *found_symbol)
      *		Handle the special case where the subtree is empty.
      */
     if (node->branch == 0) {
-	position = 0;
+	middle = 0;
 	goto notfound;
     }
 
@@ -1864,20 +1868,19 @@ unsigned int search_node(TREE *node, int symbol, bool *found_symbol)
     min = 0;
     max = node->branch-1;
     while( 1 ) {
-	middle = (min+max)/2;
+	// middle = (min+max)/2;
+	middle = min + (max-min)/2;
 	compar = symbol - node->tree[middle]->symbol;
 	if (compar == 0) {
-	    position = middle;
 	    goto found;
 	} else if (compar > 0) {
 	    if (max == middle) {
-		position = middle+1;
+		middle+=1;
 		goto notfound;
 	    }
 	    min = middle+1;
 	} else {
 	    if (min == middle) {
-		position = middle;
 		goto notfound;
 	    }
 	    max = middle-1;
@@ -1886,11 +1889,11 @@ unsigned int search_node(TREE *node, int symbol, bool *found_symbol)
 
 found:
     *found_symbol = TRUE;
-    return position;
+    return middle;
 
 notfound:
     *found_symbol = FALSE;
-    return position;
+    return middle;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2544,7 +2547,7 @@ DICTIONARY *one_reply(MODEL *model, DICTIONARY *keys)
      *		beginning of the string.
      */
     if (replies->size > 0) for(ui = MIN(replies->size, 1+model->order); ui-- > 0; ) {
-	symbol = find_word(model->dictionary, replies->entry[ui].string );
+	symbol = find_word(model->dictionary, replies->entry[ ui ].string );
 	update_context(model, symbol);
     }
 
