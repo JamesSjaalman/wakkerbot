@@ -205,7 +205,6 @@ typedef struct {
     char *word;
 } STRING;
 
-
 struct	dictslot {
 	WordNum tabl;
 	WordNum link;
@@ -332,7 +331,7 @@ STATIC void add_key(MODEL *model, DICTIONARY *keys, STRING word);
 STATIC void add_node(TREE *tree, TREE *node, int position);
 STATIC int resize_tree(TREE *tree, unsigned newsize);
 
-STATIC void add_swap(SWAP *list, char *s, char *d);
+STATIC void add_swap(SWAP *list, char *from, char *to);
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word);
 STATIC WordNum add_word_nofuss(DICTIONARY *dict, STRING word);
@@ -435,7 +434,7 @@ STATIC WordNum * dict_hnd_tail (DICTIONARY *dict, STRING word);
 STATIC HashVal hash_word(STRING word);
 STATIC int double_dictionary(DICTIONARY *dict);
 STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize);
-STATIC void wipe_dictionary(DICTIONARY * dict, unsigned size);
+STATIC void format_dictionary(DICTIONARY * dict, unsigned size);
 #endif
 
 #ifdef WANT_NODE_HASH
@@ -705,7 +704,7 @@ void megahal_cleanup(void)
  *		Purpose:		Detect whether the user has typed a command, and
  *						execute the corresponding function.
  */
-COMMAND_WORDS execute_command(DICTIONARY *words, unsigned int *position)
+STATIC COMMAND_WORDS execute_command(DICTIONARY *words, unsigned int *position)
 {
     unsigned int i;
     unsigned int j;
@@ -749,7 +748,7 @@ COMMAND_WORDS execute_command(DICTIONARY *words, unsigned int *position)
  *
  *		Purpose:		Terminate the program.
  */
-void exithal(void)
+STATIC void exithal(void)
 {
 #ifdef __mac_os
     /*
@@ -776,7 +775,7 @@ void exithal(void)
  *		Also, because the contents of the string change, the caller should not
  *		keep any pointers into the reterned string.
  */
-char *read_input(char *prompt)
+STATIC char *read_input(char *prompt)
 {
     static char *input = NULL;
     static size_t size=0;
@@ -867,7 +866,7 @@ char *read_input(char *prompt)
  *
  *		Purpose:		Close the current error file pointer, and open a new one.
  */
-bool initialize_error(char *filename)
+STATIC bool initialize_error(char *filename)
 {
     if (errorfp != stderr) fclose(errorfp);
 
@@ -888,7 +887,7 @@ bool initialize_error(char *filename)
  *
  *		Purpose:		Print the specified message to the error file.
  */
-void error(char *title, char *fmt, ...)
+STATIC void error(char *title, char *fmt, ...)
 {
     va_list argp;
 
@@ -906,7 +905,7 @@ void error(char *title, char *fmt, ...)
 
 /*---------------------------------------------------------------------------*/
 
-bool warn(char *title, char *fmt, ...)
+STATIC bool warn(char *title, char *fmt, ...)
 {
     va_list argp;
 
@@ -929,7 +928,7 @@ bool warn(char *title, char *fmt, ...)
  *
  *		Purpose:		Close the current status file pointer, and open a new one.
  */
-bool initialize_status(char *filename)
+STATIC bool initialize_status(char *filename)
 {
     if (statusfp != stdout) fclose(statusfp);
     if (filename == NULL) return FALSE;
@@ -948,7 +947,7 @@ bool initialize_status(char *filename)
  *
  *		Purpose:		Print the specified message to the status file.
  */
-bool status(char *fmt, ...)
+STATIC bool status(char *fmt, ...)
 {
     va_list argp;
 
@@ -967,7 +966,7 @@ bool status(char *fmt, ...)
  *
  *		Purpose:		Display a copyright message and timestamp.
  */
-bool print_header(FILE *file)
+STATIC bool print_header(FILE *file)
 {
     time_t clock;
     char timestamp[1024];
@@ -991,7 +990,7 @@ bool print_header(FILE *file)
  *
  *    Purpose:    Display the output string.
  */
-void write_output(char *output)
+STATIC void write_output(char *output)
 {
     char *formatted;
     char *bit;
@@ -1020,7 +1019,7 @@ void write_output(char *output)
  *
  *		Purpose:		Convert a string to look nice.
  */
-void capitalize(char *string)
+STATIC void capitalize(char *string)
 {
     size_t len, ii;
     unsigned char *ucp = (unsigned char *) string;
@@ -1045,7 +1044,7 @@ void capitalize(char *string)
  *
  *		Purpose:		Convert a string to its uppercase representation.
  */
-void upper(char *string)
+STATIC void upper(char *string)
 {
     size_t len, ii;
     unsigned char *ucp = (unsigned char *) string;
@@ -1061,7 +1060,7 @@ void upper(char *string)
  *
  *    Purpose:    Log the user's input
  */
-void write_input(char *input)
+STATIC void write_input(char *input)
 {
     char *formatted;
     char *bit;
@@ -1271,7 +1270,7 @@ fail:
  *						should be inserted otherwise.
  */
 #ifndef WANT_DICT_HASH
-unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find)
+STATIC unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find)
 {
     unsigned min, max, middle;
     int compar;
@@ -1339,7 +1338,7 @@ notfound:
  *						We assume that the word with index zero is equal to a
  *						NULL word, indicating an error condition.
  */
-WordNum find_word(DICTIONARY *dict, STRING string)
+STATIC WordNum find_word(DICTIONARY *dict, STRING string)
 {
 #ifdef WANT_DICT_HASH
 WordNum *wp;
@@ -1387,7 +1386,7 @@ return this;
  *						the first word is less than, equal to or greater than the
  *						second word.
  */
-int wordcmp(STRING one, STRING two)
+STATIC int wordcmp(STRING one, STRING two)
 {
     int i;
     size_t siz;
@@ -1411,7 +1410,7 @@ int wordcmp(STRING one, STRING two)
  *
  *		Purpose:		Release the memory consumed by the dictionary.
  */
-void free_dictionary(DICTIONARY *dict)
+STATIC void free_dictionary(DICTIONARY *dict)
 {
     if (dict == NULL) return;
 #ifdef WANT_DICT_HASH
@@ -1429,7 +1428,7 @@ void free_dictionary(DICTIONARY *dict)
 
 /*---------------------------------------------------------------------------*/
 
-void free_model(MODEL *model)
+STATIC void free_model(MODEL *model)
 {
     if (model == NULL) return;
     free_tree(model->forward);
@@ -1443,7 +1442,7 @@ void free_model(MODEL *model)
 
 /*---------------------------------------------------------------------------*/
 
-void free_tree(TREE *tree)
+STATIC void free_tree(TREE *tree)
 {
     static int level = 0;
     unsigned int i;
@@ -1471,7 +1470,7 @@ void free_tree(TREE *tree)
  *
  *		Purpose:		Add dummy words to the dictionary.
  */
-void initialize_dictionary(DICTIONARY *dict)
+STATIC void initialize_dictionary(DICTIONARY *dict)
 {
     STRING word ={ 7, "<ERROR>" };
     STRING end ={ 5, "<FIN>" };
@@ -1489,7 +1488,7 @@ void initialize_dictionary(DICTIONARY *dict)
  */
 #ifdef WANT_DICT_HASH
 
-DICTIONARY *new_dictionary(void)
+STATIC DICTIONARY *new_dictionary(void)
 {
     DICTIONARY *dict = NULL;
 
@@ -1506,12 +1505,12 @@ DICTIONARY *new_dictionary(void)
 	}
     dict->msize = DICT_SIZE_INITIAL;
     dict->size = 0;
-    wipe_dictionary(dict, dict->msize);
+    format_dictionary(dict, dict->msize);
 
     return dict;
 }
 
-STATIC void wipe_dictionary(DICTIONARY * dict, unsigned size)
+STATIC void format_dictionary(DICTIONARY * dict, unsigned size)
 {
     unsigned ii;
 
@@ -1549,7 +1548,7 @@ DICTIONARY *new_dictionary(void)
  *
  *		Purpose:		Save a dictionary to the specified file.
  */
-void save_dictionary(FILE *file, DICTIONARY *dict)
+STATIC void save_dictionary(FILE *file, DICTIONARY *dict)
 {
     unsigned int i;
 
@@ -1569,7 +1568,7 @@ void save_dictionary(FILE *file, DICTIONARY *dict)
  *
  *		Purpose:		Load a dictionary from the specified file.
  */
-void load_dictionary(FILE *file, DICTIONARY *dict)
+STATIC void load_dictionary(FILE *file, DICTIONARY *dict)
 {
     unsigned int i;
     int size;
@@ -1590,7 +1589,7 @@ void load_dictionary(FILE *file, DICTIONARY *dict)
  *
  *		Purpose:		Save a dictionary word to a file.
  */
-void save_word(FILE *file, STRING word)
+STATIC void save_word(FILE *file, STRING word)
 {
 
     fwrite(&word.length, sizeof word.length, 1, file);
@@ -1604,7 +1603,7 @@ void save_word(FILE *file, STRING word)
  *
  *		Purpose:		Load a dictionary word from a file.
  */
-void load_word(FILE *file, DICTIONARY *dict)
+STATIC void load_word(FILE *file, DICTIONARY *dict)
 {
     STRING word;
 
@@ -1627,7 +1626,7 @@ void load_word(FILE *file, DICTIONARY *dict)
  *		Purpose:		Allocate a new node for the n-gram tree, and initialise
  *						its contents to sensible values.
  */
-TREE *new_node(void)
+STATIC TREE *new_node(void)
 {
     TREE *node = NULL;
 
@@ -1661,7 +1660,7 @@ TREE *new_node(void)
  *
  *		Purpose:		Create and initialise a new ngram model.
  */
-MODEL *new_model(int order)
+STATIC MODEL *new_model(int order)
 {
     MODEL *model = NULL;
 
@@ -1718,7 +1717,7 @@ STATIC void update_model(MODEL *model, WordNum symbol)
  *
  *		Purpose:		Update the context of the model without adding the symbol.
  */
-void update_context(MODEL *model, WordNum symbol)
+STATIC void update_context(MODEL *model, WordNum symbol)
 {
     unsigned int i;
 
@@ -1736,7 +1735,7 @@ void update_context(MODEL *model, WordNum symbol)
  *						specified symbol, which may mean growing the tree if the
  *						symbol hasn't been seen in this context before.
  */
-TREE *add_symbol(TREE *tree, WordNum symbol)
+STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
 {
     TREE *node = NULL;
 
@@ -1771,7 +1770,7 @@ TREE *add_symbol(TREE *tree, WordNum symbol)
  *		Purpose:		Return a pointer to the child node, if one exists, which
  *						contains the specified symbol.
  */
-TREE *find_symbol(TREE *node, WordNum symbol)
+STATIC TREE *find_symbol(TREE *node, WordNum symbol)
 {
 #ifdef WANT_NODE_HASH
 ChildIndex *ip;
@@ -1807,7 +1806,7 @@ return node->children[*ip].ptr ;
  *						a new node is automatically allocated and added to the
  *						tree.
  */
-TREE *find_symbol_add(TREE *node, WordNum symbol)
+STATIC TREE *find_symbol_add(TREE *node, WordNum symbol)
 {
 #ifdef WANT_NODE_HASH
 ChildIndex *ip;
@@ -1862,7 +1861,7 @@ STATIC void add_node(TREE *tree, TREE *node, int position)
      *		Allocate room for one more child node, which may mean allocating
      *		the sub-tree from scratch.
      */
-    if (tree->branch >= tree->msize && resize_tree(tree, 2*tree->branch)) return;
+    if (tree->branch >= tree->msize && resize_tree(tree, tree->branch+tree->branch/4)) return;
 
 
     /*
@@ -1930,12 +1929,12 @@ STATIC void format_children(TREE *node , unsigned size)
 }
 
 
-ChildIndex *node_hnd(TREE *node, WordNum symbol)
+STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol)
 {
 ChildIndex *ip;
 unsigned slot;
 
-if (node->branch >= node->msize && resize_tree( node, node->branch*2)) return NULL;
+if (node->branch >= node->msize && resize_tree( node, node->branch+node->branch/4 )) return NULL;
 
 slot = symbol % node->msize;
 for (ip = &node->children[ slot ].tabl; *ip != CHILD_NIL; ip = &node->children[ *ip ].link ) {
@@ -1957,7 +1956,7 @@ return ip;
  *						position where it should be inserted to keep the subtree
  *						sorted if it wasn't.
  */
-unsigned int search_node(TREE *node, int symbol, bool *found_symbol)
+STATIC unsigned int search_node(TREE *node, int symbol, bool *found_symbol)
 {
     unsigned min, max, middle;
     int compar;
@@ -2025,7 +2024,7 @@ void initialize_context(MODEL *model)
  *
  *		Purpose:		Learn from the user's input.
  */
-void learn_from_input(MODEL *model, DICTIONARY *words)
+STATIC void learn_from_input(MODEL *model, DICTIONARY *words)
 {
     unsigned int i;
     int j;
@@ -2084,7 +2083,7 @@ void learn_from_input(MODEL *model, DICTIONARY *words)
  *
  *		Purpose:	 	Infer a MegaHAL brain from the contents of a text file.
  */
-void train(MODEL *model, char *filename)
+STATIC void train(MODEL *model, char *filename)
 {
     FILE *file;
     DICTIONARY *words = NULL;
@@ -2156,7 +2155,7 @@ void show_dictionary(DICTIONARY *dict)
  *
  *		Purpose:		Save the current state to a MegaHAL brain file.
  */
-void save_model(char *modelname, MODEL *model)
+STATIC void save_model(char *modelname, MODEL *model)
 {
     FILE *file;
     static char *filename = NULL;
@@ -2190,7 +2189,7 @@ void save_model(char *modelname, MODEL *model)
  *
  *		Purpose:		Save a tree structure to the specified file.
  */
-void save_tree(FILE *file, TREE *node)
+STATIC void save_tree(FILE *file, TREE *node)
 {
     static int level = 0;
     unsigned int i;
@@ -2217,7 +2216,7 @@ void save_tree(FILE *file, TREE *node)
  *
  *		Purpose:		Load a tree structure from the specified file.
  */
-void load_tree(FILE *file, TREE *node)
+STATIC void load_tree(FILE *file, TREE *node)
 {
     static int level = 0;
     unsigned int ui;
@@ -2265,7 +2264,7 @@ void load_tree(FILE *file, TREE *node)
  *
  *		Purpose:		Load a model into memory.
  */
-bool load_model(char *filename, MODEL *model)
+STATIC bool load_model(char *filename, MODEL *model)
 {
     FILE *file;
     char cookie[16];
@@ -2308,7 +2307,7 @@ fail:
  *	and put them into a dict, sequentially.
  *	NOTE No memory for the STRINGS is allocated: the DICT points to the input string.
  */
-void make_words(char *input, DICTIONARY *words)
+STATIC void make_words(char *input, DICTIONARY *words)
 {
     size_t offset = 0;
     size_t len = strlen(input);
@@ -2373,7 +2372,7 @@ void make_words(char *input, DICTIONARY *words)
  *		Purpose:		Return whether or not a word boundary exists in a string
  *						at the specified location.
  */
-bool boundary(char *string, size_t position)
+STATIC bool boundary(char *string, size_t position)
 {
     unsigned char *ucp = (unsigned char *) string;
     if (position == 0) return FALSE;
@@ -2420,7 +2419,7 @@ bool boundary(char *string, size_t position)
  *		Purpose:		Put some special words into the dictionary so that the
  *						program will respond as if to a new judge.
  */
-void make_greeting(DICTIONARY *words)
+STATIC void make_greeting(DICTIONARY *words)
 {
     unsigned int i;
 
@@ -2437,7 +2436,7 @@ void make_greeting(DICTIONARY *words)
  *                which may vaguely be construed as containing a reply to
  *                whatever is in the input string.
  */
-char *generate_reply(MODEL *model, DICTIONARY *words)
+STATIC char *generate_reply(MODEL *model, DICTIONARY *words)
 {
     static char *output_none = "Geert! doe er wat aan!" ;
     // static char *output_none = NULL;
@@ -2521,7 +2520,7 @@ bool dissimilar(DICTIONARY *dic1, DICTIONARY *dic2)
  *						a keywords dictionary, which will be used when generating
  *						a reply.
  */
-DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
+STATIC DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
 {
     static DICTIONARY *keys = NULL;
     unsigned int i;
@@ -2573,7 +2572,7 @@ DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
  *
  *		Purpose:		Add a word to the keyword dictionary.
  */
-void add_key(MODEL *model, DICTIONARY *keys, STRING word)
+STATIC void add_key(MODEL *model, DICTIONARY *keys, STRING word)
 {
     int symbol;
 
@@ -2595,7 +2594,7 @@ void add_key(MODEL *model, DICTIONARY *keys, STRING word)
  *
  *		Purpose:		Add an auxilliary keyword to the keyword dictionary.
  */
-void add_aux(MODEL *model, DICTIONARY *keys, STRING word)
+STATIC void add_aux(MODEL *model, DICTIONARY *keys, STRING word)
 {
     int symbol;
 
@@ -2616,7 +2615,7 @@ void add_aux(MODEL *model, DICTIONARY *keys, STRING word)
  *		Purpose:		Generate a dictionary of reply words appropriate to the
  *						given dictionary of keywords.
  */
-DICTIONARY *one_reply(MODEL *model, DICTIONARY *keys)
+STATIC DICTIONARY *one_reply(MODEL *model, DICTIONARY *keys)
 {
     static DICTIONARY *replies = NULL;
     unsigned int ui;
@@ -2717,7 +2716,7 @@ DICTIONARY *one_reply(MODEL *model, DICTIONARY *keys)
  *		Purpose:		Measure the average surprise of keywords relative to the
  *						language model.
  */
-double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
+STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 {
     unsigned int ui, uj, uk;
     WordNum symbol;
@@ -2789,7 +2788,7 @@ double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
  *
  *		Purpose:		Generate a string from the dictionary of reply words.
  */
-char *make_output(DICTIONARY *words)
+STATIC char *make_output(DICTIONARY *words)
 {
     static char *output = NULL;
     unsigned int ui;
@@ -2843,7 +2842,7 @@ char *make_output(DICTIONARY *words)
  *						on probabilities, favouring keywords.  In all cases,
  *						use the longest available context to choose the symbol.
  */
-WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
+STATIC WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 {
     TREE *node;
     unsigned int ui;
@@ -2897,7 +2896,7 @@ WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
  *
  *		Purpose:		A silly brute-force searcher for the reply string.
  */
-bool word_exists(DICTIONARY *dictionary, STRING word)
+STATIC bool word_exists(DICTIONARY *dictionary, STRING word)
 {
     register unsigned int i;
 
@@ -2915,7 +2914,7 @@ bool word_exists(DICTIONARY *dictionary, STRING word)
  *		Purpose:		Seed the reply by guaranteeing that it contains a
  *						keyword, if one exists.
  */
-WordNum seed(MODEL *model, DICTIONARY *keys)
+STATIC WordNum seed(MODEL *model, DICTIONARY *keys)
 {
     unsigned int idx, stop;
     WordNum symbol;
@@ -2972,7 +2971,7 @@ SWAP *new_swap(void)
  *
  *		Purpose:		Add a new entry to the swap structure.
  */
-void add_swap(SWAP *list, char *from, char *to)
+STATIC void add_swap(SWAP *list, char *from, char *to)
 {
     list->size += 1;
 
@@ -3003,7 +3002,7 @@ void add_swap(SWAP *list, char *from, char *to)
  *
  *		Purpose:		Read a swap structure from a file.
  */
-SWAP *initialize_swap(char *filename)
+STATIC SWAP *initialize_swap(char *filename)
 {
     SWAP *list;
     FILE *file = NULL;
@@ -3032,7 +3031,7 @@ SWAP *initialize_swap(char *filename)
 
 /*---------------------------------------------------------------------------*/
 
-void free_swap(SWAP *swap)
+STATIC void free_swap(SWAP *swap)
 {
     register unsigned int i;
 
@@ -3055,7 +3054,7 @@ void free_swap(SWAP *swap)
  *
  *		Purpose:		Read a dictionary from a file.
  */
-DICTIONARY *read_dictionary(char *filename)
+STATIC DICTIONARY *read_dictionary(char *filename)
 {
     DICTIONARY *list;
     FILE *file = NULL;
@@ -3176,7 +3175,7 @@ void die(int sig)
  *
  *		Purpose:		Return a random integer between 0 and range-1.
  */
-unsigned int urnd(unsigned int range)
+STATIC unsigned int urnd(unsigned int range)
 {
     static bool flag = FALSE;
 
@@ -3569,7 +3568,7 @@ void change_personality(DICTIONARY *command, unsigned int position, MODEL **mode
 
 /*---------------------------------------------------------------------------*/
 
-void free_words(DICTIONARY *words)
+STATIC void free_words(DICTIONARY *words)
 {
     register unsigned int i;
 
@@ -3581,7 +3580,7 @@ void free_words(DICTIONARY *words)
 
 /*---------------------------------------------------------------------------*/
 
-void free_word(STRING word)
+STATIC void free_word(STRING word)
 {
     free(word.word);
     word.word = NULL;
@@ -3744,12 +3743,12 @@ void free_word(STRING word)
 
 
 #ifdef WANT_DICT_HASH
-HashVal hash_word(STRING string)
+STATIC HashVal hash_word(STRING string)
 {
 return hash_mem(string.word, (size_t) string.length);
 }
 
-HashVal hash_mem(void *dat, size_t len)
+STATIC HashVal hash_mem(void *dat, size_t len)
 {
 unsigned char *str = (unsigned char*) dat;
 unsigned val=0;
@@ -3761,7 +3760,7 @@ for(idx=0; idx < len; idx++ )	{
 return val;
 }
 
-WordNum * dict_hnd (DICTIONARY *dict, STRING word)
+STATIC WordNum * dict_hnd (DICTIONARY *dict, STRING word)
 {
 WordNum *np;
 unsigned hash,slot;
@@ -3784,7 +3783,7 @@ for (np = &dict->entry[slot].tabl ; np ; np = &dict->entry[*np].link ) {
 return np;
 }
 
-WordNum * dict_hnd_tail (DICTIONARY *dict, STRING word)
+STATIC WordNum * dict_hnd_tail (DICTIONARY *dict, STRING word)
 {
 WordNum *np;
 
@@ -3803,7 +3802,7 @@ STATIC int double_dictionary(DICTIONARY *dict)
 {
     unsigned newsize;
 
-    newsize = dict->size ? 2*dict->size : DICT_SIZE_INITIAL;
+    newsize = dict->size ? dict->size + dict->size/2 : DICT_SIZE_INITIAL;
     return resize_dictionary(dict, newsize);
 }
 
@@ -3821,7 +3820,7 @@ STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize)
 	return -1;
 	}
     dict->msize = newsize;
-    wipe_dictionary(dict, dict->msize);
+    format_dictionary(dict, dict->msize);
 
     for (item =0 ; item < dict->size; item++) {
 		WordNum *np;
