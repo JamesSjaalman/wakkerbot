@@ -143,23 +143,18 @@
 #define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 
-#undef WANT_DICT_HASH
 #define WANT_DICT_HASH 1
+#undef WANT_DICT_HASH
 
-#undef WANT_NODE_HASH
 #define WANT_NODE_HASH 1
+#undef WANT_NODE_HASH
 
+#define WANT_DUMP_REHASH_TREE 1
+#undef WANT_DUMP_REHASH_TREE
 
 #define DICT_SIZE_INITIAL 4
 #define NODE_SIZE_INITIAL 2
-
-/* These are not used anymore 
- * Stuctures are padded anyway
- * , and the savings on disk space are futile.
- * */
-#define BYTE1 unsigned char
-#define BYTE2 unsigned short
-#define BYTE4 unsigned long
+#define MIN_PAREL_SIZE 30
 
 #ifdef __mac_os
 #define bool Boolean
@@ -206,9 +201,11 @@ typedef struct {
 } STRING;
 
 struct	dictslot {
+#ifdef WANT_DICT_HASH
 	WordNum tabl;
 	WordNum link;
 	HashVal hash;
+#endif
 	STRING string;
 	};
 typedef struct {
@@ -217,9 +214,7 @@ typedef struct {
     DictSize msize;
     struct dictslot *entry;
 #else
-    struct {
-    	STRING string;
-	} *entry;
+    struct dictslot *entry;
     WordNum *index;
 #endif
 } DICTIONARY;
@@ -434,14 +429,14 @@ STATIC WordNum * dict_hnd_tail (DICTIONARY *dict, STRING word);
 STATIC HashVal hash_word(STRING word);
 STATIC int double_dictionary(DICTIONARY *dict);
 STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize);
-STATIC void format_dictionary(DICTIONARY * dict, unsigned size);
+STATIC void format_dictionary(struct dictslot * slots, unsigned size);
 #endif
 
 #ifdef WANT_NODE_HASH
 #define CHILD_NIL ((ChildIndex)-1)
 
 ChildIndex *node_hnd(TREE *node, WordNum symbol);
-STATIC void format_children(TREE *node , unsigned size);
+STATIC void format_treeslots(struct treeslot *slots , unsigned size);
 #endif
 
 /* Function: setnoprompt
@@ -1278,7 +1273,7 @@ STATIC unsigned search_dictionary(DICTIONARY *dict, STRING word, bool *find)
     /*
      *		If the dictionary is empty, then obviously the word won't be found
      */
-    if (dict->size == 0) {
+    if (!dict || dict->size == 0) {
 	middle = 0;
 	goto notfound;
     }
@@ -1505,21 +1500,21 @@ STATIC DICTIONARY *new_dictionary(void)
 	}
     dict->msize = DICT_SIZE_INITIAL;
     dict->size = 0;
-    format_dictionary(dict, dict->msize);
+    format_dictionary(dict->entry, dict->msize);
 
     return dict;
 }
 
-STATIC void format_dictionary(DICTIONARY * dict, unsigned size)
+STATIC void format_dictionary(struct dictslot * slots, unsigned size)
 {
     unsigned ii;
 
     for (ii = 0; ii < size; ii++) {
-	dict->entry[ii].tabl = WORD_NIL;
-	dict->entry[ii].link = WORD_NIL;
-	dict->entry[ii].hash = 0xe;
-	dict->entry[ii].string.length = 0;
-	dict->entry[ii].string.word = NULL;
+	slots[ii].tabl = WORD_NIL;
+	slots[ii].link = WORD_NIL;
+	slots[ii].hash = 0xe;
+	slots[ii].string.length = 0;
+	slots[ii].string.word = NULL;
 	}
 
 }
@@ -1884,9 +1879,11 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
     ChildIndex item,slot;
     struct treeslot *old;
 
-// fprintf(stderr, "Tree_resize(%u/%u) %u\n", tree->branch,  tree->msize, newsize);
+    if (!tree) return -1;
+// fprintf(stderr, "resize_tree(%u/%u) %u\n", tree->branch,  tree->msize, newsize);
     old = tree->children;
     if (!newsize) newsize = NODE_SIZE_INITIAL;
+    while (newsize < tree->branch) newsize += 2;
 
     tree->children = malloc(newsize * sizeof *tree->children );
     if (tree->children == NULL) {
@@ -1897,35 +1894,50 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
 
     tree->msize = newsize;
 #ifdef WANT_NODE_HASH
-    format_children(tree, tree->msize);
+    format_treeslots(tree->children, tree->msize);
+
+#if WANT_DUMP_REHASH_TREE
+	fprintf(stderr, "Old=%p New=%p Tree_resize(%u/%u) %u\n", (void*) old, (void*) tree->children, tree->branch,  tree->msize, newsize);
+#endif WANT_DUMP_REHASH_TREE 1
+
 
     if (old) for (item =0 ; item < tree->branch; item++) {
 	ChildIndex *ip;
 	slot = old[item].hash % tree->msize;
-	for( ip = &tree->children[slot].tabl; *ip != CHILD_NIL; ip = &tree->children[*ip].link ) {;}
+	for( ip = &tree->children[slot].tabl; *ip != CHILD_NIL; ip = &tree->children[*ip].link ) {
+
+#if WANT_DUMP_REHASH_TREE
+		fprintf(stderr, "{%u}", (unsigned) *ip);
+#endif
+		}
+#if WANT_DUMP_REHASH_TREE
+		fprintf(stderr, "Placing Item=%u Hash=%5u(%8x) Slot=%4u TargetSlot=%u (previous %u)\n"
+		, (unsigned) item , (unsigned) old[item].hash, (unsigned) old[item].hash, (unsigned) slot
+		, (unsigned) ((char*) ip - (char*) &tree->children[0].tabl) / sizeof tree->children[0] 
+		, (unsigned) *ip );
+#endif
 	*ip = item;
 	tree->children[item].hash = old[item].hash;
 	tree->children[item].ptr = old[item].ptr;
 	}
-#else
-    if (old) memcpy(tree->children, old, tree->branch * sizeof *tree->children );
-#endif
+#else /* WANT_NODE_HASH */
+    if (old && tree->branch) memcpy(tree->children, old, tree->branch * sizeof *tree->children );
+#endif /* WANT_NODE_HASH */
     free (old);
     return 0; /* success */
 }
 
 #ifdef WANT_NODE_HASH
-STATIC void format_children(TREE *node , unsigned size)
+STATIC void format_treeslots(struct treeslot  *slots , unsigned size)
 {
-    unsigned ii;
+    unsigned ui;
 
-    for (ii = 0; ii < size; ii++) {
-	node->children[ii].tabl = CHILD_NIL;
-	node->children[ii].link = CHILD_NIL;
-	node->children[ii].hash = ii;
-	node->children[ii].ptr = NULL;
+    for (ui = 0; ui < size; ui++) {
+	slots[ui].tabl = CHILD_NIL;
+	slots[ui].link = CHILD_NIL;
+	slots[ui].hash = ui;
+	slots[ui].ptr = NULL;
 	}
-
 }
 
 
@@ -1934,7 +1946,7 @@ STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol)
 ChildIndex *ip;
 unsigned slot;
 
-if (node->branch >= node->msize && resize_tree( node, node->branch+node->branch/4 )) return NULL;
+if (node->branch >= node->msize && resize_tree(node, node->branch+node->branch/2 )) return NULL;
 
 slot = symbol % node->msize;
 for (ip = &node->children[ slot ].tabl; *ip != CHILD_NIL; ip = &node->children[ *ip ].link ) {
@@ -2476,6 +2488,7 @@ STATIC char *generate_reply(MODEL *model, DICTIONARY *words)
     progress("Generating reply", 0, 1); 
     do {
 	replywords = one_reply(model, keywords);
+	if (replywords->size < MIN_PAREL_SIZE) continue;
 	surprise = evaluate_reply(model, keywords, replywords);
 	++count;
 	if (surprise > max_surprise && dissimilar(words, replywords) ) {
@@ -2501,7 +2514,7 @@ STATIC char *generate_reply(MODEL *model, DICTIONARY *words)
  *		Purpose:		Return TRUE or FALSE depending on whether the dictionaries
  *						are the same or not.
  */
-bool dissimilar(DICTIONARY *dic1, DICTIONARY *dic2)
+STATIC bool dissimilar(DICTIONARY *dic1, DICTIONARY *dic2)
 {
     unsigned int i;
 
@@ -2816,15 +2829,10 @@ STATIC char *make_output(DICTIONARY *words)
 
     length = 0;
     for(ui = 0; ui < words->size; ++ui)
-#if 0
-	for(j = 0; j < words->entry[ui].string.length; ++j)
-	    output[length++] = words->entry[ui].string.word[j];
-#else
 	{
 	memcpy(output+length, words->entry[ui].string.word, words->entry[ui].string.length);
 	length += words->entry[ui].string.length;
 	}
-#endif
 
     output[length] = '\0';
 
@@ -3813,6 +3821,7 @@ STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize)
     WordNum item,slot;
 
     old = dict->entry ;
+    while (newsize < dict->size) newsize += 2;
     dict->entry = malloc (newsize * sizeof *dict->entry);
     if (!dict->entry) {
 	error("resize_dictionary", "Unable to allocate dictionary->slots.");
@@ -3820,7 +3829,7 @@ STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize)
 	return -1;
 	}
     dict->msize = newsize;
-    format_dictionary(dict, dict->msize);
+    format_dictionary(dict->entry, dict->msize);
 
     for (item =0 ; item < dict->size; item++) {
 		WordNum *np;
