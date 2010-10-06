@@ -137,17 +137,17 @@
 #define MIN(a,b) ((a)<(b))?(a):(b)
 /* Changed Cookie and restarted version numbering, because the sizes were changed */
 #define COOKIE "Wakker0.0"
-#define TIMEOUT 10
+#define DEFAULT_TIMEOUT 10
 #define DEFAULT_DIR "."
 
 #define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 
-#define WANT_DICT_HASH 1
 #undef WANT_DICT_HASH
+#define WANT_DICT_HASH 1
 
-#define WANT_NODE_HASH 1
 #undef WANT_NODE_HASH
+#define WANT_NODE_HASH 1
 
 #define WANT_DUMP_REHASH_TREE 1
 #undef WANT_DUMP_REHASH_TREE
@@ -263,8 +263,11 @@ typedef struct {
 
 /*===========================================================================*/
 
+#define MY_NAME "MegaHAL"
+#define MY_NAME "PlasBot"
 static int glob_width = 75;
 static int glob_order = 7; // 5
+static int glob_timeout = DEFAULT_TIMEOUT;
 
 static bool typing_delay = FALSE;
 static bool noprompt = FALSE;
@@ -340,7 +343,7 @@ STATIC void delay(char *);
 STATIC void die(int);
 STATIC bool dissimilar(DICTIONARY *, DICTIONARY *);
 STATIC void error(char *, char *, ...);
-STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words);
+STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *sentence);
 STATIC COMMAND_WORDS execute_command(DICTIONARY *, unsigned int *position);
 STATIC void exithal(void);
 STATIC TREE *find_symbol(TREE *node, WordNum symbol);
@@ -395,7 +398,7 @@ STATIC TREE *new_node(void);
 STATIC SWAP *new_swap(void);
 STATIC STRING new_string(char *str, size_t len);
 STATIC bool print_header(FILE *);
-bool progress(char *message, int done, int total);
+bool progress(char *message, unsigned long done, unsigned long total);
 STATIC DICTIONARY *one_reply(MODEL *, DICTIONARY *);
 STATIC void save_dictionary(FILE *, DICTIONARY *);
 STATIC void save_tree(FILE *, TREE *);
@@ -423,7 +426,7 @@ STATIC unsigned int urnd(unsigned int range);
 #ifdef WANT_DICT_HASH
 #define WORD_NIL ((WordNum)-1)
 
-HashVal hash_mem(void *dat, size_t len);
+STATIC HashVal hash_mem(void *dat, size_t len);
 STATIC WordNum * dict_hnd(DICTIONARY *dict, STRING word);
 STATIC WordNum * dict_hnd_tail (DICTIONARY *dict, STRING word);
 STATIC HashVal hash_word(STRING word);
@@ -435,7 +438,8 @@ STATIC void format_dictionary(struct dictslot * slots, unsigned size);
 #ifdef WANT_NODE_HASH
 #define CHILD_NIL ((ChildIndex)-1)
 
-ChildIndex *node_hnd(TREE *node, WordNum symbol);
+STATIC HashVal hash_mem(void *dat, size_t len);
+STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol);
 STATIC void format_treeslots(struct treeslot *slots , unsigned size);
 #endif
 
@@ -476,6 +480,12 @@ void megahal_setstatusfile(char *filename)
 void megahal_setdirectory (char *dir)
 {
     directory = dir;
+}
+
+
+void megahal_settimeout (char *string)
+{
+    sscanf(string, "%d", &glob_timeout);
 }
 
 /*
@@ -644,11 +654,11 @@ int megahal_command(char *input)
 	break;
     case DELAY:
 	typing_delay = !typing_delay;
-	printf("MegaHAL typing is now %s.\n", typing_delay?"on":"off");
+	printf(MY_NAME " typing is now %s.\n", typing_delay?"on":"off");
 	return 1;
     case SPEECH:
 	speech = !speech;
-	printf("MegaHAL speech is now %s.\n", speech?"on":"off");
+	printf(MY_NAME " speech is now %s.\n", speech?"on":"off");
 	return 1;
     case HELP:
 	help();
@@ -828,7 +838,8 @@ STATIC char *read_input(char *prompt)
 	 *		Re-allocate the input string so that it can hold one more
 	 *		character.
 	 */
-	if (seen_eol && !length) return NULL;
+	// This will end execution on two consecutive empty lines
+	// if (seen_eol && !length) return NULL;
 	if (length +2 >= size) {
 		input = realloc(input, size? 2*size: 16);
 		if (input) size = size ? 2 * size : 16;
@@ -893,7 +904,7 @@ STATIC void error(char *title, char *fmt, ...)
     fprintf(errorfp, ".\n");
     fflush(errorfp);
 
-    fprintf(stderr, "MegaHAL died for some reason; check the error log.\n");
+    fprintf(stderr, MY_NAME " died for some reason; check the error log.\n");
 
     exit(1);
 }
@@ -911,7 +922,7 @@ STATIC bool warn(char *title, char *fmt, ...)
     fprintf(errorfp, ".\n");
     fflush(errorfp);
 
-    fprintf(stderr, "MegaHAL emitted a warning; check the error log.\n");
+    fprintf(stderr, MY_NAME " emitted a warning; check the error log.\n");
 
     return TRUE;
 }
@@ -1000,9 +1011,9 @@ STATIC void write_output(char *output)
     formatted = format_output(output);
 
     bit = strtok(formatted, "\n");
-    if (!bit) (void)status("MegaHAL: %s\n", formatted);
+    if (!bit) (void)status(MY_NAME ": %s\n", formatted);
     while(bit) {
-	(void)status("MegaHAL: %s\n", bit);
+	(void)status(MY_NAME ": %s\n", bit);
 	bit = strtok(NULL, "\n");
     }
 }
@@ -1566,9 +1577,10 @@ STATIC void save_dictionary(FILE *file, DICTIONARY *dict)
 STATIC void load_dictionary(FILE *file, DICTIONARY *dict)
 {
     unsigned int i;
-    int size;
+    unsigned int size;
 
     fread(&size, sizeof size, 1, file);
+    fprintf(stderr, "Size=%d\n", size);
     progress("Loading dictionary", 0, 1);
     for(i = 0; i < size; ++i) {
 	load_word(file, dict);
@@ -2459,7 +2471,6 @@ STATIC char *generate_reply(MODEL *model, DICTIONARY *words)
     char *output;
     int count;
     int basetime;
-    int timeout = TIMEOUT;
 
     /*
      *		Create an array of keywords from the words in the user's input
@@ -2493,11 +2504,11 @@ STATIC char *generate_reply(MODEL *model, DICTIONARY *words)
 	++count;
 	if (surprise > max_surprise && dissimilar(words, replywords) ) {
 	    output = make_output(replywords);
-		fprintf(stderr, "\n%u %lf/%lf:\n\t%s\n", count, surprise, max_surprise, output);
+		// fprintf(stderr, "\n%u %lf/%lf:\n\t%s\n", count, surprise, max_surprise, output);
 	    max_surprise = surprise;
 	}
- 	progress(NULL, (time(NULL)-basetime),timeout);
-    } while(time(NULL)-basetime < timeout);
+ 	progress(NULL, (time(NULL)-basetime),glob_timeout);
+    } while(time(NULL)-basetime < glob_timeout);
     progress(NULL, 1, 1);
 
     /*
@@ -2729,7 +2740,7 @@ STATIC DICTIONARY *one_reply(MODEL *model, DICTIONARY *keys)
  *		Purpose:		Measure the average surprise of keywords relative to the
  *						language model.
  */
-STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
+STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *sentence)
 {
     unsigned int ui, uj, uk;
     WordNum symbol;
@@ -2737,13 +2748,13 @@ STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
     unsigned count, totcount = 0;
     TREE *node;
 
-    if (words->size<= 0) return 0.0;
+    if (sentence->size<= 0) return 0.0;
     initialize_context(model);
     model->context[0] = model->forward;
-    for(ui = 0; ui < words->size; ++ui) {
-	symbol = find_word(model->dictionary, words->entry[ui].string );
+    for(ui = 0; ui < sentence->size; ++ui) {
+	symbol = find_word(model->dictionary, sentence->entry[ui].string );
 
-	if (find_word(keys, words->entry[ui].string ) != 0) {
+	if (find_word(keys, sentence->entry[ui].string ) != 0) {
 	    probability = 0.0;
 	    count = 0;
 	    ++totcount;
@@ -2765,10 +2776,10 @@ STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 
     initialize_context(model);
     model->context[0] = model->backward;
-    for(uk = words->size; uk-- > 0; ) {
-	symbol = find_word(model->dictionary, words->entry[uk].string );
+    for(uk = sentence->size; uk-- > 0; ) {
+	symbol = find_word(model->dictionary, sentence->entry[uk].string );
 
-	if (find_word(keys, words->entry[uk].string ) != 0) {
+	if (find_word(keys, sentence->entry[uk].string ) != 0) {
 	    probability = 0.0;
 	    count = 0;
 	    ++totcount;
@@ -3152,7 +3163,7 @@ void typein(char c)
  */
 void ignore(int sig)
 {
-    if (sig != 0) warn("ignore", "MegaHAL received signal %d", sig);
+    if (sig != 0) warn("ignore", MY_NAME " received signal %d", sig);
 
 #if !defined(DOS)
     // signal(SIGINT, saveandexit);
@@ -3172,7 +3183,7 @@ void ignore(int sig)
  */
 void die(int sig)
 {
-    error("die", "MegaHAL received signal %d", sig);
+    error("die", MY_NAME " received signal %d", sig);
     exithal();
 }
 
@@ -3411,7 +3422,7 @@ void speak(char *output)
  *
  *		Purpose:		Display a progress indicator as a percentage.
  */
-bool progress(char *message, int done, int total)
+bool progress(char *message, unsigned long done, unsigned long total)
 {
     static int last = 0;
     static bool first = FALSE;
@@ -3419,7 +3430,9 @@ bool progress(char *message, int done, int total)
     /*
      *    We have already hit 100%, and a newline has been printed, so nothing
      *    needs to be done.
+     *    WP: avoid div/zero.
      */
+    if (!total) total = 1|done;
     if (done*100/total == 100 && first == FALSE) return TRUE;
 
     /*
@@ -3439,7 +3452,6 @@ bool progress(char *message, int done, int total)
      */
     last = done*100/total;
 
-    // if (done > 0) fprintf(stderr, "%c%c%c%c", 8, 8, 8, 8);
     if (done > 0) fprintf(stderr, "\b\b\b\b");
     fprintf(stderr, "%3d%%", done*100/total);
 
@@ -3846,4 +3858,3 @@ STATIC int resize_dictionary(DICTIONARY *dict, unsigned newsize)
 }
 
 #endif
-
