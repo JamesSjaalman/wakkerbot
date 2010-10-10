@@ -322,7 +322,7 @@ STATIC int resize_tree(TREE *tree, unsigned newsize);
 STATIC void add_swap(SWAP *list, char *from, char *to);
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word);
-STATIC void del_word_dofree(DICTIONARY *dict, STRING word);
+STATIC WordNum del_word_dofree(DICTIONARY *dict, STRING word);
 STATIC WordNum add_word_nofuss(DICTIONARY *dict, STRING word);
 STATIC WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words);
 STATIC bool boundary(char *string, size_t position);
@@ -1142,7 +1142,7 @@ return *wp;
 /*---------------------------------------------------------------------------*/
 
 /*
- *		Function:	Add_Word_dodup
+ *		Function:	Add_Word
  *
  *		Purpose:		Add a word to a dictionary, and return the identifier
  *						assigned to the word.  If the word already exists in
@@ -1166,41 +1166,27 @@ if (*wp == WORD_NIL) {
 return *wp;
 
 }
-/*
- * del_word_dofree
- * Remove a word from a dictionary (if present)
- * The word's STRING is freed, and its slot is replaced by
- * the element at [dict->size-1], shrinking the array.
- */
-STATIC void del_word_dofree(DICTIONARY *dict, STRING word)
+
+STATIC WordNum del_word_dofree(DICTIONARY *dict, STRING word)
 {
 WordNum *wp,this,top;
 
 wp = dict_hnd(dict, word);
-if (!wp) return;
-if (*wp == WORD_NIL) return; /* not found */
+if (!wp) return 0; /* WP: should be WORD_NIL */
+
+if (*wp == WORD_NIL) return *wp;
 
 this = *wp ;
-// *wp = WORD_NIL;
-*wp = dict->entry[this].link;
+*wp = WORD_NIL;
 free(dict->entry[this].string.word );
 dict->entry[this].string.word = NULL;
 dict->entry[this].string.length = 0;
 
 top = --dict->size;
-if (!top || top == this) return ;
+if (!top || top == this) return top;
 
 wp = dict_hnd(dict, dict->entry[top].string);
-if (!wp || *wp == WORD_NIL) { /* ?? */
-	warn ("Deleting %u: Top element %u %*.*s not found in dict.\n"
-	, this
-	, top
-	, (int) dict->entry[top].string.length
-	, (int) dict->entry[top].string.length
-	, dict->entry[top].string.word
-	);
-	return ;
-	}
+if (!wp || *wp == WORD_NIL) return top; /* ?? */
 
 *wp = this;
 dict->entry[this].string = dict->entry[top].string;
@@ -1209,7 +1195,7 @@ dict->entry[this].stats = dict->entry[top].stats;
 dict->entry[top].string.word = NULL;
 dict->entry[top].string.length = 0;
 dict->entry[top].hash = 0;
-return ;
+return top;
 }
 
 /*---------------------------------------------------------------------------*/
