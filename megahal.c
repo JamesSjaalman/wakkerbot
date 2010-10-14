@@ -135,7 +135,8 @@
 #define V_THINK 250000
 
 #define MIN(a,b) ((a)<(b))?(a):(b)
-/* Changed Cookie and restarted version numbering, because the sizes were changed */
+
+/* Changed Cookie and restarted version numbering, because the sizes have changed */
 #define COOKIE "Wakker0.0"
 #define DEFAULT_TIMEOUT 10
 #define DEFAULT_DIR "."
@@ -145,6 +146,30 @@
 
 #define WANT_DUMP_REHASH_TREE 1
 #undef WANT_DUMP_REHASH_TREE
+
+#define WANT_DUMP_KEYWORD_WEIGHTS 1
+#undef WANT_DUMP_KEYWORD_WEIGHTS
+
+#define WANT_DUMP_ALL_REPLIES 1
+#undef WANT_DUMP_ALL_REPLIES
+
+/* the number of keywords that is kept between replies.
+ * Zero to disable */
+#define KEYWORD_DICT_SIZE 0
+
+/* (1/ALZHEIMER_FACTOR) is the chance 
+** of alzheimer hitting the tree, once per reply.
+** Zero to disable
+** 10 is disastrous, 100 is still too big; 1000 might be good enough.
+*/
+#define ALZHEIMER_FACTOR 0
+
+#undef WANT_DUMP_ALZHEIMER_PROGRESS
+#define WANT_DUMP_ALZHEIMER_PROGRESS 1
+
+/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
+#undef WANT_RDTSC_RANDOM
+#define WANT_RDTSC_RANDOM 1
 
 #define DICT_SIZE_INITIAL 4
 #define NODE_SIZE_INITIAL 2
@@ -188,6 +213,11 @@ typedef unsigned int DictSize;
 typedef unsigned int Count;
 typedef unsigned int UsageCnt;
 typedef unsigned int HashVal;
+typedef unsigned long long BigThing;
+BigThing rdtsc_rand(void);
+
+#define WORD_NIL ((WordNum)-1)
+#define CHILD_NIL ((ChildIndex)-1)
 
 typedef struct {
     StrLen length;
@@ -221,7 +251,7 @@ typedef struct {
 struct treeslot {
     ChildIndex tabl;
     ChildIndex link;
-    HashVal hash;
+    // HashVal nhash;
     struct node *ptr;
 	};
 typedef struct node {
@@ -230,7 +260,6 @@ typedef struct node {
     WordNum symbol;
     ChildIndex msize;
     ChildIndex branch;
-    // struct node **tree;
     struct treeslot *children;
 } TREE;
 
@@ -241,6 +270,14 @@ typedef struct {
     TREE **context;
     DICTIONARY *dictionary;
 } MODEL;
+
+struct memstat {
+	unsigned alloc;
+	unsigned free;
+	unsigned alzheimer;
+	unsigned symdel;
+	unsigned treedel;
+	} memstats = {0,0,0,0,0} ;
 
 typedef enum { UNKNOWN, QUIT, EXIT, SAVE, DELAY, HELP, SPEECH, VOICELIST, VOICE, BRAIN, QUIET} COMMAND_WORDS;
 
@@ -313,8 +350,6 @@ Boolean gSpeechExists = false;
 SpeechChannel gSpeechChannel = nil;
 #endif
 
-/* FIXME - these need to be static  */
-
 STATIC void add_aux(MODEL *model, DICTIONARY *keys, STRING word);
 STATIC void add_key(MODEL *model, DICTIONARY *keys, STRING word);
 STATIC int resize_tree(TREE *tree, unsigned newsize);
@@ -322,7 +357,6 @@ STATIC int resize_tree(TREE *tree, unsigned newsize);
 STATIC void add_swap(SWAP *list, char *from, char *to);
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word);
-STATIC WordNum del_word_dofree(DICTIONARY *dict, STRING word);
 STATIC WordNum add_word_nofuss(DICTIONARY *dict, STRING word);
 STATIC WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words);
 STATIC bool boundary(char *string, size_t position);
@@ -339,6 +373,7 @@ STATIC COMMAND_WORDS execute_command(DICTIONARY *, unsigned int *position);
 STATIC void exithal(void);
 STATIC TREE *find_symbol(TREE *node, WordNum symbol);
 STATIC TREE *find_symbol_add(TREE *, WordNum);
+
 STATIC WordNum find_word(DICTIONARY *, STRING);
 STATIC char *generate_reply(MODEL *, DICTIONARY *);
 STATIC void help(void);
@@ -408,8 +443,6 @@ STATIC int wordcmp(STRING one, STRING two);
 STATIC bool word_exists(DICTIONARY *, STRING);
 STATIC unsigned int urnd(unsigned int range);
 
-#define WORD_NIL ((WordNum)-1)
-
 STATIC HashVal hash_mem(void *dat, size_t len);
 STATIC WordNum * dict_hnd(DICTIONARY *dict, STRING word);
 STATIC WordNum * dict_hnd_tail (DICTIONARY *dict, STRING word);
@@ -422,11 +455,15 @@ STATIC unsigned long dict_inc_refa_node(DICTIONARY *dict, TREE *node, WordNum sy
 STATIC unsigned long dict_inc_ref_recurse(DICTIONARY *dict, TREE *node);
 STATIC unsigned long dict_inc_ref(DICTIONARY *dict, WordNum symbol, unsigned nnode, unsigned nhits);
 
-#define CHILD_NIL ((ChildIndex)-1)
+STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
+STATIC void del_word_dofree(DICTIONARY *dict, STRING word);
+void free_tree_recursively(TREE *tree);
+STATIC void symbol_russian_alzheimer(TREE *tree);
+STATIC void symbol_russian_alzheimer_recurse(TREE *tree, unsigned the_dice);
 
-STATIC HashVal hash_mem(void *dat, size_t len);
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol);
 STATIC void format_treeslots(struct treeslot *slots , unsigned size);
+STATIC void show_memstat(char *msg);
 
 /* Function: setnoprompt
 
@@ -683,6 +720,7 @@ void megahal_cleanup(void)
 #ifdef AMIGA
     CloseLocale(_AmigaLocale);
 #endif
+    show_memstat("Cleanup" );
 }
 
 
@@ -721,7 +759,6 @@ STATIC COMMAND_WORDS execute_command(DICTIONARY *words, unsigned int *position)
 	     *		Look for a command word.
 	     */
 	for(j = 0; j < COMMAND_SIZE; ++j)
-	// if (!wordcmp(command[j].word, words->entry[i + 1].string) ) {
 	if (!strncasecmp(command[j].word.word, words->entry[i + 1].string.word, words->entry[i + 1].string.length) ) {
 	    *position = i + 1;
 	    return command[j].command;
@@ -751,6 +788,7 @@ STATIC void exithal(void)
     }
 #endif
 
+    show_memstat("Exit(0)" );
     exit(0);
 }
 
@@ -891,6 +929,7 @@ STATIC void error(char *title, char *fmt, ...)
 
     fprintf(stderr, MY_NAME " died for some reason; check the error log.\n");
 
+    show_memstat("Exit(1)" );
     exit(1);
 }
 
@@ -912,6 +951,14 @@ STATIC bool warn(char *title, char *fmt, ...)
     return TRUE;
 }
 
+STATIC void show_memstat(char *msg)
+{
+if (!msg) msg = "..." ;
+status ("Memstat %s: {alloc=%u free=%u alzheimer=%u symdel=%u treedel=%u}\n"
+	, msg, memstats.alloc , memstats.free
+	, memstats.alzheimer , memstats.symdel , memstats.treedel
+	);
+}
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -1124,11 +1171,13 @@ STATIC WordNum add_word_nofuss(DICTIONARY *dict, STRING word)
 WordNum *wp;
 
 if (!dict) return 0; /* WP: should be WORD_NIL */
+if (!word.length) return 0; /* WP: should be WORD_NIL */
 
 if (dict->size >= dict->msize && double_dictionary(dict)) return WORD_NIL;
-wp = & dict->entry[ dict->size].tabl ;
+wp = &dict->entry[ dict->size].tabl ;
 
 *wp = dict->size++;
+dict->entry[*wp].link = WORD_NIL;
 dict->entry[*wp].string = word;
 /* fake the hash value.
  * setting it to the identity transform will cause X to be put into slot X.
@@ -1151,51 +1200,70 @@ return *wp;
  */
 STATIC WordNum add_word_dodup(DICTIONARY *dict, STRING word)
 {
-WordNum *wp;
+WordNum *np;
 
-wp = dict_hnd(dict, word);
-if (!wp) return 0; /* WP: should be WORD_NIL */
+if (!word.length) return 0; /* WP: should be WORD_NIL */
 
-if (*wp == WORD_NIL) {
+np = dict_hnd(dict, word);
+if (!np) return 0; /* WP: should be WORD_NIL */
+
+if (*np == WORD_NIL) {
 	STRING this;
-	*wp = dict->size++;
+	*np = dict->size++;
 	this = new_string(word.word, word.length);
-	dict->entry[*wp].string = this;
-	dict->entry[*wp].hash = hash_word(this);
+	dict->entry[*np].string = this;
+	dict->entry[*np].hash = hash_word(this);
 	}
-return *wp;
+return *np;
 
 }
 
-STATIC WordNum del_word_dofree(DICTIONARY *dict, STRING word)
+STATIC void del_word_dofree(DICTIONARY *dict, STRING word)
 {
-WordNum *wp,this,top;
+WordNum *np,this,top;
 
-wp = dict_hnd(dict, word);
-if (!wp) return 0; /* WP: should be WORD_NIL */
+np = dict_hnd(dict, word);
+if (!np) return;
+if (*np == WORD_NIL) {
+	warn( "del_word_dofree", "could not find '%*.*s'\n"
+	,  (int) word.length,  (int) word.length,  word.word );
+	return;
+	}
 
-if (*wp == WORD_NIL) return *wp;
+this = *np ;
+if (this == dict->entry[this].link) {
+	warn( "del_word_dofree", "Cyclic linked list detected at %u: '%*.*s'\n"
+	,  this, (int) word.length,  (int) word.length,  word.word );
+	dict->entry[this].link = WORD_NIL;
+	}
+*np = dict->entry[this].link;
 
-this = *wp ;
-*wp = WORD_NIL;
-free(dict->entry[this].string.word );
+free (dict->entry[this].string.word );
 dict->entry[this].string.word = NULL;
 dict->entry[this].string.length = 0;
 
+	/* done deleting. now locate the top element */
 top = --dict->size;
-if (!top || top == this) return top;
+if (!top || top == this) return ; /* last man standing */
 
-wp = dict_hnd(dict, dict->entry[top].string);
-if (!wp || *wp == WORD_NIL) return top; /* ?? */
+np = dict_hnd(dict, dict->entry[top].string);
+if (!np || *np == WORD_NIL) {
+	warn( "del_word_dofree", "deleting at %u could not find top element at %u\n", this, top);
+	return ;
+	}
 
-*wp = this;
+	/* move the top element to the vacant slot */
+*np = this;
 dict->entry[this].string = dict->entry[top].string;
 dict->entry[this].hash = dict->entry[top].hash;
 dict->entry[this].stats = dict->entry[top].stats;
+	/* dont forget top's offspring */
+dict->entry[this].link = dict->entry[top].link;
+dict->entry[top].link = WORD_NIL;
 dict->entry[top].string.word = NULL;
 dict->entry[top].string.length = 0;
 dict->entry[top].hash = 0;
-return top;
+return ;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1209,13 +1277,13 @@ return top;
  */
 STATIC WordNum find_word(DICTIONARY *dict, STRING string)
 {
-WordNum *wp;
+WordNum *np;
 
 if (!dict) return 0; /* WP: should be WORD_NIL */
-wp = dict_hnd(dict, string);
+np = dict_hnd(dict, string);
 
-if (!wp || *wp == WORD_NIL) return 0; /* WP: should be WORD_NIL */
-return *wp;
+if (!np || *np == WORD_NIL) return 0; /* WP: should be WORD_NIL */
+return *np;
 }
 
 STATIC STRING new_string(char *str, size_t len)
@@ -1310,6 +1378,7 @@ STATIC void free_tree(TREE *tree)
 	free(tree->children);
     }
     free(tree);
+    memstats.free += 1;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1528,7 +1597,7 @@ STATIC TREE *new_node(void)
     node->msize = 0;
     node->branch = 0;
     node->children = NULL;
-
+    memstats.alloc += 1;
     return node;
 
 }
@@ -1644,6 +1713,141 @@ STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
     return node;
 }
 
+STATIC void symbol_russian_alzheimer(TREE *tree)
+{
+unsigned the_dice;
+
+if (!tree) return;
+
+the_dice = urnd(tree->usage);
+
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+fprintf(stderr, "symbol_russian_alzheimer() dice=%u\n", the_dice);
+#endif
+
+symbol_russian_alzheimer_recurse(tree, the_dice);
+}
+
+STATIC void symbol_russian_alzheimer_recurse(TREE *tree, unsigned dice)
+{
+unsigned slot;
+if (!tree) return;
+
+if (! tree->branch) {
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+	fprintf(stderr, "symbol_russian_alzheimer_recurse(dice=%u) Terminal node (symbol=%u usage=%u count=%u)\n"
+	, dice, tree->symbol, tree->usage, tree->count);
+#endif
+	return;
+	}
+
+/* This is the same kind of sampling as used in babble()
+ * Starting with a random slot is not strictly needed
+ * , given a good random value for the_dice 
+ */
+slot = urnd(tree->branch);
+
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+fprintf(stderr, "symbol_russian_alzheimer_recurse(dice=%u) slot=%u\n", dice, slot);
+#endif
+
+while (dice >= tree->children[slot].ptr->count) {
+	dice -= tree->children[slot].ptr->count;
+	slot = (slot+1) % tree->branch;
+	}
+
+if (!dice || (tree->children[slot].ptr && tree->children[slot].ptr->branch)) {
+	unsigned symbol;
+	symbol = tree->children[slot].ptr ? tree->children[slot].ptr->symbol : 0;
+
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+	fprintf(stderr, "symbol_russian_alzheimer_recurse(%u) exact match or terminal child; slot=%u symbol=%u\n"
+		, dice, slot, symbol);
+#endif
+	memstats.alzheimer += 1;
+	del_symbol_do_free(tree, symbol) ;
+	}
+else	{
+	symbol_russian_alzheimer_recurse(tree->children[slot].ptr, dice);
+	}
+return;
+}
+
+STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
+{
+    ChildIndex *ip, this,top;
+    TREE *child = NULL;
+
+    /*
+     *		Search for the symbol in the subtree of the tree node.
+     */
+    ip = node_hnd(tree, symbol);
+    if (!ip || *ip == CHILD_NIL) {
+	warn("del_symbol_do_free", "Symbol %u not found\n", symbol);
+	return ;
+	}
+	/* cut the node out of the hash chain; save the child. */
+    this = *ip;
+    *ip = tree->children[this].link;
+    child = tree->children[this].ptr ;
+
+    /*
+     *		Decrement the symbol counts
+     *		Avoid wrapping.
+     */
+    if (!tree->usage) {
+	warn("del_symbol_do_free", "Usage already zero\n");
+    }
+    if (tree->usage < child->count) {
+	warn("del_symbol_do_free", "Usage (%u -= %u) would drop below zero\n", tree->usage, child->count );
+	child->count = tree->usage;
+    }
+    tree->usage -= child->count;
+    if (!tree->branch) {
+	warn("del_symbol_do_free", "Branching already zero");
+	goto kill;
+    }
+    top = --tree->branch;
+    memstats.symdel += 1;
+    if (!top || top == this) {;}
+    else {
+	/* unlink top */
+    	ip = node_hnd(tree, tree->children[top].ptr->symbol);
+	*ip = tree->children[top].link;
+	tree->children[top].link = CHILD_NIL;
+	/* now swap this and top */
+	tree->children[this].ptr = tree->children[top].ptr;
+	// tree->children[this].nhash = tree->children[top].nhash;
+	
+	tree->children[top].ptr = NULL;
+	// tree->children[top].nhash = 0;
+	/* relink into the hash chain */
+    	ip = node_hnd(tree, tree->children[this].ptr->symbol);
+	*ip = this;
+	}
+
+	/* now this child needs to be abolished ... */
+kill:
+    free_tree_recursively(child);
+    if (tree->branch < tree->msize/2) {
+	fprintf(stderr, "Tree(%u/%u) could be shrunk: %u/%u\n"
+		, tree->count, tree->usage, tree->branch, tree->msize);
+		}
+}
+
+void free_tree_recursively(TREE *tree)
+{
+unsigned index;
+
+if (!tree) return;
+for (index= tree->branch; index--;	) {
+	free_tree_recursively( tree->children[index] .ptr );
+	}
+free(tree->children);
+free(tree);
+memstats.treedel += 1;
+}
+
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -1657,11 +1861,9 @@ STATIC TREE *find_symbol(TREE *node, WordNum symbol)
 ChildIndex *ip;
 
 ip = node_hnd(node, symbol);
-if (!ip) return NULL;
+if (!ip || *ip == CHILD_NIL) return NULL;
 
-if (*ip == CHILD_NIL) return NULL;
 return node->children[*ip].ptr ;
-
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1671,7 +1873,7 @@ return node->children[*ip].ptr ;
  *
  *		Purpose:		This function is conceptually similar to find_symbol,
  *						apart from the fact that if the symbol is not found,
- *						a new node for this symbol is automatically allocated and added to the
+ *						a new node for this symbol is allocated and added to the
  *						tree.
  */
 STATIC TREE *find_symbol_add(TREE *node, WordNum symbol)
@@ -1681,9 +1883,9 @@ ChildIndex *ip;
 ip = node_hnd(node, symbol);
 if (!ip) return NULL;
 
-if (*ip == CHILD_NIL) {
+if (*ip == CHILD_NIL) { /* not found: create one */
     *ip = node->branch++;
-     node->children[ *ip ].hash = symbol;
+     // node->children[ *ip ].nhash = symbol;
      node->children[ *ip ].ptr = new_node();
      node->children[ *ip ].ptr->symbol = symbol;
      }
@@ -1716,10 +1918,15 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
 	fprintf(stderr, "Old=%p New=%p Tree_resize(%u/%u) %u\n", (void*) old, (void*) tree->children, tree->branch,  tree->msize, newsize);
 #endif /* WANT_DUMP_REHASH_TREE */
 
-
+/* Now rebuild the hash table.
+ * The hash-chain pointers have already been initialized to NIL,
+ * we only have to copy the children's "payload" verbatim,
+ * find the place where to append it in the hash-chain, and put it there.
+ */
     if (old) for (item =0 ; item < tree->branch; item++) {
 	ChildIndex *ip;
-	slot = old[item].hash % tree->msize;
+	// slot = old[item].nhash % tree->msize;
+	slot = old[item].ptr->symbol % tree->msize;
 	for( ip = &tree->children[slot].tabl; *ip != CHILD_NIL; ip = &tree->children[*ip].link ) {
 
 #if WANT_DUMP_REHASH_TREE
@@ -1728,12 +1935,12 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
 		}
 #if WANT_DUMP_REHASH_TREE
 		fprintf(stderr, "Placing Item=%u Hash=%5u(%8x) Slot=%4u TargetSlot=%u (previous %u)\n"
-		, (unsigned) item , (unsigned) old[item].hash, (unsigned) old[item].hash, (unsigned) slot
+		, (unsigned) item , (unsigned) old[item].ptr->symbol, (unsigned) old[item].ptr->symbol, (unsigned) slot
 		, (unsigned) ((char*) ip - (char*) &tree->children[0].tabl) / sizeof tree->children[0] 
 		, (unsigned) *ip );
 #endif
 	*ip = item;
-	tree->children[item].hash = old[item].hash;
+	// tree->children[item].nhash = old[item].nhash;
 	tree->children[item].ptr = old[item].ptr;
 	}
     free (old);
@@ -1747,7 +1954,7 @@ STATIC void format_treeslots(struct treeslot  *slots , unsigned size)
     for (ui = 0; ui < size; ui++) {
 	slots[ui].tabl = CHILD_NIL;
 	slots[ui].link = CHILD_NIL;
-	slots[ui].hash = ui;
+	// slots[ui].nhash = ui;
 	slots[ui].ptr = NULL;
 	}
 }
@@ -1762,7 +1969,7 @@ if (node->branch >= node->msize && resize_tree(node, node->branch+node->branch/2
 
 slot = symbol % node->msize;
 for (ip = &node->children[ slot ].tabl; *ip != CHILD_NIL; ip = &node->children[ *ip ].link ) {
-	if (symbol != node->children[ *ip ].hash) continue;
+	// if (symbol != node->children[ *ip ].nhash) continue;
 	if (! node->children[ *ip ].ptr) continue;
 	if (symbol == node->children[ *ip ].ptr->symbol) break;
 	}
@@ -1780,6 +1987,7 @@ void initialize_context(MODEL *model)
     unsigned int i;
 
     for(i = 0; i <= model->order; ++i) model->context[i] = NULL;
+
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1999,8 +2207,7 @@ STATIC void load_tree(FILE *file, TREE *node)
     node_count++;
     if (node->branch == 0) return;
 
-    // node->children = malloc(node->branch * sizeof *node->children );
-    resize_tree(node , 1+node->branch );
+    resize_tree(node , 1+ node->branch );
     if (node->children == NULL) {
 	error("load_tree", "Unable to allocate subtree");
 	return;
@@ -2016,7 +2223,7 @@ STATIC void load_tree(FILE *file, TREE *node)
 	symbol = node->children[ui].ptr ? node->children[ui].ptr->symbol: ui;
 	ip = node_hnd(node, symbol );
 	if (ip) *ip = ui;
-	node->children[ui].hash = symbol;
+	// node->children[ui].nhash = symbol;
 	if (level == 0) progress(NULL, ui, node->branch);
     }
     if (level == 0) progress(NULL, 1, 1);
@@ -2106,6 +2313,10 @@ STATIC void make_words(char *input, DICTIONARY *words)
 	 *		the current word.
 	 */
 	if (boundary(input, offset)) {
+		if (offset > 255) {
+			warn( "String too long (%u) at %s\n", (unsigned) offset, input);
+			offset = 255;
+			}
 		word.length = offset;
 		word.word = input;
 	    /*
@@ -2210,15 +2421,22 @@ STATIC void make_greeting(DICTIONARY *words)
 STATIC char *generate_reply(MODEL *model, DICTIONARY *words)
 {
     static char *output_none = "Geert! doe er wat aan!" ;
-    // static char *output_none = NULL;
     static DICTIONARY *dummy = NULL;
     DICTIONARY *replywords;
     DICTIONARY *keywords;
     double surprise, max_surprise;
     char *output;
-    int count;
+    unsigned count;
     int basetime;
 
+#if ALZHEIMER_FACTOR
+    count = urnd(ALZHEIMER_FACTOR);
+    if (count == ALZHEIMER_FACTOR/2) {
+        initialize_context(model);
+        symbol_russian_alzheimer(model->forward);
+        symbol_russian_alzheimer(model->backward);
+	}
+#endif
     /*
      *		Create an array of keywords from the words in the user's input
      */
@@ -2251,7 +2469,9 @@ STATIC char *generate_reply(MODEL *model, DICTIONARY *words)
 	++count;
 	if (surprise > max_surprise && dissimilar(words, replywords) ) {
 	    output = make_output(replywords);
+#if WANT_DUMP_ALL_REPLIES
 		fprintf(stderr, "\n%u %lf/%lf:\n\t%s\n", count, surprise, max_surprise, output);
+#endif
 	    max_surprise = surprise;
 	}
  	progress(NULL, (time(NULL)-basetime),glob_timeout);
@@ -2299,15 +2519,27 @@ STATIC DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
     unsigned swapped;
 
     if (keys == NULL) keys = new_dictionary();
-#if 1
+#if (!KEYWORD_DICT_SIZE )
     for(i = 0; i < keys->size; ++i) free(keys->entry[i].string.word);
+    // keys->size = 0;
     free_dictionary(keys);
-#else
+#elif 0
     for(i = 0; i < keys->size; ++i) {
 	keys->entry[i].stats.node += 1;
-	if (urnd(keys->size) > keys->size / 3) continue;
+	if (urnd(keys->size) >= KEYWORD_DICT_SIZE ) continue;
 	/* if (!keys->entry[i].stats.hits) */
 		del_word_dofree(keys, keys->entry[i].string );
+	}
+#else
+    for (swapped = 0 ;keys->size > swapped+KEYWORD_DICT_SIZE; ) {
+	i = urnd(keys->size);
+	j = find_word(words, keys->entry[i].string );
+	if ( j && j != WORD_NIL ) {
+		keys->entry[i].stats.node++;
+		swapped++;
+		continue;
+		}
+	del_word_dofree(keys, keys->entry[i].string );
 	}
 #endif
 
@@ -2367,6 +2599,8 @@ STATIC void add_key(MODEL *model, DICTIONARY *keys, STRING word)
     ksymbol = add_word_dodup(keys, word);
     if (ksymbol < keys->size) {
 	keys->entry[ksymbol].stats.hits += 1;
+	}
+    if (ksymbol == keys->size-1) {
 	keys->entry[ksymbol].stats.node += 1;
 	}
 }
@@ -2530,20 +2764,22 @@ STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *sentenc
 
 	    if (count > 0) {
 	    	kfrac = (double)(1+keys->entry[ksymbol].stats.hits) / (double)(1+keys->entry[ksymbol].stats.node);
-	    	gfrac = (double)(1+model->dictionary->entry[symbol].stats.node) ; // (double)(1+model->dictionary->entry[symbol].stats.node);
+	    	gfrac = (double)(1+model->dictionary->entry[symbol].stats.hits) / (double)(1+model->dictionary->entry[symbol].stats.node);
 		weight = kfrac / gfrac;
-		// fprintf(stderr, "[%*.*s: Keyw=%u/%u (%e)  Glob=%u/%u (%e)  Weight=%e]\n"
-		// , (int) sentence->entry[ui].string.length
-		// , (int) sentence->entry[ui].string.length
-		// , sentence->entry[ui].string.word
-		// , keys->entry[ksymbol].stats.hits
-		// , keys->entry[ksymbol].stats.node
-		// , kfrac
-		// , model->dictionary->entry[symbol].stats.hits
-		// , model->dictionary->entry[symbol].stats.node
-		// , gfrac
-		// , weight
-		// );
+#if WANT_DUMP_KEYWORD_WEIGHTS
+		fprintf(stderr, "[%*.*s: Keyw=%u/%u (%e)  Glob=%u/%u (%e)  Weight=%e]\n"
+		, (int) sentence->entry[ui].string.length
+		, (int) sentence->entry[ui].string.length
+		, sentence->entry[ui].string.word
+		, keys->entry[ksymbol].stats.hits
+		, keys->entry[ksymbol].stats.node
+		, kfrac
+		, model->dictionary->entry[symbol].stats.hits
+		, model->dictionary->entry[symbol].stats.node
+		, gfrac
+		, weight
+		);
+#endif
 	    	probability *= weight;
 		entropy -= log(probability / count);
 		}
@@ -2576,7 +2812,7 @@ STATIC double evaluate_reply(MODEL *model, DICTIONARY *keys, DICTIONARY *sentenc
 	    	//weight = (double)(1+keys->entry[ksymbol].stats.hits) / (1+model->dictionary->entry[symbol].stats.hits);
 	    	// weight = (double)(1+keys->entry[ksymbol].stats.hits) / (1+keys->entry[ksymbol].stats.node) ; 
 	    	kfrac = (double)(1+keys->entry[ksymbol].stats.hits) / (double)(1+keys->entry[ksymbol].stats.node);
-	    	gfrac = (double)(1+model->dictionary->entry[symbol].stats.node) ; // (double)(1+model->dictionary->entry[symbol].stats.node);
+	    	gfrac = (double)(1+model->dictionary->entry[symbol].stats.hits) / (double)(1+model->dictionary->entry[symbol].stats.node);
 		weight = kfrac / gfrac;
 		probability *= weight;
 		entropy -= log(probability/count);
@@ -2652,7 +2888,7 @@ STATIC WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 {
     TREE *node;
     unsigned int ui;
-    int count;
+    unsigned count;
     WordNum symbol = 0;
 
     node = NULL;
@@ -2666,29 +2902,27 @@ STATIC WordNum babble(MODEL *model, DICTIONARY *keys, DICTIONARY *words)
 	    node = model->context[ui];
 	}
 
-    if (node->branch == 0) return 0;
+    if (!node || node->branch == 0) return 0;
 
     /*
      *		Choose a symbol at random from this context.
      */
     ui = urnd(node->branch);
     count = urnd(node->usage);
-    while(count >= 0) {
+    while(count > 0) {
 	/*
 	 *		If the symbol occurs as a keyword, then use it.  Only use an
 	 *		auxilliary keyword if a normal keyword has already been used.
 	 */
 	symbol = node->children[ui].ptr->symbol;
 
-	if (
-	    (find_word(keys, model->dictionary->entry[symbol].string ))
-	    && (used_key == TRUE || (!find_word(glob_aux, model->dictionary->entry[symbol].string ) ))
-	    && !word_exists(words, model->dictionary->entry[symbol].string ) 
-	    ) {
-	    used_key = TRUE;
-	    break;
-	}
-	count -= node->children[ui].ptr->count;
+	if (!find_word(keys, model->dictionary->entry[symbol].string) ) goto next;
+	if (used_key == FALSE && find_word(glob_aux, model->dictionary->entry[symbol].string) ) goto next;
+	if (word_exists(words, model->dictionary->entry[symbol].string) ) goto next;
+	used_key = TRUE;
+next:
+	if (count > node->children[ui].ptr->count) count -= node->children[ui].ptr->count;
+	else break; //count = 0;
 	ui = (ui+1) % node->branch;
     }
 
@@ -2994,15 +3228,45 @@ STATIC unsigned int urnd(unsigned int range)
 #if defined(__mac_os) || defined(DOS)
     return rand()%range;
 #else
-if (range <2) return 0;
+if (range <1) return 0;
 while(1)	{
     unsigned val, box;
+#if WANT_RDTSC_RANDOM
+    val = rdtsc_rand();
+#else
     val =  lrand48();
+#endif
+/* we need this to avoid oversampling of the lower values.
+ * Oversampling the lower values becomes more of a problem if (UNSIGNED_MAX/range) gets smaller
+ * */
     box = val / range;
     if ((1+box) *range < range) continue;
     return val % range;
 	}
 #endif
+}
+
+/*---------------------------------------------------------------------------*/
+/* random number generator uses 'entropy' from CPU-ticker */
+#define rdtscll(name) \
+          __asm__ __volatile__("rdtsc" : "=A" (name))
+
+BigThing rdtsc_rand(void)
+{
+static BigThing val=0x0000111100001111ULL;
+
+#if WANT_RDTSC_RANDOM
+static BigThing old;
+BigThing new;
+
+rdtscll(new);
+val ^= (val >> 15) ^ (val << 14) ^ (new << 13); /* PT approved */
+old = new;
+#else
+val ^= (val >> 15) ^ (val << 14) ^ 9 ;
+#endif
+
+return val;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3570,7 +3834,7 @@ WordNum *np;
 unsigned hash,slot;
 
 /* We always assume that the next operation will be an insert.
- * So even if the wanted element is not present, *wp will point
+ * So even if the wanted element is not present, *np will point
  * to the place where it is to be inserted.
  */
 if (dict->size >= dict->msize && double_dictionary(dict)) return NULL;
@@ -3578,8 +3842,7 @@ if (dict->size >= dict->msize && double_dictionary(dict)) return NULL;
 hash = hash_word(word);
 slot = hash % dict->msize;
 
-for (np = &dict->entry[slot].tabl ; np ; np = &dict->entry[*np].link ) {
-	if (*np == WORD_NIL) break;
+for (np = &dict->entry[slot].tabl ; *np != WORD_NIL ; np = &dict->entry[*np].link ) {
 	if ( dict->entry[*np].hash != hash) continue;
 	if ( wordcmp(dict->entry[*np].string , word)) continue;
 	break;
@@ -3590,8 +3853,6 @@ return np;
 STATIC WordNum * dict_hnd_tail (DICTIONARY *dict, STRING word)
 {
 WordNum *np;
-
-// hash = hash_word(word);
 
 for (np = dict_hnd(dict,word); np ; np = &dict->entry[*np].link ) {
 	if (*np == WORD_NIL) break;
