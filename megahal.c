@@ -150,12 +150,12 @@
 #define WANT_DUMP_KEYWORD_WEIGHTS 1
 #undef WANT_DUMP_KEYWORD_WEIGHTS
 
-#define WANT_DUMP_ALL_REPLIES 1
 #undef WANT_DUMP_ALL_REPLIES
+#define WANT_DUMP_ALL_REPLIES 1
 
 /* the number of keywords that is kept between replies.
  * Zero to disable */
-#define KEYWORD_DICT_SIZE 0
+#define KEYWORD_DICT_SIZE 50
 
 /* (1/ALZHEIMER_FACTOR) is the chance 
 ** of alzheimer hitting the tree, once per reply.
@@ -291,6 +291,8 @@ typedef struct {
 
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
+static char *errorfilename = "megahal.log";
+static char *statusfilename = "megahal.txt";
 static int glob_width = 75;
 static int glob_order = 7; // 5
 static int glob_timeout = DEFAULT_TIMEOUT;
@@ -302,8 +304,6 @@ static bool nowrap = FALSE;
 static bool nobanner = FALSE;
 static bool quiet = FALSE;
 
-static char *errorfilename = "megahal.log";
-static char *statusfilename = "megahal.txt";
 static DICTIONARY *glob_words = NULL;
 static DICTIONARY *glob_greets = NULL;
 static MODEL *glob_model = NULL;
@@ -395,8 +395,8 @@ STATIC void save_model(char *, MODEL *);
 STATIC char *strdup(const char *);
 #endif
 STATIC void upper(char *);
-STATIC void write_input(char *);
-STATIC void write_output(char *);
+STATIC void log_input(char *);
+STATIC void log_output(char *);
 #if defined(DOS) || defined(__mac_os)
 STATIC void usleep(int);
 #endif
@@ -460,6 +460,9 @@ STATIC void del_word_dofree(DICTIONARY *dict, STRING word);
 void free_tree_recursively(TREE *tree);
 STATIC void symbol_russian_alzheimer(TREE *tree);
 STATIC void symbol_russian_alzheimer_recurse(TREE *tree, unsigned the_dice);
+
+STATIC void dump_model(MODEL *model);
+STATIC void dump_model_recursive(FILE *fp, TREE *tree, DICTIONARY *dict, int indent);
 
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol);
 STATIC void format_treeslots(struct treeslot *slots , unsigned size);
@@ -568,7 +571,7 @@ char *megahal_do_reply(char *input, int log)
     char *output = NULL;
 
     if (log != 0)
-	write_input(input);  /* log input if so desired */
+	log_input(input);  /* log input if so desired */
 
     // upper(input);
 
@@ -590,7 +593,7 @@ char *megahal_do_reply(char *input, int log)
 void megahal_learn_no_reply(char *input, int log)
 {
     if (log != 0)
-	write_input(input);  /* log input if so desired */
+	log_input(input);  /* log input if so desired */
 
     // upper(input);
 
@@ -628,7 +631,7 @@ char *megahal_initial_greeting(void)
 void megahal_output(char *output)
 {
     if (!quiet)
-	write_output(output);
+	log_output(output);
 }
 
 /*
@@ -695,7 +698,7 @@ int megahal_command(char *input)
 	change_personality(glob_words, position, &glob_model);
 	make_greeting(glob_greets);
 	output = generate_reply(glob_model, glob_greets);
-	write_output(output);
+	log_output(output);
 	return 1;
     case QUIET:
 	quiet = !quiet;
@@ -788,6 +791,7 @@ STATIC void exithal(void)
     }
 #endif
 
+    dump_model(glob_model);
     show_memstat("Exit(0)" );
     exit(0);
 }
@@ -1028,7 +1032,7 @@ STATIC bool print_header(FILE *file)
  *
  *    Purpose:    Display the output string.
  */
-STATIC void write_output(char *output)
+STATIC void log_output(char *output)
 {
     char *formatted;
     char *bit;
@@ -1098,7 +1102,7 @@ STATIC void upper(char *string)
  *
  *    Purpose:    Log the user's input
  */
-STATIC void write_input(char *input)
+STATIC void log_input(char *input)
 {
     char *formatted;
     char *bit;
@@ -1713,6 +1717,47 @@ STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
     return node;
 }
 
+STATIC void dump_model(MODEL * model)
+{
+FILE *fp;
+
+fp = fopen ("tree.dmp", "w" );
+if (!fp) return;
+
+dump_model_recursive(fp, model->forward, model->dictionary, 0);
+fclose (fp);
+}
+
+STATIC void dump_model_recursive(FILE *fp, TREE *tree, DICTIONARY *dict, int indent)
+{
+unsigned slot;
+WordNum sym;
+static STRING null = {0,""};
+STRING str;
+if (!tree) return;
+
+sym = tree->symbol;
+str = sym < dict->size ? dict->entry[sym].string : null;
+
+for (slot = 0; slot < indent; slot++) {
+	fputc(' ', fp);
+	}
+
+fprintf(fp, "usage=%u count=%u branch=%u symbol=%u '%*.*s'\n"
+, tree->usage, tree->count ,tree->branch
+	,tree->symbol
+	, (int) str.length , (int) str.length , str.word
+	);
+if (! tree->branch) {
+	return;
+	}
+for (slot = 0; slot < tree->branch; slot++) {
+	dump_model_recursive(fp, tree->children[slot].ptr , dict, indent+1);
+	}
+
+return;
+}
+
 STATIC void symbol_russian_alzheimer(TREE *tree)
 {
 unsigned the_dice;
@@ -1742,8 +1787,8 @@ if (! tree->branch) {
 	}
 
 /* This is the same kind of sampling as used in babble()
- * Starting with a random slot is not strictly needed
- * , given a good random value for the_dice 
+ * Starting with a random slot is not strictly necessary
+ * , given a good random value for dice 
  */
 slot = urnd(tree->branch);
 
@@ -2523,23 +2568,13 @@ STATIC DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
     for(i = 0; i < keys->size; ++i) free(keys->entry[i].string.word);
     // keys->size = 0;
     free_dictionary(keys);
-#elif 0
+#else
+/* perform russian roulette on the keywords. */
     for(i = 0; i < keys->size; ++i) {
 	keys->entry[i].stats.node += 1;
-	if (urnd(keys->size) >= KEYWORD_DICT_SIZE ) continue;
+	if (urnd(keys->size) < KEYWORD_DICT_SIZE ) continue;
 	/* if (!keys->entry[i].stats.hits) */
 		del_word_dofree(keys, keys->entry[i].string );
-	}
-#else
-    for (swapped = 0 ;keys->size > swapped+KEYWORD_DICT_SIZE; ) {
-	i = urnd(keys->size);
-	j = find_word(words, keys->entry[i].string );
-	if ( j && j != WORD_NIL ) {
-		keys->entry[i].stats.node++;
-		swapped++;
-		continue;
-		}
-	del_word_dofree(keys, keys->entry[i].string );
 	}
 #endif
 
