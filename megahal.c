@@ -144,35 +144,36 @@
 #define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 
-#define WANT_DUMP_REHASH_TREE 1
-#undef WANT_DUMP_REHASH_TREE
-
-#define WANT_DUMP_KEYWORD_WEIGHTS 1
-#undef WANT_DUMP_KEYWORD_WEIGHTS
-
-#undef WANT_DUMP_ALL_REPLIES
+/* some develop/debug switches. 0 to disable */
+#define WANT_DUMP_REHASH_TREE 0
+#define WANT_DUMP_KEYWORD_WEIGHTS 0
+#define WANT_DUMP_ALZHEIMER_PROGRESS 0
 #define WANT_DUMP_ALL_REPLIES 1
+
+/* dump tree as ascii (costs a lot of disk space) */
+#define WANT_DUMP_MODEL 0
+
 
 /* the number of keywords that is kept between replies.
  * Zero to disable */
-#define KEYWORD_DICT_SIZE 50
+#define KEYWORD_DICT_SIZE 200
 
 /* (1/ALZHEIMER_FACTOR) is the chance 
 ** of alzheimer hitting the tree, once per reply.
-** Zero to disable
+** Zero to disable.
 ** 10 is disastrous, 100 is still too big; 1000 might be good enough.
+** YMMV
 */
 #define ALZHEIMER_FACTOR 0
 
-#undef WANT_DUMP_ALZHEIMER_PROGRESS
-#define WANT_DUMP_ALZHEIMER_PROGRESS 1
-
 /* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
-#undef WANT_RDTSC_RANDOM
 #define WANT_RDTSC_RANDOM 1
 
 #define DICT_SIZE_INITIAL 4
 #define NODE_SIZE_INITIAL 2
+/* we don't want results smaller than this */
+/* 30:= 15 words + 15 whites; a small line of text.
+ */
 #define MIN_PAREL_SIZE 30
 
 #ifdef __mac_os
@@ -294,7 +295,7 @@ typedef struct {
 static char *errorfilename = "megahal.log";
 static char *statusfilename = "megahal.txt";
 static int glob_width = 75;
-static int glob_order = 7; // 5
+static int glob_order = 5; // 9; // 7; // 5
 static int glob_timeout = DEFAULT_TIMEOUT;
 
 static bool typing_delay = FALSE;
@@ -454,6 +455,10 @@ STATIC unsigned long set_dict_count(MODEL *model);
 STATIC unsigned long dict_inc_refa_node(DICTIONARY *dict, TREE *node, WordNum symbol);
 STATIC unsigned long dict_inc_ref_recurse(DICTIONARY *dict, TREE *node);
 STATIC unsigned long dict_inc_ref(DICTIONARY *dict, WordNum symbol, unsigned nnode, unsigned nhits);
+
+/* these exist to allow utf8 in strings */
+STATIC int myisalpha(int ch);
+STATIC int myisalnum(int ch);
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
 STATIC void del_word_dofree(DICTIONARY *dict, STRING word);
@@ -791,7 +796,9 @@ STATIC void exithal(void)
     }
 #endif
 
+#if WANT_DUMP_MODEL
     dump_model(glob_model);
+#endif
     show_memstat("Exit(0)" );
     exit(0);
 }
@@ -1241,6 +1248,7 @@ if (this == dict->entry[this].link) {
 	dict->entry[this].link = WORD_NIL;
 	}
 *np = dict->entry[this].link;
+dict->entry[this].link = WORD_NIL;
 
 free (dict->entry[this].string.word );
 dict->entry[this].string.word = NULL;
@@ -1724,7 +1732,8 @@ FILE *fp;
 fp = fopen ("tree.dmp", "w" );
 if (!fp) return;
 
-dump_model_recursive(fp, model->forward, model->dictionary, 0);
+// dump_model_recursive(fp, model->forward, model->dictionary, 0);
+dump_model_recursive(fp, model->backward, model->dictionary, 0);
 fclose (fp);
 }
 
@@ -2359,7 +2368,7 @@ STATIC void make_words(char *input, DICTIONARY *words)
 	 */
 	if (boundary(input, offset)) {
 		if (offset > 255) {
-			warn( "String too long (%u) at %s\n", (unsigned) offset, input);
+			warn( "Make_words", "String too long (%u) at %s\n", (unsigned) offset, input);
 			offset = 255;
 			}
 		word.length = offset;
@@ -2382,7 +2391,7 @@ STATIC void make_words(char *input, DICTIONARY *words)
      *		If the last word isn't punctuation, then replace it with a
      *		full-stop character.
      */
-    if (isalnum(words->entry[words->size-1].string.word[0])) {
+    if (myisalnum(words->entry[words->size-1].string.word[0])) {
 		add_word_nofuss(words, period);
     }
     else if (!strchr("!.?", words->entry[words->size-1].string.word[ words->entry[words->size-1].string.length-1] )) {
@@ -2408,28 +2417,28 @@ STATIC bool boundary(char *string, size_t position)
 
     if (
 	ucp[position] == '\''
-	&& isalpha(ucp[position-1])
-	&& isalpha(ucp[position+1])
+	&& myisalpha(ucp[position-1])
+	&& myisalpha(ucp[position+1])
 	)
 	return FALSE;
 
     if (
 	position > 1
 	&& ucp[position-1] == '\''
-	&& isalpha(ucp[position-2])
-	&& isalpha(ucp[position]) 
+	&& myisalpha(ucp[position-2])
+	&& myisalpha(ucp[position]) 
 	)
 	return FALSE;
 
     if (
-	isalpha(ucp[position])
-	&& !isalpha(ucp[position-1])
+	myisalpha(ucp[position])
+	&& !myisalpha(ucp[position-1])
 	)
 	return TRUE;
 
     if (
-	!isalpha(ucp[position])
-	&& isalpha(ucp[position-1])
+	!myisalpha(ucp[position])
+	&& myisalpha(ucp[position-1])
 	)
 	return TRUE;
 
@@ -2439,6 +2448,23 @@ STATIC bool boundary(char *string, size_t position)
     return FALSE;
 }
 
+STATIC int myisalnum(int ch)
+{
+int ret = myisalpha(ch);
+if (ret) return ret;
+if (ch >= '0' && ch <= '9') return 1;
+return 0;
+}
+
+STATIC int myisalpha(int ch)
+{
+int ret = isalpha(ch);
+if (ret) return ret;
+	/* don't parse, just assume valid utf8*/
+if (ch == -1) return 0;
+if (ch & 0x80) return 1;
+return 0;
+}
 /*---------------------------------------------------------------------------*/
 /*
  *		Function:	Make_Greeting
@@ -2466,6 +2492,7 @@ STATIC void make_greeting(DICTIONARY *words)
 STATIC char *generate_reply(MODEL *model, DICTIONARY *words)
 {
     static char *output_none = "Geert! doe er wat aan!" ;
+	/* "I don't know enough to answer you yet!"; */
     static DICTIONARY *dummy = NULL;
     DICTIONARY *replywords;
     DICTIONARY *keywords;
@@ -2487,13 +2514,6 @@ STATIC char *generate_reply(MODEL *model, DICTIONARY *words)
      */
     keywords = make_keywords(model, words);
 
-    /*
-     *		Make sure some sort of reply exists
-     */
-    if (!output_none ) {
-	output_none = malloc(40);
-	// if (output_none) strcpy(output_none, "I don't know enough to answer you yet!");
-    }
     output = output_none;
     if (dummy == NULL) dummy = new_dictionary();
     replywords = one_reply(model, dummy);
@@ -2585,7 +2605,7 @@ STATIC DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
 	 *		character, or if it is in the exclusion array, then
 	 *		skip over it.
 	 */
-	if (!isalnum(words->entry[i].string.word[0] )) continue;
+	if (!myisalnum(words->entry[i].string.word[0] )) continue;
 	swapped = 0;
 	for(j = 0; j < glob_swp->size; ++j)
 	    if (!wordcmp(glob_swp->pairs[j].from , words->entry[i].string ) ) {
@@ -2598,7 +2618,7 @@ STATIC DICTIONARY *make_keywords(MODEL *model, DICTIONARY *words)
 
     if (keys->size > 0) for(i = 0; i < words->size; ++i) {
 
-	if (!isalnum(words->entry[i].string.word[0] )) continue;
+	if (!myisalnum(words->entry[i].string.word[0] )) continue;
 	swapped = 0;
 	for(j = 0; j < glob_swp->size; ++j)
 	    if (!wordcmp(glob_swp->pairs[j].from, words->entry[i].string )) {
@@ -2623,7 +2643,7 @@ STATIC void add_key(MODEL *model, DICTIONARY *keys, STRING word)
 {
     int symbol, xsymbol, ksymbol;
 
-    if (!isalnum(word.word[0])) return;
+    if (!myisalnum(word.word[0])) return;
     symbol = find_word(model->dictionary, word);
     if (symbol == 0) return;
     xsymbol = find_word(glob_ban, word);
@@ -2650,7 +2670,7 @@ STATIC void add_aux(MODEL *model, DICTIONARY *keys, STRING word)
 {
     int symbol;
 
-    if (isalnum(word.word[0]) == 0) return;
+    if (myisalnum(word.word[0]) == 0) return;
     symbol = find_word(model->dictionary, word);
     if (symbol == 0) return;
     symbol = find_word(glob_aux, word);
@@ -3204,7 +3224,7 @@ void typein(char c)
     /*
      *		A random thinking delay
      */
-    if ( !isalnum(c) &&  urnd(100) < P_THINK)
+    if ( !myisalnum(c) &&  urnd(100) < P_THINK)
 	usleep(D_THINK+urnd(V_THINK)-urnd(V_THINK));
 }
 
@@ -3868,9 +3888,10 @@ STATIC WordNum * dict_hnd (DICTIONARY *dict, STRING word)
 WordNum *np;
 unsigned hash,slot;
 
-/* We always assume that the next operation will be an insert.
- * So even if the wanted element is not present, *np will point
- * to the place where it is to be inserted.
+/* We always assume that the next operation will be an insert, so there needs to be at least
+ * one free spot.
+ * If the seeked element is not present, *np will point
+ * to the place where it is to be inserted. (the slot after the last used item.)
  */
 if (dict->size >= dict->msize && double_dictionary(dict)) return NULL;
 
