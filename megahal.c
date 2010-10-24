@@ -147,16 +147,18 @@
 
 /* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
-#define WANT_KEYWORD_WEIGHTS 0
-#define WANT_DUMP_KEYWORD_WEIGHTS 1
+#define WANT_KEYWORD_WEIGHTS 1
+#define WANT_DUMP_KEYWORD_WEIGHTS 1 /* 0-3 */
 #define WANT_DUMP_ALZHEIMER_PROGRESS 0
-#define WANT_DUMP_ALL_REPLIES 1
+#define WANT_DUMP_ALL_REPLIES 0
 /* dump tree as ascii (costs a lot of disk space) */
-#define WANT_DUMP_MODEL 3
+#define WANT_DUMP_MODEL 0
 
 /* suppress whitespace; only store REAL words. */
 #define WANT_SUPPRESS_WHITESPACE 1
 
+/* Keep a timestamp in the nodes, to facilitate Alzheimer */
+#define WANT_TIMESTAMPED_NODES 1
 /* the number of keywords that is kept between replies.
  * Zero to disable */
 #define KEYWORD_DICT_SIZE 100
@@ -175,9 +177,7 @@
 #define DICT_SIZE_INITIAL 4
 #define NODE_SIZE_INITIAL 2
 /* we don't want results smaller than this */
-/* 30:= 15 words + 15 whites; a small line of text.
- */
-#define MIN_PAREL_SIZE 30
+#define MIN_PAREL_SIZE 14
 
 #ifdef __mac_os
 #define bool Boolean
@@ -265,6 +265,9 @@ typedef struct node {
     UsageCnt usage; /* sum of children's count */
     UsageCnt count; /* my count */
     WordNum symbol;
+#if WANT_TIMESTAMPED_NODES 
+    Count stamp; 
+#endif
     ChildIndex msize;
     ChildIndex branch;
     struct treeslot *children;
@@ -328,6 +331,10 @@ static char *directory = NULL;
 static char *last_directory = NULL;
 static unsigned long node_count=0;
 static unsigned long word_count=0;
+
+#if WANT_TIMESTAMPED_NODES 
+static Count stamp_min, stamp_max;
+#endif
 
 static COMMAND command[] = {
     { { 4, "QUIT" }, "quits the program and saves MegaHAL's brain", QUIT },
@@ -978,6 +985,8 @@ STATIC bool warn(char *title, char *fmt, ...)
 STATIC void show_memstat(char *msg)
 {
 if (!msg) msg = "..." ;
+
+status( "[ stamp Min=%u Max=%u ]\n", (unsigned) stamp_min, (unsigned) stamp_max);
 status ("Memstat %s: {alloc=%u free=%u alzheimer=%u symdel=%u treedel=%u}\n"
 	, msg, memstats.alloc , memstats.free
 	, memstats.alzheimer , memstats.symdel , memstats.treedel
@@ -1633,6 +1642,9 @@ STATIC TREE *new_node(void)
     node->symbol = 0;
     node->usage = 0;
     node->count = 0;
+#if WANT_TIMESTAMPED_NODES 
+    node->stamp = stamp_max;
+#endif
     node->msize = 0;
     node->branch = 0;
     node->children = NULL;
@@ -1741,6 +1753,9 @@ STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
      *		Stop incrementing when wraparound detected.
      */
     node->count += 1; tree->usage += 1;
+#if WANT_TIMESTAMPED_NODES
+    node->stamp = stamp_max; tree->stamp = stamp_max;
+#endif
     if (!node->count) {
 	warn("add_symbol", "Count wants to wrap");
 	node->count -= 1;
@@ -1760,6 +1775,7 @@ FILE *fp;
 fp = fopen ("tree.dmp", "w" );
 if (!fp) return;
 
+fprintf(fp, "[ stamp Min=%u Max=%u ]\n", (unsigned) stamp_min, stamp_max);
 #if (WANT_DUMP_MODEL & 1)
 fprintf(fp, "->forward order=%u\n", (unsigned) model->order);
 dump_model_recursive(fp, model->forward, model->dict, 0);
@@ -1796,14 +1812,19 @@ for (slot = 0; slot < indent; slot++) {
 	fputc(' ', fp);
 	}
 
-fprintf(fp, "usage=%u count=%u branch=%u/%u symbol=%u [%u,%u] '%*.*s'\n"
-	, tree->usage, tree->count ,tree->branch, tree->msize , tree->symbol
+fprintf(fp, "Us=%u Cnt=%u St=%u Br=%u/%u Sym=%u [%u,%u] '%*.*s'\n"
+	, tree->usage, tree->count
+#if WANT_TIMESTAMPED_NODES 
+	, tree->stamp
+#else
+	, (unsigned) 0
+#endif
+	, tree->branch, tree->msize , tree->symbol
 	, whits, nhits
 	, (int) str.length , (int) str.length , str.word
 	);
-if (! tree->branch) {
-	return;
-	}
+
+if (! tree->branch) return;
 for (slot = 0; slot < tree->branch; slot++) {
 	dump_model_recursive(fp, tree->children[slot].ptr , dict, indent+1);
 	}
@@ -2182,7 +2203,10 @@ STATIC void learn_from_input(MODEL *model, DICT *words)
     /*
      *		We only learn from inputs which are long enough
      */
-    if (words->size < model->order) return;
+    if (words->size <= model->order) return;
+#if WANT_TIMESTAMPED_NODES
+    stamp_max++;
+#endif
 
     /*
      *		Train the model in the forwards direction.  Start by initializing
@@ -2355,6 +2379,9 @@ STATIC void save_tree(FILE *file, TREE *node)
     fwrite(&node->symbol, sizeof node->symbol, 1, file);
     fwrite(&node->usage, sizeof node->usage, 1, file);
     fwrite(&node->count, sizeof node->count, 1, file);
+#if WANT_TIMESTAMPED_NODES
+    fwrite(&node->stamp, sizeof node->stamp, 1, file);
+#endif
     fwrite(&node->branch, sizeof node->branch, 1, file);
     node_count++;
     if (level == 0) progress("Saving tree", 0, 1);
@@ -2382,13 +2409,20 @@ STATIC void load_tree(FILE *file, TREE *node)
     ChildIndex *ip;
 
     fread(&node->symbol, sizeof node->symbol, 1, file);
+    if (level==0 && node->symbol==0) node->symbol=1;
     fread(&node->usage, sizeof node->usage, 1, file);
     fread(&node->count, sizeof node->count, 1, file);
+#if 1 && WANT_TIMESTAMPED_NODES
+    fread(&node->stamp, sizeof node->stamp, 1, file);
+    if (!node_count) stamp_min = stamp_max = node->stamp;
+    else if ( node->stamp < stamp_min) stamp_min =  node->stamp;
+    else if ( node->stamp > stamp_max) stamp_max =  node->stamp;
+#endif
     fread(&node->branch, sizeof node->branch, 1, file);
     node_count++;
     if (node->branch == 0) return;
 
-    resize_tree(node , /* 1+ */ node->branch );
+    resize_tree(node , node->branch );
     if (node->children == NULL) {
 	error("load_tree", "Unable to allocate subtree");
 	return;
@@ -2452,6 +2486,7 @@ STATIC bool load_model(char *filename, MODEL *model)
     load_dict(file, model->dict);
     refcount = set_dict_count(model);
     status("Loaded %lu nodes, %u words. Total refcount= %u\n", node_count,word_count, refcount);
+    status( "Stamp Min=%u Max=%u.\n", (unsigned) stamp_min, (unsigned) stamp_max);
 
     fclose(file);
     show_dict(model->dict);
@@ -2706,7 +2741,7 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
     if (dissimilar(words, replywords)) output = make_output(replywords);
 #else
     replywords = one_reply(model, keywords);
-    output = make_output(replywords);
+    /* output = make_output(replywords); */
 #endif
 
     /*
@@ -2800,15 +2835,18 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 	 */
 	if (!myisalnum(words->entry[iwrd].string.word[0] )) continue;
 	swapped = 0;
+#if 0
 	for(iswp = 0; iswp < glob_swp->size; iswp++)
 	    if (!wordcmp(glob_swp->pairs[iswp].from , words->entry[iwrd].string ) ) {
 		add_key(model, glob_keys, glob_swp->pairs[iswp].to );
 		swapped++;
 		break;
 	    }
+#endif
 	if (!swapped) add_key(model, glob_keys, words->entry[iwrd].string );
     }
 
+#if 0
     if (glob_keys->size > 0) for(iwrd = 0; iwrd < words->size; iwrd++) {
 
 	if (!myisalnum(words->entry[iwrd].string.word[0] )) continue;
@@ -2821,6 +2859,7 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 	    }
 	if (!swapped) add_aux(model, glob_keys, words->entry[iwrd].string );
     }
+#endif
 
 #if (WANT_DUMP_KEYWORD_WEIGHTS >=3)
 fprintf(stderr, "Total %u %llu:%llu\n"
@@ -2838,6 +2877,9 @@ for (ikey=0; ikey < glob_keys->size; ikey++) {
 	, weight
 	);
 	}
+#endif
+
+#if (WANT_DUMP_KEYWORD_WEIGHTS >=1)
 fprintf(stderr, "Returned %u keywords\n", glob_keys->size );
 #endif
     return glob_keys;
@@ -2856,11 +2898,13 @@ STATIC void add_key(MODEL *model, DICT *keywords, STRING word)
 
     if (!myisalnum(word.word[0])) return;
     symbol = find_word(model->dict, word);
-    if (symbol == 0) return;
+    if (symbol <= 1) return;
     xsymbol = find_word(glob_ban, word);
     if (xsymbol != 0) return;
+/*
     xsymbol = find_word(glob_aux, word);
     if (xsymbol != 0) return;
+*/
 
     ksymbol = add_word_dodup(keywords, word);
     if (ksymbol == keywords->size-1) {
@@ -2948,7 +2992,7 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
      *		dictionary so that we can generate backwards to reach the
      *		beginning of the string.
      */
-    for(widx = MIN(replies->size, 2+model->order); widx-- > 0; ) {
+    for(widx = MIN(replies->size, 1+model->order); widx-- > 0; ) {
 	symbol = find_word(model->dict, replies->entry[ widx ].string );
 	update_context(model, symbol);
     }
@@ -3018,7 +3062,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	    probability = 0.0;
 	    count = 0;
 	    totcount++;
-	    for(iord = 0; iord <= 1+model->order; iord++) {
+	    for(iord = 0; iord < model->order; iord++) {
 		if (model->context[iord] == NULL) continue;
 
 		node = find_symbol(model->context[iord], symbol);
@@ -3037,7 +3081,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	    	kfrac = symbol_weight(keywords, ksymbol);
 	    	gfrac = symbol_weight(model->dict, symbol);
 #endif
-		weight = gfrac+kfrac/gfrac;
+		weight = (gfrac+kfrac) /2;
 #if (WANT_DUMP_KEYWORD_WEIGHTS >= 2)
 		fprintf(stderr, "%*.*s: Keyw= %lu/%lu : %llu/%llu (%6.4e)  Glob=%u/%u (%6.4e)  Prob=%6.4e/Count=%u Weight=%6.4e Term=%6.4e %c\n"
 		, (int) sentence->entry[widx].string.length
@@ -3054,7 +3098,8 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 		, probability , (unsigned) count
 		, weight
 		, probability *weight / count
-		, (probability *weight / count ) > 1.0 ? '*' : ' '
+		// , (probability *weight / count ) > 1.0 ? '*' : ' '
+		, weight > 1.0 ? '*' : ' '
 		);
 #endif
 #if WANT_KEYWORD_WEIGHTS
@@ -3077,7 +3122,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	    probability = 0.0;
 	    count = 0;
 	    totcount++;
-	    for(iord = 0; iord <= 1+model->order; iord++) {
+	    for(iord = 0; iord < model->order; iord++) {
 		if (model->context[iord] == NULL) continue;
 
 		node = find_symbol(model->context[iord], symbol);
@@ -3095,7 +3140,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	    	kfrac = symbol_weight(keywords, ksymbol);
 	    	gfrac = symbol_weight(model->dict, symbol);
 		// weight = gfrac/kfrac;
-		weight = gfrac+kfrac/gfrac;
+		weight = (gfrac+kfrac) /2;
 #if WANT_KEYWORD_WEIGHTS
 		probability *= weight;
 #endif
@@ -3106,8 +3151,10 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	update_context(model, symbol);
     }
 
-    if (totcount >= 8) entropy /= sqrt(totcount-1); 
-    if (totcount >= 16) entropy /= totcount;
+    // if (totcount >= 8) entropy /= sqrt(totcount-1); 
+    // if (totcount >= 16) entropy /= totcount;
+    if (totcount >= 3) entropy /= sqrt(totcount-1); 
+    if (totcount >= 7) entropy /= totcount;
 
     return entropy;
 }
@@ -3180,7 +3227,7 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
      *		Select the longest available context.
      */
     node = NULL;
-    for(oidx = 0; oidx <= 1+model->order; oidx++) {
+    for(oidx = 0; oidx <= model->order; oidx++) {
 	if (!model->context[oidx] ) continue;
 	    node = model->context[oidx];
 	}
