@@ -149,8 +149,8 @@
 #define WANT_DUMP_REHASH_TREE 0
 #define WANT_KEYWORD_WEIGHTS 1
 #define WANT_DUMP_KEYWORD_WEIGHTS 1 /* 0-3 */
-#define WANT_DUMP_ALZHEIMER_PROGRESS 0
-#define WANT_DUMP_ALL_REPLIES 0
+#define WANT_DUMP_ALZHEIMER_PROGRESS 1
+#define WANT_DUMP_ALL_REPLIES 1
 /* dump tree as ascii (costs a lot of disk space) */
 #define WANT_DUMP_MODEL 0
 
@@ -166,9 +166,12 @@
 /* (1/ALZHEIMER_FACTOR) is the chance 
 ** of alzheimer hitting the tree, once per reply.
 ** Zero to disable.
-** 10 is disastrous, 100 is still too big; 1000 might be good enough.
+** Alzheimer does a complete treewalk (twice)
+** to find and eliminate nodes it considers too old
 ** YMMV
 */
+#define ALZHEIMER_NODES_MAX (4 * 1024 * 1024)
+#define ALZHEIMER_NODES_MAX 0
 #define ALZHEIMER_FACTOR 0
 
 /* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
@@ -480,8 +483,9 @@ STATIC int word_needs_white(STRING string);
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
 STATIC void del_word_dofree(DICT *dict, STRING word);
 void free_tree_recursively(TREE *tree);
-STATIC void symbol_russian_alzheimer(TREE *tree);
-STATIC void symbol_russian_alzheimer_recurse(TREE *tree, unsigned the_dice);
+STATIC void symbol_alzheimer(TREE *tree);
+STATIC void symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
+static DICT *alz_dict = NULL;
 
 STATIC void dump_model(MODEL *model);
 STATIC void dump_model_recursive(FILE *fp, TREE *tree, DICT *dict, int indent);
@@ -1319,10 +1323,10 @@ STATIC WordNum find_word(DICT *dict, STRING string)
 {
 WordNum *np;
 
-if (!dict) return 0; /* WP: should be WORD_NIL */
+if (!dict) return WORD_NIL; /* WP: Changed sentinel to WORD_NIL */
 np = dict_hnd(dict, string);
 
-if (!np || *np == WORD_NIL) return 0; /* WP: should be WORD_NIL */
+if (!np || *np == WORD_NIL) return WORD_NIL; /* WP: Changed sentinel to WORD_NIL */
 return *np;
 }
 
@@ -1420,6 +1424,7 @@ STATIC void free_tree(TREE *tree)
 	free(tree->children);
     }
     free(tree);
+    node_count--;
     memstats.free += 1;
 }
 
@@ -1648,6 +1653,7 @@ STATIC TREE *new_node(void)
     node->msize = 0;
     node->branch = 0;
     node->children = NULL;
+    node_count++;
     memstats.alloc += 1;
     return node;
 
@@ -1832,66 +1838,6 @@ for (slot = 0; slot < tree->branch; slot++) {
 return;
 }
 
-STATIC void symbol_russian_alzheimer(TREE *tree)
-{
-unsigned the_dice;
-
-if (!tree) return;
-
-the_dice = urnd(tree->usage);
-
-#if WANT_DUMP_ALZHEIMER_PROGRESS
-fprintf(stderr, "symbol_russian_alzheimer() dice=%u\n", the_dice);
-#endif
-
-symbol_russian_alzheimer_recurse(tree, the_dice);
-}
-
-STATIC void symbol_russian_alzheimer_recurse(TREE *tree, unsigned dice)
-{
-unsigned slot;
-if (!tree) return;
-
-if (! tree->branch) {
-#if WANT_DUMP_ALZHEIMER_PROGRESS
-	fprintf(stderr, "symbol_russian_alzheimer_recurse(dice=%u) Terminal node (symbol=%u usage=%u count=%u)\n"
-	, dice, tree->symbol, tree->usage, tree->count);
-#endif
-	return;
-	}
-
-/* This is the same kind of sampling as used in babble()
- * Starting with a random slot is not strictly necessary
- * , given a good random value for dice 
- */
-slot = urnd(tree->branch);
-
-#if WANT_DUMP_ALZHEIMER_PROGRESS
-fprintf(stderr, "symbol_russian_alzheimer_recurse(dice=%u) slot=%u\n", dice, slot);
-#endif
-
-while (dice >= tree->children[slot].ptr->count) {
-	dice -= tree->children[slot].ptr->count;
-	slot = (slot+1) % tree->branch;
-	}
-
-if (!dice || (tree->children[slot].ptr && tree->children[slot].ptr->branch)) {
-	WordNum symbol;
-	symbol = tree->children[slot].ptr ? tree->children[slot].ptr->symbol : 0;
-
-#if WANT_DUMP_ALZHEIMER_PROGRESS
-	fprintf(stderr, "symbol_russian_alzheimer_recurse(%u) exact match or terminal child; slot=%u symbol=%u\n"
-		, dice, slot, symbol);
-#endif
-	memstats.alzheimer += 1;
-	del_symbol_do_free(tree, symbol) ;
-	}
-else	{
-	symbol_russian_alzheimer_recurse(tree->children[slot].ptr, dice);
-	}
-return;
-}
-
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
 {
     ChildIndex *ip, this,top;
@@ -1962,6 +1908,7 @@ for (index= tree->branch; index--;	) {
 	}
 free(tree->children);
 free(tree);
+node_count--;
 memstats.treedel += 1;
 }
 
@@ -2419,7 +2366,6 @@ STATIC void load_tree(FILE *file, TREE *node)
     else if ( node->stamp > stamp_max) stamp_max =  node->stamp;
 #endif
     fread(&node->branch, sizeof node->branch, 1, file);
-    node_count++;
     if (node->branch == 0) return;
 
     resize_tree(node , node->branch );
@@ -2565,7 +2511,9 @@ STATIC void make_words(char *input, DICT *words)
     if (words->size && myisalnum(words->entry[words->size-1].string.word[0])) {
 		add_word_nofuss(words, period);
     }
-    else if (words->size && !strchr("!.?", words->entry[words->size-1].string.word[ words->entry[words->size-1].string.length-1] )) {
+    else if (words->size
+		&& words->entry[words->size-1].string.length
+		 && !strchr(".!?", words->entry[words->size-1].string.word[ words->entry[words->size-1].string.length-1] )) {
 	words->entry[words->size-1].string = period;
     }
 
@@ -2724,9 +2672,12 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
     count = urnd(ALZHEIMER_FACTOR);
     if (count == ALZHEIMER_FACTOR/2) {
         initialize_context(model);
-        symbol_russian_alzheimer(model->forward);
-        symbol_russian_alzheimer(model->backward);
+	alz_dict = model->dict;
+        symbol_alzheimer(model->forward);
+        symbol_alzheimer(model->backward);
 	}
+#else
+    initialize_context(model);
 #endif
     /*
      *		Create an array of keywords from the words in the user's input
@@ -2810,7 +2761,7 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
     unsigned swapped;
 
     if (glob_keys == NULL) glob_keys = new_dict();
-#if (KEYWORD_DICT_SIZE )
+#if (KEYWORD_DICT_SIZE)
 /* perform russian roulette on the keywords. */
     while ( glob_keys->size > KEYWORD_DICT_SIZE + words->size) {
 	ikey = urnd(glob_keys->size) ;
@@ -2894,16 +2845,16 @@ fprintf(stderr, "Returned %u keywords\n", glob_keys->size );
  */
 STATIC void add_key(MODEL *model, DICT *keywords, STRING word)
 {
-    int symbol, xsymbol, ksymbol;
+    WordNum symbol, xsymbol, ksymbol;
 
     if (!myisalnum(word.word[0])) return;
     symbol = find_word(model->dict, word);
-    if (symbol <= 1) return;
+    if (symbol == WORD_NIL) return;
     xsymbol = find_word(glob_ban, word);
-    if (xsymbol != 0) return;
+    if (xsymbol != WORD_NIL) return;
 /*
     xsymbol = find_word(glob_aux, word);
-    if (xsymbol != 0) return;
+    if (xsymbol == WORD_NIL) return;
 */
 
     ksymbol = add_word_dodup(keywords, word);
@@ -2923,13 +2874,13 @@ STATIC void add_key(MODEL *model, DICT *keywords, STRING word)
  */
 STATIC void add_aux(MODEL *model, DICT *keywords, STRING word)
 {
-    int symbol;
+    WordNum symbol;
 
     if (!myisalnum(word.word[0]) ) return;
     symbol = find_word(model->dict, word);
-    if (symbol == 0) return;
+    if (symbol == WORD_NIL) return;
     symbol = find_word(glob_aux, word);
-    if (symbol == 0) return;
+    if (symbol == WORD_NIL) return;
 
     add_word_dodup(keywords, word);
 }
@@ -3058,7 +3009,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	symbol = find_word(model->dict, sentence->entry[widx].string );
 	ksymbol = find_word(keywords, sentence->entry[widx].string );
 
-	if (ksymbol != 0 && ksymbol != WORD_NIL) {
+	if (ksymbol != WORD_NIL) {
 	    probability = 0.0;
 	    count = 0;
 	    totcount++;
@@ -3118,7 +3069,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	symbol = find_word(model->dict, sentence->entry[widx].string );
 
 	ksymbol = find_word(keywords, sentence->entry[widx].string );
-	if (ksymbol != 0 && ksymbol != WORD_NIL) {
+	if (ksymbol != WORD_NIL) {
 	    probability = 0.0;
 	    count = 0;
 	    totcount++;
@@ -3156,6 +3107,10 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
     if (totcount >= 3) entropy /= sqrt(totcount-1); 
     if (totcount >= 7) entropy /= totcount;
 
+	/* extra penalty for incomplete sentences */
+    widx = sentence->size;
+    if (widx-- && sentence->entry[widx].string.length 
+	&& !strchr(".!?", sentence->entry[widx].string.word[ sentence->entry[widx].string.length-1] )) entropy /= 2;
     return entropy;
 }
 
@@ -3246,8 +3201,8 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
 	 */
 	symbol = node->children[cidx].ptr->symbol;
 
-	if (!find_word(keywords, model->dict->entry[symbol].string) ) goto next;
-	if (used_key == FALSE && find_word(glob_aux, model->dict->entry[symbol].string) ) goto next;
+	if (find_word(keywords, model->dict->entry[symbol].string) == WORD_NIL ) goto next;
+	if (used_key == FALSE && find_word(glob_aux, model->dict->entry[symbol].string) != WORD_NIL) goto next;
 	if (word_exists(words, model->dict->entry[symbol].string) ) goto next;
 	used_key = TRUE;
 next:
@@ -3298,7 +3253,7 @@ STATIC WordNum seed(MODEL *model, DICT *keywords)
     if (keywords && keywords->size > 0) {
 	stop = idx = urnd(keywords->size);
 	for (idx=(idx+1)%keywords->size; idx != stop; idx = (idx+1) % keywords->size) {
-	    // if ( find_word(glob_aux, keywords->entry[idx].string ) ) continue;
+	    // if ( find_word(glob_aux, keywords->entry[idx].string ) != WORD_NIL ) continue;
 	    xsymbol = find_word(model->dict, keywords->entry[idx].string );
 	    if ( xsymbol < 2 || xsymbol == WORD_NIL) continue;
 	    symbol = xsymbol;
@@ -4232,3 +4187,74 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
     return 0; /* success */
 }
 
+/*********************************************************************************************/
+
+static TREE * alz_stack[10] = {NULL,};
+static unsigned alz_sptr = 0;
+static FILE *alz_file = NULL;
+
+STATIC void symbol_alzheimer(TREE *tree)
+{
+unsigned stamp_lim;
+
+if (!tree) return;
+if (stamp_min >= stamp_max) return; /* FIXME: handle foldover later */
+
+
+alz_file = fopen ("Alzheimer.dmp", "a" );
+stamp_lim = stamp_min + (float)(stamp_max-stamp_min)
+	* (((float)node_count / ALZHEIMER_NODES_MAX) -1);
+
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+fprintf(stderr, "symbol_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+	, (unsigned) node_count, (unsigned) ALZHEIMER_NODES_MAX
+	, (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+#endif
+symbol_alzheimer_recurse(tree, 0, stamp_lim);
+fclose (alz_file);
+return;
+}
+
+STATIC void symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim)
+{
+unsigned slot;
+WordNum symbol;
+
+if (!tree) return;
+alz_stack[lev++] = tree;
+
+if (tree->stamp < lim) {
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+	fprintf(alz_file, "symbol_alzheimer_recurse(lev=%u lim=%u) Node considered too old (stamp=%u symbol=%u usage=%u count=%u)\n"
+	, lev, lim
+	, tree->stamp, tree->symbol, tree->usage, tree->count);
+#endif
+	dump_model_recursive(alz_file, tree, alz_dict, lev);
+	return;
+	}
+
+/* This is the same kind of sampling as used in babble()
+ * Starting with a random slot is not strictly necessary
+ * , given a good random value for dice 
+ */
+for (slot = 0; slot < tree->branch; slot++) {
+
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+    /* fprintf(alz_file, "symbol_alzheimer_recurse(lev=%u lim=%u) enter this slot=%u stamp=%u\n"
+	, lev, lm, slot, tree->stamp);
+	*/
+#endif
+	if (tree->stamp > lim) {
+		symbol_alzheimer_recurse(tree->children[slot].ptr, lev, lim);
+		continue;
+		}
+
+
+/*
+	symbol = tree->children[slot].ptr ? tree->children[slot].ptr->symbol : 0;
+	memstats.alzheimer += 1;
+	del_symbol_do_free(tree, symbol) ;
+*/
+	}
+return;
+}
