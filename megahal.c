@@ -148,8 +148,8 @@
 /* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
 #define WANT_KEYWORD_WEIGHTS 1
-#define WANT_DUMP_KEYWORD_WEIGHTS 1 /* 0-3 */
-#define WANT_DUMP_ALZHEIMER_PROGRESS 1
+#define WANT_DUMP_KEYWORD_WEIGHTS 0 /* 0-3 */
+#define WANT_DUMP_ALZHEIMER_PROGRESS 1 /* 0...4 */
 #define WANT_DUMP_ALL_REPLIES 1
 /* dump tree as ascii (costs a lot of disk space) */
 #define WANT_DUMP_MODEL 0
@@ -161,18 +161,20 @@
 #define WANT_TIMESTAMPED_NODES 1
 /* the number of keywords that is kept between replies.
  * Zero to disable */
-#define KEYWORD_DICT_SIZE 100
+#define KEYWORD_DICT_SIZE 30
 
 /* (1/ALZHEIMER_FACTOR) is the chance 
 ** of alzheimer hitting the tree, once per reply.
 ** Zero to disable.
 ** Alzheimer does a complete treewalk (twice)
-** to find and eliminate nodes it considers too old
+** to find and eliminate nodes it considers too old.
+** This is expensive. A usable setting might be around sqrt(ALZHEIMER_NODES_MAX)
 ** YMMV
 */
-#define ALZHEIMER_NODES_MAX (4 * 1024 * 1024)
-#define ALZHEIMER_NODES_MAX 0
-#define ALZHEIMER_FACTOR 0
+#define ALZHEIMER_NODES_MAX (200 * 1000 + 2 * 1024 * 1024)
+#define ALZHEIMER_NODES_MAX ( 34 * 1024 * 1024)
+#define ALZHEIMER_NODES_MAX ( 35 * 1000 * 1000)
+#define ALZHEIMER_FACTOR 6000
 
 /* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
@@ -220,6 +222,7 @@ typedef unsigned int DictSize;
 typedef unsigned int Count;
 typedef unsigned int UsageCnt;
 typedef unsigned int HashVal;
+typedef unsigned int Stamp;
 typedef unsigned long long BigThing;
 BigThing rdtsc_rand(void);
 
@@ -269,7 +272,7 @@ typedef struct node {
     UsageCnt count; /* my count */
     WordNum symbol;
 #if WANT_TIMESTAMPED_NODES 
-    Count stamp; 
+    Stamp stamp; 
 #endif
     ChildIndex msize;
     ChildIndex branch;
@@ -285,12 +288,14 @@ typedef struct {
 } MODEL;
 
 struct memstat {
+	unsigned word_cnt;
+	unsigned node_cnt;
 	unsigned alloc;
 	unsigned free;
 	unsigned alzheimer;
 	unsigned symdel;
 	unsigned treedel;
-	} memstats = {0,0,0,0,0} ;
+	} volatile memstats = {0,0,0,0,0,0,0} ;
 
 typedef enum { UNKNOWN, QUIT, EXIT, SAVE, DELAY, HELP, SPEECH, VOICELIST, VOICE, BRAIN, QUIET} COMMAND_WORDS;
 
@@ -332,11 +337,9 @@ static SWAP *glob_swp = NULL;
 
 static char *directory = NULL;
 static char *last_directory = NULL;
-static unsigned long node_count=0;
-static unsigned long word_count=0;
 
 #if WANT_TIMESTAMPED_NODES 
-static Count stamp_min, stamp_max;
+static Stamp stamp_min, stamp_max;
 #endif
 
 static COMMAND command[] = {
@@ -419,7 +422,7 @@ STATIC void usleep(int);
 #endif
 
 STATIC char *format_output(char *);
-STATIC void free_dict(DICT *dict);
+STATIC void empty_dict(DICT *dict);
 STATIC void free_model(MODEL *);
 STATIC void free_tree(TREE *);
 STATIC void free_string(STRING word);
@@ -466,11 +469,12 @@ STATIC WordNum * dict_hnd_tail (DICT *dict, STRING word);
 STATIC HashVal hash_word(STRING word);
 STATIC int grow_dict(DICT *dict);
 STATIC int resize_dict(DICT *dict, unsigned newsize);
-STATIC void format_dict(struct dictslot * slots, unsigned size);
+STATIC void format_dictslots(struct dictslot * slots, unsigned size);
 STATIC unsigned long set_dict_count(MODEL *model);
 STATIC unsigned long dict_inc_refa_node(DICT *dict, TREE *node, WordNum symbol);
 STATIC unsigned long dict_inc_ref_recurse(DICT *dict, TREE *node);
 STATIC unsigned long dict_inc_ref(DICT *dict, WordNum symbol, unsigned nhits, unsigned whits);
+STATIC unsigned long dict_dec_ref(DICT *dict, WordNum symbol, unsigned nhits, unsigned whits);
 
 /* these exist to allow utf8 in strings */
 STATIC int myisalpha(int ch);
@@ -483,8 +487,10 @@ STATIC int word_needs_white(STRING string);
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
 STATIC void del_word_dofree(DICT *dict, STRING word);
 void free_tree_recursively(TREE *tree);
-STATIC void symbol_alzheimer(TREE *tree);
-STATIC void symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
+STATIC void model_alzheimer(MODEL * model);
+STATIC int symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
+STATIC int check_interval(unsigned min, unsigned max, unsigned this);
+void read_dict_from_ascii(DICT *dict, char *name);
 static DICT *alz_dict = NULL;
 
 STATIC void dump_model(MODEL *model);
@@ -991,8 +997,10 @@ STATIC void show_memstat(char *msg)
 if (!msg) msg = "..." ;
 
 status( "[ stamp Min=%u Max=%u ]\n", (unsigned) stamp_min, (unsigned) stamp_max);
-status ("Memstat %s: {alloc=%u free=%u alzheimer=%u symdel=%u treedel=%u}\n"
-	, msg, memstats.alloc , memstats.free
+status ("Memstat %s: {wordcnt=%u nodecnt=%u alloc=%u free=%u alzheimer=%u symdel=%u treedel=%u}\n"
+	, msg
+	, memstats.word_cnt , memstats.node_cnt
+	, memstats.alloc , memstats.free
 	, memstats.alzheimer , memstats.symdel , memstats.treedel
 	);
 }
@@ -1256,6 +1264,14 @@ return *np;
 
 }
 
+/* FIXME: this is (semantically) wrong:
+** if we shift down the words, their symbols
+** will be altered (decremented) as well.
+** Which is ok if we use the dict ONLY for
+** EXISTS() testing, but we should not assume
+** the symbols to be stable after a deletion.
+** --> the symbols (WordNums) should NOT be considered stable.
+*/
 STATIC void del_word_dofree(DICT *dict, STRING word)
 {
 WordNum *np,this,top;
@@ -1297,8 +1313,7 @@ if (!np || *np == WORD_NIL) {
 *np = this;
 dict->entry[this].string = dict->entry[top].string;
 dict->entry[this].hash = dict->entry[top].hash;
-dict->entry[this].stats.nhits = dict->entry[top].stats.nhits;
-dict->entry[this].stats.whits = dict->entry[top].stats.whits;
+dict->entry[this].stats = dict->entry[top].stats;
 	/* dont forget top's offspring */
 dict->entry[this].link = dict->entry[top].link;
 dict->entry[top].link = WORD_NIL;
@@ -1380,12 +1395,12 @@ STATIC int wordcmp(STRING one, STRING two)
  *
  *		Purpose:		Release the memory consumed by the dictionary.
  */
-STATIC void free_dict(DICT *dict)
+STATIC void empty_dict(DICT *dict)
 {
     if (!dict) return;
-    dict->size = 0;
     dict->stats.whits = 0;
     dict->stats.nhits = 0;
+    dict->size = 0;
     resize_dict(dict, DICT_SIZE_INITIAL);
 }
 
@@ -1397,7 +1412,7 @@ STATIC void free_model(MODEL *model)
     free_tree(model->forward);
     free_tree(model->backward);
     free(model->context);
-    free_dict(model->dict);
+    empty_dict(model->dict);
     free(model->dict);
 
     free(model);
@@ -1424,7 +1439,7 @@ STATIC void free_tree(TREE *tree)
 	free(tree->children);
     }
     free(tree);
-    node_count--;
+    memstats.node_cnt -= 1;
     memstats.free += 1;
 }
 
@@ -1437,8 +1452,8 @@ STATIC void free_tree(TREE *tree)
  */
 STATIC void initialize_dict(DICT *dict)
 {
-    STRING word ={ 7, "<ERROR>" };
-    STRING end ={ 5, "<FIN>" };
+    STRING word = {7, "<ERROR>" };
+    STRING end = {5, "<FIN>" };
 
     dict->stats.whits = 0;
     dict->stats.nhits = 0;
@@ -1487,8 +1502,23 @@ STATIC unsigned long dict_inc_ref(DICT *dict, WordNum symbol, unsigned nhits, un
 
 if (!dict || symbol >= dict->size ) return 0;
 
-dict->stats.nhits += nhits, dict->entry[ symbol ].stats.nhits += nhits;
-dict->stats.whits += whits, dict->entry[ symbol ].stats.whits += whits;
+dict->entry[ symbol ].stats.nhits += nhits;
+dict->stats.nhits += nhits;
+dict->entry[ symbol ].stats.whits += whits;
+dict->stats.whits += whits;
+
+return dict->entry[ symbol ].stats.whits;
+}
+
+STATIC unsigned long dict_dec_ref(DICT *dict, WordNum symbol, unsigned nhits, unsigned whits)
+{
+
+if (!dict || symbol >= dict->size ) return 0;
+
+dict->entry[ symbol ].stats.nhits -= nhits;
+dict->stats.nhits -= nhits;
+dict->entry[ symbol ].stats.whits -= whits;
+dict->stats.whits -= whits;
 
 return dict->entry[ symbol ].stats.whits;
 }
@@ -1517,7 +1547,7 @@ STATIC DICT *new_dict(void)
 	return NULL;
 	}
     dict->msize = DICT_SIZE_INITIAL;
-    format_dict(dict->entry, dict->msize);
+    format_dictslots(dict->entry, dict->msize);
     dict->size = 0;
     dict->stats.nhits = 0;
     dict->stats.whits = 0;
@@ -1525,7 +1555,7 @@ STATIC DICT *new_dict(void)
     return dict;
 }
 
-STATIC void format_dict(struct dictslot * slots, unsigned size)
+STATIC void format_dictslots(struct dictslot * slots, unsigned size)
 {
     unsigned idx;
 
@@ -1558,7 +1588,7 @@ STATIC void save_dict(FILE *file, DICT *dict)
 	progress(NULL, iwrd, dict->size);
     }
     progress(NULL, 1, 1);
-    word_count = iwrd;
+    memstats.word_cnt = iwrd;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1581,7 +1611,7 @@ STATIC void load_dict(FILE *file, DICT *dict)
 	progress(NULL, iwrd, size);
     }
     progress(NULL, 1, 1);
-    word_count = size;
+    memstats.word_cnt = size;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1653,7 +1683,7 @@ STATIC TREE *new_node(void)
     node->msize = 0;
     node->branch = 0;
     node->children = NULL;
-    node_count++;
+    memstats.node_cnt += 1;
     memstats.alloc += 1;
     return node;
 
@@ -1781,7 +1811,10 @@ FILE *fp;
 fp = fopen ("tree.dmp", "w" );
 if (!fp) return;
 
-fprintf(fp, "[ stamp Min=%u Max=%u ]\n", (unsigned) stamp_min, stamp_max);
+#if WANT_TIMESTAMPED_NODES
+fprintf(fp, "[ stamp Min=%u Max=%u ]\n", (unsigned)stamp_min, (unsigned)stamp_max);
+#endif
+
 #if (WANT_DUMP_MODEL & 1)
 fprintf(fp, "->forward order=%u\n", (unsigned) model->order);
 dump_model_recursive(fp, model->forward, model->dict, 0);
@@ -1818,7 +1851,7 @@ for (slot = 0; slot < indent; slot++) {
 	fputc(' ', fp);
 	}
 
-fprintf(fp, "Us=%u Cnt=%u St=%u Br=%u/%u Sym=%u [%u,%u] '%*.*s'\n"
+fprintf(fp, "Us=%u Cnt=%u Stmp=%u Br=%u/%u Sym=%u [%u,%u] '%*.*s'\n"
 	, tree->usage, tree->count
 #if WANT_TIMESTAMPED_NODES 
 	, tree->stamp
@@ -1838,6 +1871,11 @@ for (slot = 0; slot < tree->branch; slot++) {
 return;
 }
 
+/* Delete a symbol from a node.
+** The node's statistics are updated (but NOT it's parent's statistics!!)
+** The node's is compacted by shifting the highest element into the vacated slot.
+** The node's children-array is NOT (yet) reallocated.
+*/
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
 {
     ChildIndex *ip, this,top;
@@ -1868,6 +1906,11 @@ STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
 	child->count = tree->usage;
     }
     tree->usage -= child->count;
+
+    /* FIXME: we should decrement the refcounts for the corresponding dict-entry.
+    ** (but that would require acces to the model->dict, and we should avoid the risk
+    ** of creating stale pointers in model->context[order]
+    */
     if (!tree->branch) {
 	warn("del_symbol_do_free", "Branching already zero");
 	goto kill;
@@ -1892,9 +1935,14 @@ STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
 	/* now this child needs to be abolished ... */
 kill:
     free_tree_recursively(child);
-    if (tree->branch < tree->msize/2) {
-	status("Tree(%u/%u) could be shrunk: %u/%u\n"
+    memstats.treedel += 1;
+    /* fprintf(stderr, "Freed_tree() node_count now=%u treedel = %u\n",  memstats.node_cnt, memstats.treedel ); */
+    if (!tree->branch || tree->branch < tree->msize/2) {
+#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 2)
+	status("Tree(%u/%u) will be shrunk: %u/%u\n"
 		, tree->count, tree->usage, tree->branch, tree->msize);
+#endif
+        	resize_tree(tree, tree->branch);
 		}
 }
 
@@ -1903,13 +1951,15 @@ void free_tree_recursively(TREE *tree)
 unsigned index;
 
 if (!tree) return;
-for (index= tree->branch; index--;	) {
-	free_tree_recursively( tree->children[index] .ptr );
-	}
-free(tree->children);
-free(tree);
-node_count--;
-memstats.treedel += 1;
+
+    for (index= tree->branch; index--;	) {
+        free_tree_recursively( tree->children[index].ptr );
+        }
+    free(tree->children);
+    (void) dict_dec_ref(alz_dict, tree->symbol, 1, tree->count);
+    free(tree);
+    memstats.node_cnt -= 1;
+    memstats.free += 1;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1977,17 +2027,19 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
 // fprintf(stderr, "resize_tree(%u/%u) %u\n", tree->branch,  tree->msize, newsize);
     old = tree->children;
     // if (!newsize) newsize = NODE_SIZE_INITIAL;
-    while (newsize < tree->branch) newsize += 2;
+    /* while (newsize < tree->branch) newsize += 2; */
 
-    tree->children = malloc(newsize * sizeof *tree->children );
-    if (tree->children == NULL) {
-	error("resize_tree", "Unable to reallocate subtree.");
-        tree->children = old;
-	return -1;
+    if (newsize) {
+        tree->children = malloc(newsize * sizeof *tree->children );
+        if (tree->children == NULL) {
+	    error("resize_tree", "Unable to reallocate subtree.");
+            tree->children = old;
+	    return -1;
+        }
     }
-
+    else tree->children = NULL; /* old is freed anyway */
     tree->msize = newsize;
-    format_treeslots(tree->children, tree->msize);
+    if (tree->children && tree->msize) format_treeslots(tree->children, tree->msize);
 
 #if WANT_DUMP_REHASH_TREE
 	fprintf(stderr, "Old=%p New=%p Tree_resize(%u/%u) %u\n", (void*) old, (void*) tree->children, tree->branch,  tree->msize, newsize);
@@ -2064,20 +2116,22 @@ void initialize_context(MODEL *model)
 
 double word_weight(DICT *dict, STRING word)
 {
-WordNum *np, sym0;
+WordNum *np, symbol;
 
 np = dict_hnd(dict, word);
 
 if (!np || *np == WORD_NIL) return 0.0;
-sym0 = *np;
+symbol = *np;
 
-return symbol_weight(dict, sym0);
+return symbol_weight(dict, symbol);
 }
 
 double symbol_weight(DICT *dict, WordNum symbol)
 {
 STRING alt;
 WordNum *np, altsym;
+
+if (!dict || !dict->size) return 0.0;
 
 alt = word_dup_othercase(dict->entry[symbol].string);
 np = dict_hnd(dict, alt);
@@ -2106,7 +2160,7 @@ if (altsym==symbol) {
 		/ (0.5 + dict->entry[symbol].stats.whits)
 		;
 } else {
-	return ((double)dict->stats.whits / dict->size)
+	return ((double)dict->stats.whits * 2 / dict->size)
 		/ (0.5 + dict->entry[symbol].stats.whits + dict->entry[altsym].stats.whits)
 		;
 	}
@@ -2239,7 +2293,7 @@ STATIC void train(MODEL *model, char *filename)
     }
     progress(NULL, 1, 1);
 
-    free_dict(words);
+    empty_dict(words);
     fclose(file);
 }
 
@@ -2265,12 +2319,48 @@ fprintf(file, "# TotStats= %llu %llu Words= %lu/%lu\n"
 	, (unsigned long long) dict->stats.nhits, (unsigned long long) dict->stats.whits
 	, (unsigned long) dict->size, (unsigned long) dict->msize );
     for(iwrd = 0; iwrd < dict->size; iwrd++) {
-	    fprintf(file, "%lu %lu (%6.4e / %6.4e)\t%*.*s\n"
+	    fprintf(file, "%lu\t%lu\t(%6.4e / %6.4e)\t%*.*s\n"
 		, (unsigned long) dict->entry[iwrd].stats.nhits, (unsigned long) dict->entry[iwrd].stats.whits
 		, (double ) dict->entry[iwrd].stats.nhits * dict->size / dict->stats.nhits
 		, (double ) dict->entry[iwrd].stats.whits * dict->size / dict->stats.whits
 		, (int) dict->entry[iwrd].string.length, (int) dict->entry[iwrd].string.length, dict->entry[iwrd].string.word );
     }
+
+    fclose(file);
+}
+
+void read_dict_from_ascii(DICT *dict, char *name)
+{
+    unsigned int iwrd;
+    FILE *file;
+    char buff[300];
+    unsigned nhits,whits;
+    char *cp;
+    int pos;
+    size_t len;
+    STRING word;
+    
+
+    if (dict == NULL) return;
+
+    file = fopen( name, "r");
+    if (file == NULL) {
+	warn("read_dict", "Unable to open file");
+	return;
+    }
+
+while (fgets(file, buff, sizeof buff)) {
+	if (buff[0] == '#') continue;
+	sscanf(buff, "%lu %lu\t%n",  &nhits, &whits,  &pos);
+	pos += strcspn(buff+pos, "\t" );
+	pos += 1;
+        len = strcspn(buff+pos, "\n" );
+        if (!len) continue;
+        word.word= buff+pos;
+        word.length = len;
+        add_word_dodup(dict, word);
+    }
+memstats.word_cnt = dict->size;
 
     fclose(file);
 }
@@ -2299,14 +2389,14 @@ STATIC void save_model(char *modelname, MODEL *model)
 	warn("save_model", "Unable to open file `%s'", filename);
 	return;
     }
-    node_count = 0;
-    word_count = 0;
+    memstats.node_cnt = 0;
+    memstats.word_cnt = 0;
     fwrite(COOKIE, sizeof(char), strlen(COOKIE), file);
     fwrite(&model->order, sizeof model->order, 1, file);
     save_tree(file, model->forward);
     save_tree(file, model->backward);
     save_dict(file, model->dict);
-    status("Saved %lu nodes, %u words.\n", node_count,word_count);
+    status("Saved %lu nodes, %u words.\n", memstats.node_cnt,memstats.word_cnt);
 
     fclose(file);
 }
@@ -2330,7 +2420,7 @@ STATIC void save_tree(FILE *file, TREE *node)
     fwrite(&node->stamp, sizeof node->stamp, 1, file);
 #endif
     fwrite(&node->branch, sizeof node->branch, 1, file);
-    node_count++;
+    memstats.node_cnt++;
     if (level == 0) progress("Saving tree", 0, 1);
     for(ikid = 0; ikid < node->branch; ikid++) {
 	level++;
@@ -2351,6 +2441,7 @@ STATIC void save_tree(FILE *file, TREE *node)
 STATIC void load_tree(FILE *file, TREE *node)
 {
     static int level = 0;
+    static int initialised = 0;
     unsigned int cidx;
     unsigned int symbol;
     ChildIndex *ip;
@@ -2359,9 +2450,12 @@ STATIC void load_tree(FILE *file, TREE *node)
     if (level==0 && node->symbol==0) node->symbol=1;
     fread(&node->usage, sizeof node->usage, 1, file);
     fread(&node->count, sizeof node->count, 1, file);
-#if 1 && WANT_TIMESTAMPED_NODES
+#if (WANT_TIMESTAMPED_NODES)
     fread(&node->stamp, sizeof node->stamp, 1, file);
-    if (!node_count) stamp_min = stamp_max = node->stamp;
+    if (!initialised) {
+	initialised = 1;
+	stamp_min = stamp_max = node->stamp;
+        }
     else if ( node->stamp < stamp_min) stamp_min =  node->stamp;
     else if ( node->stamp > stamp_max) stamp_max =  node->stamp;
 #endif
@@ -2418,8 +2512,8 @@ STATIC bool load_model(char *filename, MODEL *model)
 	warn("load_model", "File `%s' is not a MegaHAL brain", filename);
 	goto fail;
     }
-    node_count = 0;
-    word_count = 0;
+    memstats.node_cnt = 0;
+    memstats.word_cnt = 0;
     fread(&model->order, sizeof model->order, 1, file);
     status("Loading %s order= %u\n", filename, (unsigned)model->order);
     if (model->order != glob_order) {
@@ -2427,12 +2521,19 @@ STATIC bool load_model(char *filename, MODEL *model)
         model->context = realloc(  model->context, (2+model->order) *sizeof *model->context);
         status("Set Order to %u order= %u\n", (unsigned)model->order);
 	}
+    status("Forward\n");
     load_tree(file, model->forward);
+    status("Backward\n");
     load_tree(file, model->backward);
+    status("Dict\n");
+#if 1
     load_dict(file, model->dict);
+#else
+    read_dict_from_ascii(model->dict, "megahal.dic" );
+#endif
     refcount = set_dict_count(model);
-    status("Loaded %lu nodes, %u words. Total refcount= %u\n", node_count,word_count, refcount);
-    status( "Stamp Min=%u Max=%u.\n", (unsigned) stamp_min, (unsigned) stamp_max);
+    status("Loaded %lu nodes, %u words. Total refcount= %u\n", memstats.node_cnt,memstats.word_cnt, refcount);
+    status( "Stamp Min=%u Max=%u.\n", (unsigned)stamp_min, (unsigned)stamp_max);
 
     fclose(file);
     show_dict(model->dict);
@@ -2462,7 +2563,7 @@ STATIC void make_words(char *input, DICT *words)
     /*
      *		Clear the entries in the dictionary
      */
-    free_dict(words);
+    empty_dict(words);
 
     /*
      *		If the string is empty then do nothing, for it contains no words.
@@ -2644,7 +2745,7 @@ STATIC void make_greeting(DICT *words)
     unsigned int iwrd;
 
     for(iwrd = 0; iwrd < words->size; iwrd++) free(words->entry[iwrd].string.word);
-    free_dict(words);
+    empty_dict(words);
     if (glob_grt->size > 0) add_word_dodup(words, glob_grt->entry[ urnd(glob_grt->size) ].string );
 }
 
@@ -2672,9 +2773,7 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
     count = urnd(ALZHEIMER_FACTOR);
     if (count == ALZHEIMER_FACTOR/2) {
         initialize_context(model);
-	alz_dict = model->dict;
-        symbol_alzheimer(model->forward);
-        symbol_alzheimer(model->backward);
+        model_alzheimer(model);
 	}
 #else
     initialize_context(model);
@@ -2759,18 +2858,21 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
     unsigned int iwrd;
     unsigned int iswp;
     unsigned swapped;
+    WordNum symbol;
 
     if (glob_keys == NULL) glob_keys = new_dict();
 #if (KEYWORD_DICT_SIZE)
 /* perform russian roulette on the keywords. */
-    while ( glob_keys->size > KEYWORD_DICT_SIZE + words->size) {
+    while ( glob_keys->size > KEYWORD_DICT_SIZE /* +words->size */ ) {
 	ikey = urnd(glob_keys->size) ;
+	glob_keys->stats.whits = ( 1* glob_keys->stats.whits + 1* glob_keys->entry[ikey].stats.whits) / 2;
+	glob_keys->stats.nhits = ( 1* glob_keys->stats.nhits + 1* glob_keys->entry[ikey].stats.nhits) / 2;
 	del_word_dofree(glob_keys, glob_keys->entry[ikey].string );
 	}
 #else
     for(ikey = 0; ikey < glob_keys->size; ikey++) free(glob_keys->entry[ikey].string.word);
     // glob_keys->size = 0;
-    free_dict(glob_keys);
+    empty_dict(glob_keys);
 #endif
 
 #if WANT_DUMP_KEYWORD_WEIGHTS
@@ -2785,16 +2887,21 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 	 *		skip over it.
 	 */
 	if (!myisalnum(words->entry[iwrd].string.word[0] )) continue;
-	swapped = 0;
+        symbol = find_word(model->dict, words->entry[iwrd].string );
+        if (symbol == WORD_NIL) continue;
+        if (model->dict->entry[symbol].stats.whits > model->dict->stats.whits / model->dict->size ) continue;
 #if 0
+	swapped = 0;
 	for(iswp = 0; iswp < glob_swp->size; iswp++)
 	    if (!wordcmp(glob_swp->pairs[iswp].from , words->entry[iwrd].string ) ) {
 		add_key(model, glob_keys, glob_swp->pairs[iswp].to );
 		swapped++;
 		break;
 	    }
-#endif
 	if (!swapped) add_key(model, glob_keys, words->entry[iwrd].string );
+#else
+	add_key(model, glob_keys, words->entry[iwrd].string );
+#endif
     }
 
 #if 0
@@ -2812,20 +2919,22 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
     }
 #endif
 
-#if (WANT_DUMP_KEYWORD_WEIGHTS >=3)
-fprintf(stderr, "Total %u %llu:%llu\n"
+#if (WANT_DUMP_KEYWORD_WEIGHTS >=2)
+fprintf(stderr, "Total %u W=%llu N=%llu\n"
+	, (unsigned) glob_keys->size
 	, (unsigned long long)glob_keys->stats.whits
 	, (unsigned long long)glob_keys->stats.nhits
 	);
 for (ikey=0; ikey < glob_keys->size; ikey++) {
-	double weight;
-	weight = word_weight (model->dict, glob_keys->entry[ikey].string);
-	fprintf(stderr, "Keyword %u ('%*.*s') %u:%u := %6.4e\n"
+	double gweight,kweight;
+	gweight = word_weight (model->dict, glob_keys->entry[ikey].string);
+	kweight = word_weight (glob_keys, glob_keys->entry[ikey].string);
+	fprintf(stderr, "Keyword %u ('%*.*s') %u:%u := G=%6.4e K=%6.4e\n"
 	, ikey
 	, (int)glob_keys->entry[ikey].string.length, (int)glob_keys->entry[ikey].string.length, (int)glob_keys->entry[ikey].string.word
 	, (unsigned)glob_keys->entry[ikey].stats.whits
 	, (unsigned)glob_keys->entry[ikey].stats.nhits
-	, weight
+	, gweight, kweight
 	);
 	}
 #endif
@@ -2848,20 +2957,21 @@ STATIC void add_key(MODEL *model, DICT *keywords, STRING word)
     WordNum symbol, xsymbol, ksymbol;
 
     if (!myisalnum(word.word[0])) return;
+/**
     symbol = find_word(model->dict, word);
     if (symbol == WORD_NIL) return;
     xsymbol = find_word(glob_ban, word);
     if (xsymbol != WORD_NIL) return;
-/*
     xsymbol = find_word(glob_aux, word);
     if (xsymbol == WORD_NIL) return;
 */
 
     ksymbol = add_word_dodup(keywords, word);
+    if (xsymbol == WORD_NIL) return;
     if (ksymbol == keywords->size-1) {
 	dict_inc_ref(keywords, ksymbol, 1, 1);
 	}
-    else if (ksymbol < keywords->size) {
+    else {
 	dict_inc_ref(keywords, ksymbol, 0, 1);
 	}
 }
@@ -2901,7 +3011,7 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
     bool start = TRUE;
 
     if (replies == NULL) replies = new_dict();
-    else free_dict(replies);
+    else empty_dict(replies);
 
     /*
      *		Start off by making sure that the model's context is empty.
@@ -3025,15 +3135,11 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	    }
 
 	    if (count > 0) {
-#if 0
-	    	kfrac = (double)(1+keywords->entry[ksymbol].stats.whits) / (double)(1+keywords->entry[ksymbol].stats.nhits);
-	    	gfrac = (double)(1+model->dict->entry[symbol].stats.whits) / (double)(1+model->dict->entry[symbol].stats.nhits);
-#else
-	    	kfrac = symbol_weight(keywords, ksymbol);
 	    	gfrac = symbol_weight(model->dict, symbol);
-#endif
-		weight = (gfrac+kfrac) /2;
-#if (WANT_DUMP_KEYWORD_WEIGHTS >= 2)
+	    	kfrac = symbol_weight(keywords, ksymbol);
+		weight = gfrac/kfrac;
+
+#if (WANT_DUMP_KEYWORD_WEIGHTS >= 3)
 		fprintf(stderr, "%*.*s: Keyw= %lu/%lu : %llu/%llu (%6.4e)  Glob=%u/%u (%6.4e)  Prob=%6.4e/Count=%u Weight=%6.4e Term=%6.4e %c\n"
 		, (int) sentence->entry[widx].string.length
 		, (int) sentence->entry[widx].string.length
@@ -3084,14 +3190,9 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	    }
 
 	    if (count > 0) {
-	    	//weight = (double)(1+keywords->entry[ksymbol].stats.whits) / (1+model->dict->entry[symbol].stats.whits);
-	    	// weight = (double)(1+keywords->entry[ksymbol].stats.whits) / (1+keywords->entry[ksymbol].stats.nhits) ; 
-	    	// kfrac = (double)(1+keywords->entry[ksymbol].stats.whits) / (double)(1+keywords->entry[ksymbol].stats.nhits);
-	    	// gfrac = (double)(1+model->dict->entry[symbol].stats.whits) / (double)(1+model->dict->entry[symbol].stats.nhits);
-	    	kfrac = symbol_weight(keywords, ksymbol);
 	    	gfrac = symbol_weight(model->dict, symbol);
-		// weight = gfrac/kfrac;
-		weight = (gfrac+kfrac) /2;
+	    	kfrac = symbol_weight(keywords, ksymbol);
+		weight = gfrac/kfrac;
 #if WANT_KEYWORD_WEIGHTS
 		probability *= weight;
 #endif
@@ -3107,6 +3208,13 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
     if (totcount >= 3) entropy /= sqrt(totcount-1); 
     if (totcount >= 7) entropy /= totcount;
 
+	/* extra penalty for sentences that don't start with a capitalized letter */
+    widx = sentence->size;
+    if (widx && sentence->entry[0].string.length 
+	&& ( myislower( sentence->entry[0].string.word[ 0 ] )
+           || ! myisalnum( sentence->entry[0].string.word[ 0 ] )
+           )
+	) entropy /= 2;
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
     if (widx-- && sentence->entry[widx].string.length 
@@ -3849,11 +3957,11 @@ void load_personality(MODEL **model)
      */
     free_model(*model);
     free_words(glob_ban);
-    free_dict(glob_ban);
+    empty_dict(glob_ban);
     free_words(glob_aux);
-    free_dict(glob_aux);
+    empty_dict(glob_aux);
     free_words(glob_grt);
-    free_dict(glob_grt);
+    empty_dict(glob_grt);
     free_swap(glob_swp);
 
     /*
@@ -4169,7 +4277,7 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
 	return -1;
 	}
     dict->msize = newsize;
-    format_dict(dict->entry, dict->msize);
+    format_dictslots(dict->entry, dict->msize);
 
     for (item =0 ; item < dict->size; item++) {
 		WordNum *np;
@@ -4190,71 +4298,132 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
 /*********************************************************************************************/
 
 static TREE * alz_stack[10] = {NULL,};
-static unsigned alz_sptr = 0;
 static FILE *alz_file = NULL;
 
-STATIC void symbol_alzheimer(TREE *tree)
+STATIC void model_alzheimer(MODEL * model)
 {
-unsigned stamp_lim;
+Stamp stamp_lim;
+int rc;
 
-if (!tree) return;
-if (stamp_min >= stamp_max) return; /* FIXME: handle foldover later */
+if (!model) return;
+if (memstats.node_cnt <= ALZHEIMER_NODES_MAX) return;
+
+alz_dict = model->dict;
 
 
-alz_file = fopen ("Alzheimer.dmp", "a" );
-stamp_lim = stamp_min + (float)(stamp_max-stamp_min)
-	* (((float)node_count / ALZHEIMER_NODES_MAX) -1);
+alz_file = fopen ("alzheimer.dmp", "a" );
+stamp_lim = stamp_max-stamp_min;
+stamp_lim *= (((float)memstats.node_cnt / ALZHEIMER_NODES_MAX) -1);
+stamp_lim /= 2;
+stamp_lim += stamp_min;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-fprintf(stderr, "symbol_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
-	, (unsigned) node_count, (unsigned) ALZHEIMER_NODES_MAX
+fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+	, (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
 	, (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
 #endif
-symbol_alzheimer_recurse(tree, 0, stamp_lim);
+
+fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+	, (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
+	, (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+
+rc =check_interval(stamp_min, stamp_max, stamp_lim);
+if (rc) { /* outside interval */
+	fprintf(stderr, "Model_alzheimer() Rc=%d Ajuus!\n", rc);
+	fprintf(alz_file, "Model_alzheimer() Rc=%d Ajuus!\n", rc);
+	goto ajuus;
+	}
+
+rc = symbol_alzheimer_recurse(model->forward, 0, stamp_lim);
+fprintf(stderr, "symbol_alzheimer_recursed(forward) := %d\n", rc);
+
+rc = symbol_alzheimer_recurse(model->backward, 0, stamp_lim);
+fprintf(stderr, "symbol_alzheimer_recursed(backward) := %d\n", rc);
+
+/* Adjust low water mark */
+stamp_min = stamp_lim;
+
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+	, (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
+	, (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+#endif
+
+fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+	, (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
+	, (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+ajuus:
 fclose (alz_file);
 return;
 }
 
-STATIC void symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim)
+STATIC int symbol_alzheimer_recurse(TREE *tree, unsigned lev, Stamp lim)
 {
-unsigned slot;
+unsigned slot,count;
 WordNum symbol;
+int rc;
 
-if (!tree) return;
+if (!tree) return 0;
 alz_stack[lev++] = tree;
 
-if (tree->stamp < lim) {
-#if WANT_DUMP_ALZHEIMER_PROGRESS
-	fprintf(alz_file, "symbol_alzheimer_recurse(lev=%u lim=%u) Node considered too old (stamp=%u symbol=%u usage=%u count=%u)\n"
-	, lev, lim
-	, tree->stamp, tree->symbol, tree->usage, tree->count);
+rc = check_interval(lim, stamp_max, tree->stamp);
+if (rc) { /* Too old: outside interval */
+#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 2)
+	for (slot=0; slot< lev; slot++) fputc(' ', alz_file);
+	for (slot=0; slot< lev; slot++) fprintf(alz_file, "[%u:%u]", alz_stack[slot]->symbol, alz_stack[slot]->stamp );
+	fprintf(alz_file, "symbol_alzheimer_recurse(rc=%d) Node considered too old (stamp=%u symbol=%u usage=%u count=%u)\n"
+	, rc, tree->stamp, tree->symbol, tree->usage, tree->count);
 #endif
+#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 4)
 	dump_model_recursive(alz_file, tree, alz_dict, lev);
-	return;
+#endif
 	}
 
-/* This is the same kind of sampling as used in babble()
- * Starting with a random slot is not strictly necessary
- * , given a good random value for dice 
- */
-for (slot = 0; slot < tree->branch; slot++) {
+/* We should work from top to bottom, because it would require less shuffling */
+count = 0;
+for (slot = tree->branch; slot--> 0;	) {
 
-#if WANT_DUMP_ALZHEIMER_PROGRESS
-    /* fprintf(alz_file, "symbol_alzheimer_recurse(lev=%u lim=%u) enter this slot=%u stamp=%u\n"
+#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 2)
+    fprintf(alz_file, "symbol_alzheimer_recurse(lev=%u lim=%u) enter this slot=%u stamp=%u\n"
 	, lev, lm, slot, tree->stamp);
-	*/
 #endif
-	if (tree->stamp > lim) {
-		symbol_alzheimer_recurse(tree->children[slot].ptr, lev, lim);
+	rc = check_interval(lim, stamp_max, tree->stamp);
+	if (!rc) { /* inside interval */
+		rc = symbol_alzheimer_recurse(tree->children[slot].ptr, lev, lim);
 		continue;
 		}
-
-
-/*
-	symbol = tree->children[slot].ptr ? tree->children[slot].ptr->symbol : 0;
-	memstats.alzheimer += 1;
-	del_symbol_do_free(tree, symbol) ;
-*/
+	else	{	/* slot is stale: remove it */
+		symbol = tree->children[slot].ptr ? tree->children[slot].ptr->symbol : WORD_NIL;
+		memstats.alzheimer += 1;
+		del_symbol_do_free(tree, symbol) ;
+		count++;
+		}
 	}
-return;
+return count? -1: rc;
+}
+
+/* Check of this inside or above/below interval {min,max}
+** main and max may have been wrapped around zero (--> min > max)
+** return
+**	0 := this inside interval
+**	1 := this below interval
+**	-1 := this above interval (but wrapped)
+** The two impossible cases return -2.
+*/
+STATIC int check_interval(Stamp min, Stamp max, Stamp this)
+{
+switch (4 *(max >= min)
+	+2 *(this >= min)
+	+1 *(this > max)
+	) {
+	case 0: return 0;
+	case 1: return 1;
+	case 2: return -2;
+	case 3: return 0;
+	case 4: return 1;
+	case 5: return -2;
+	case 6: return 0;
+	case 7: return -1;
+	}
+return 0;
 }
