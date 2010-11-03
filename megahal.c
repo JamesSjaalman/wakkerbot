@@ -162,18 +162,20 @@
 /* the number of keywords that is kept between replies.
  * Zero to disable */
 #define KEYWORD_DICT_SIZE 30
+/* alternative tokeniser. Attempts to keep dotted acronyms and (floating point) numbers intact.
+*/
+#define WANT_NEW_TOKENIZER 1
 
 /* (1/ALZHEIMER_FACTOR) is the chance 
 ** of alzheimer hitting the tree, once per reply.
 ** Zero to disable.
-** Alzheimer does a complete treewalk (twice)
+** Alzheimer periodically does a complete treewalk (twice)
 ** to find and eliminate nodes it considers too old.
 ** This is expensive. A usable setting might be around sqrt(ALZHEIMER_NODES_MAX)
 ** YMMV
 */
 #define ALZHEIMER_NODES_MAX (200 * 1000 + 2 * 1024 * 1024)
-#define ALZHEIMER_NODES_MAX ( 34 * 1024 * 1024)
-#define ALZHEIMER_NODES_MAX ( 35 * 1000 * 1000)
+#define ALZHEIMER_NODES_MAX ( 33 * 1000 * 1000)
 #define ALZHEIMER_FACTOR 6000
 
 /* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
@@ -379,7 +381,14 @@ STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICT *dict, STRING word);
 STATIC WordNum add_word_nofuss(DICT *dict, STRING word);
 STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words);
-STATIC bool boundary(char *string, size_t position);
+
+#if WANT_NEW_TOKENIZER
+STATIC void make_words(char *, DICT *);
+STATIC size_t tokenize(char *string, int *sp);
+#else /* WANT_NEW_TOKENIZER */
+STATIC void make_words(char *, DICT *);
+STATIC size_t boundary(char *string, int *state);
+#endif
 
 STATIC void capitalize(char *);
 STATIC void changevoice(DICT *, unsigned int);
@@ -406,7 +415,6 @@ STATIC bool initialize_status(char *);
 STATIC void learn_from_input(MODEL *, DICT *);
 STATIC void listvoices(void);
 STATIC void make_greeting(DICT *);
-STATIC void make_words(char *, DICT *);
 STATIC DICT *new_dict(void);
 
 STATIC char *read_input(char * prompt);
@@ -481,6 +489,7 @@ STATIC int myisalpha(int ch);
 STATIC int myisupper(int ch);
 STATIC int myislower(int ch);
 STATIC int myisalnum(int ch);
+STATIC int myiswhite(int ch);
 STATIC int word_is_usable(STRING word);
 STATIC int word_needs_white(STRING string);
 
@@ -1778,9 +1787,6 @@ STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
 {
     TREE *node = NULL;
 
-    /*
-     *		Search for the symbol in the subtree of the tree node.
-     */
     node = find_symbol_add(tree, symbol);
     if (!node) return NULL;
 
@@ -2111,6 +2117,10 @@ void initialize_context(MODEL *model)
     unsigned int iord;
 
     for(iord = 0; iord < 2+model->order; iord++) model->context[iord] = NULL;
+#if WANT_TIMESTAMPED_NODES
+    if (model->forward) model->forward->stamp = stamp_max;
+    if (model->backward) model->backward->stamp = stamp_max;
+#endif
 
 }
 
@@ -2450,14 +2460,14 @@ STATIC void load_tree(FILE *file, TREE *node)
     if (level==0 && node->symbol==0) node->symbol=1;
     fread(&node->usage, sizeof node->usage, 1, file);
     fread(&node->count, sizeof node->count, 1, file);
-#if (WANT_TIMESTAMPED_NODES)
+#if WANT_TIMESTAMPED_NODES
     fread(&node->stamp, sizeof node->stamp, 1, file);
     if (!initialised) {
-	initialised = 1;
+	initialised++;
 	stamp_min = stamp_max = node->stamp;
         }
-    else if ( node->stamp < stamp_min) stamp_min =  node->stamp;
-    else if ( node->stamp > stamp_max) stamp_max =  node->stamp;
+    if ( node->stamp < stamp_min) stamp_min = node->stamp;
+    else if ( node->stamp > stamp_max) stamp_max = node->stamp;
 #endif
     fread(&node->branch, sizeof node->branch, 1, file);
     if (node->branch == 0) return;
@@ -2536,7 +2546,14 @@ STATIC bool load_model(char *filename, MODEL *model)
     status( "Stamp Min=%u Max=%u.\n", (unsigned)stamp_min, (unsigned)stamp_max);
 
     fclose(file);
+
     show_dict(model->dict);
+
+#if ALZHEIMER_FACTOR
+    while ( memstats.node_cnt > ALZHEIMER_NODES_MAX) {
+        model_alzheimer(model);
+        }
+#endif
     return TRUE;
 fail:
     fclose(file);
@@ -2553,6 +2570,180 @@ fail:
  *	and put them into a dict, sequentially.
  *	NOTE No memory for the STRINGS is allocated: the DICT points to the input string.
  */
+#if WANT_NEW_TOKENIZER
+STATIC void make_words(char *input, DICT *words)
+{
+    size_t len, pos, chunk;
+    STRING word ; 
+    static STRING period = {1, "." }  ; 
+    int state = 0; /* FIXME: this could be made static to allow for multi-line strings */
+
+    empty_dict(words);
+
+    len = strlen(input);
+    if (!len) return;
+
+    for(pos=0; pos < len ; ) {
+
+	chunk = tokenize(input+pos, &state);
+        if (!chunk) { /* maybe we should reset state here ... */ pos++; }
+        if (chunk > 255) {
+            warn( "Make_words", "Truncated too long  string(%u) at %s\n", (unsigned) chunk, input+pos);
+            chunk = 255;
+            }
+        word.length = chunk;
+        word.word = input+pos;
+#if WANT_SUPPRESS_WHITESPACE
+        if (word_is_usable(word)) add_word_nofuss(words, word);
+#else
+        add_word_nofuss(words, word);
+#endif
+
+        if (pos+chunk >= len) break;
+        pos += chunk;
+    }
+
+    /*
+     *		If the last word isn't punctuation, then replace it with a
+     *		full-stop character.
+     */
+    if (words->size && myisalnum(words->entry[words->size-1].string.word[0])) {
+		add_word_nofuss(words, period);
+    }
+    else if (words->size
+		&& words->entry[words->size-1].string.length
+		 && !strchr(".!?", words->entry[words->size-1].string.word[ words->entry[words->size-1].string.length-1] )) {
+	words->entry[words->size-1].string = period;
+    }
+
+    return;
+}
+
+/*---------------------------------------------------------------------------*/
+/*
+ *		Function:	Tokenize
+ *
+ *		Purpose:		Find the length of the token started @ string
+ * This tokeniser attempts to respect abbreviations such as R.W.A or R.w.a.
+ * Also numeric literals, such as 200.50 are left alone (almost the same for 200,50 or 200.000,00)
+ * Maybe 10e-0.6 should also be recognised.
+ * multiple stretches of .,!? are kept intact. , multiple stretches of
+ * other non alphanumerc tokens (@#$%^&*) as well.
+ * brackets and brases are always chopped up to 1-character tokens.
+ * quotes are not handled yet.
+ */
+#define T_INIT 0
+#define T_ANY 1
+#define T_WORD 2
+#define T_WORDDOT 3
+#define T_WORDDOTLET 4
+#define T_AFKODOT 5
+#define T_AFKO 6
+#define T_NUM 7
+#define T_NUMDOT 8
+#define T_NUMDOTLET 9
+#define T_MEUK 10
+#define T_PUNCT 11
+STATIC size_t tokenize(char *string, int *sp)
+{
+    unsigned char *ucp = (unsigned char *) string;
+    size_t pos ;
+
+    for(pos=0; ucp[pos]; ) {
+    switch(*sp) {
+    case T_INIT: /* initial */
+#if 0
+	// if (ucp[pos] == '\'' ) { *sp |= 16; return pos; }
+	// if (ucp[posi] == '"' ) { *sp |= 32; return pos; }
+#endif
+    	if (myisalpha(ucp[pos])) {*sp = T_WORD; pos++; continue; }
+    	if (myisalnum(ucp[pos])) {*sp = T_NUM; pos++; continue; }
+	// if (strspn(ucp+pos, "-+")) { *sp = T_NUM; pos++; continue; }
+	*sp = T_ANY; continue;
+	break;
+    case T_ANY: /* either whitespace or meuk: eat it */
+    	pos += strspn(ucp+pos, " \t\n\r\f\b" ); 
+	if (pos) {*sp = T_INIT; return pos; }
+        *sp = T_MEUK; continue;
+        break;
+    case T_WORD: /* inside word */
+	while ( myisalnum(ucp[pos]) ) pos++;
+    	if (ucp[pos] == '\0' ) { *sp = T_INIT;return pos; }
+	if (ucp[pos] == '.' ) { *sp = T_WORDDOT; pos++; continue; }
+	*sp = T_INIT; return pos;
+        break;
+    case T_WORDDOT: /* word. */
+	if (myisalpha(ucp[pos]) ) { *sp = T_WORDDOTLET; pos++; continue; }
+	*sp = T_INIT; return pos-1;
+        break;
+    case T_WORDDOTLET: /* word.A */
+	if (ucp[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
+	if (myisalpha(ucp[pos]) ) { *sp = T_INIT; return pos-2; }
+	if (myisalnum(ucp[pos]) ) { *sp = T_NUM; continue; }
+	*sp = T_INIT; return pos-2;
+        break;
+    case T_AFKODOT: /* A.B. */
+        if (myisalpha(ucp[pos]) ) { *sp = T_AFKO; pos++; continue; }
+        *sp = T_INIT; return pos >=3? pos: pos -2;
+        break;
+    case T_AFKO: /* word.A.B */
+	if (ucp[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
+	// if (myisalpha(ucp[pos]) ) { pos++; continue; }
+	if (myisalpha(ucp[pos]) ) { *sp = T_INIT; return pos - 2; }
+	*sp = T_INIT; return pos-1;
+        break;
+    case T_NUM: /* number */
+	if ( myisalnum(ucp[pos]) ) pos++;
+	if (strspn(ucp+pos, ".,")) { *sp = T_NUMDOT; pos++; continue; }
+	*sp = T_INIT; return pos;
+        break;
+    case T_NUMDOT: /* number[.,] */
+	if (myisalpha(ucp[pos])) { *sp = T_NUMDOTLET; pos++; continue; }
+	if (myisalnum(ucp[pos])) { *sp = T_NUM; pos++; continue; }
+	if (strspn(ucp+pos, "-+")) { *sp = T_NUM; pos++; continue; }
+	*sp = T_INIT; return pos-1;
+        break;
+    case T_NUMDOTLET: /* number[.,][a-z] */
+	if (myisalpha(ucp[pos])) { *sp = T_INIT; return pos-2; }
+	if (myisalnum(ucp[pos])) { *sp = T_NUM; pos++; continue; }
+	*sp = T_INIT; return pos-2;
+        break;
+    case T_MEUK: /* inside meuk */
+	if (myisalnum(ucp[pos])) {*sp = T_INIT; return pos; }
+	if (myiswhite(ucp[pos])) {*sp = T_INIT; return pos; }
+	if (strspn(ucp+pos, ".,?!" )) { if (!pos) *sp = T_PUNCT; else { *sp = T_INIT; return pos; }}
+	if (strspn(ucp+pos, "@'\"" )) { *sp = T_INIT; return pos ? pos : 1; }
+	if (strspn(ucp+pos, ":;" )) { *sp = T_INIT; return pos ? pos : 1; }
+	if (strspn(ucp+pos, "(){}[]" )) { *sp = T_INIT; return pos ? pos : 1; }
+	pos++; continue; /* collect all garbage */
+        break;
+    case T_PUNCT: /* punctuation */
+	pos += strspn(ucp+pos, ".,?!" ) ;
+        *sp = T_INIT; return pos ? pos : 1;
+        break;
+        }
+    }
+    /* This is ugly. Depending on the state,
+    ** we need to know how many lookahead chars we took */
+    switch (*sp) {
+    case T_INIT: break;
+    case T_ANY: break;
+    case T_WORD: break;
+    case T_WORDDOT: pos -= 1; break;
+    case T_WORDDOTLET: pos -= 2; break;
+    case T_AFKODOT: if (pos < 3) pos -= 2; break;
+    case T_AFKO: break;
+    case T_NUM: break;
+    case T_NUMDOT: pos-= 1; break;
+    case T_NUMDOTLET: pos -= 2; break;
+    case T_MEUK: break;
+    case T_PUNCT: break;
+    default: break;
+    }
+    *sp = T_INIT; return pos;
+}
+
+#else /*  WANT_NEW_TOKENIZER */
 STATIC void make_words(char *input, DICT *words)
 {
     size_t offset = 0;
@@ -2668,6 +2859,8 @@ STATIC bool boundary(char *string, size_t position)
     return FALSE;
 }
 
+#endif /* WANT_NEW_TOKENIZER */
+
 STATIC int myisupper(int ch)
 {
 if (ch >= 'A' && ch <= 'Z') return 1;
@@ -2695,6 +2888,16 @@ if (ret) return ret;
 	/* don't parse, just assume valid utf8*/
 if (ch == -1) return 0;
 if (ch & 0x80) return 1;
+return 0;
+}
+
+STATIC int myiswhite(int ch)
+{
+if (ch == ' ') return 1;
+if (ch == '\t') return 1;
+if (ch == '\n') return 1;
+if (ch == '\r') return 1;
+if (ch == '\f') return 1;
 return 0;
 }
 
@@ -3212,9 +3415,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
     widx = sentence->size;
     if (widx && sentence->entry[0].string.length 
 	&& ( myislower( sentence->entry[0].string.word[ 0 ] )
-           || ! myisalnum( sentence->entry[0].string.word[ 0 ] )
-           )
-	) entropy /= 2;
+	 || ! myisalnum( sentence->entry[0].string.word[ 0 ] )) ) entropy /= 2;
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
     if (widx-- && sentence->entry[widx].string.length 
@@ -4303,6 +4504,7 @@ static FILE *alz_file = NULL;
 STATIC void model_alzheimer(MODEL * model)
 {
 Stamp stamp_lim;
+unsigned count;
 int rc;
 
 if (!model) return;
@@ -4312,46 +4514,56 @@ alz_dict = model->dict;
 
 
 alz_file = fopen ("alzheimer.dmp", "a" );
-stamp_lim = stamp_max-stamp_min;
-stamp_lim *= (((float)memstats.node_cnt / ALZHEIMER_NODES_MAX) -1);
-stamp_lim /= 2;
-stamp_lim += stamp_min;
+
+for( count = 0; !count;	) {
+    stamp_lim = stamp_max-stamp_min;
+    stamp_lim *= (((float)memstats.node_cnt / ALZHEIMER_NODES_MAX) -1);
+    stamp_lim /= 2;
+    // stamp_lim -= stamp_lim/4;
+    if (!stamp_lim) stamp_lim = (stamp_max-stamp_min) / 100;
+    if (!stamp_lim) stamp_lim = 10;
+    stamp_lim += stamp_min;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
-	, (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
-	, (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+    fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
+	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
 #endif
 
-fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
-	, (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
-	, (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+    fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
+	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
 
-rc =check_interval(stamp_min, stamp_max, stamp_lim);
-if (rc) { /* outside interval */
-	fprintf(stderr, "Model_alzheimer() Rc=%d Ajuus!\n", rc);
-	fprintf(alz_file, "Model_alzheimer() Rc=%d Ajuus!\n", rc);
-	goto ajuus;
-	}
+    rc = check_interval(stamp_min, stamp_max, stamp_lim);
+    if (rc) { /* outside interval */
+	    fprintf(stderr, "Model_alzheimer() insde interval Rc=%d Ajuus!\n", rc);
+	    fprintf(alz_file, "Model_alzheimer() insde interval Rc=%d Ajuus!\n", rc);
+	    goto ajuus;
+	    }
 
-rc = symbol_alzheimer_recurse(model->forward, 0, stamp_lim);
-fprintf(stderr, "symbol_alzheimer_recursed(forward) := %d\n", rc);
+    rc = symbol_alzheimer_recurse(model->forward, 0, stamp_lim);
+    fprintf(stderr, "symbol_alzheimer_recursed(forward) := %d\n", rc);
+    if (rc > 0) count += rc;
 
-rc = symbol_alzheimer_recurse(model->backward, 0, stamp_lim);
-fprintf(stderr, "symbol_alzheimer_recursed(backward) := %d\n", rc);
+    rc = symbol_alzheimer_recurse(model->backward, 0, stamp_lim);
+    fprintf(stderr, "symbol_alzheimer_recursed(backward) := %d\n", rc);
+    if (rc > 0) count += rc;
 
-/* Adjust low water mark */
-stamp_min = stamp_lim;
+    /* Adjust low water mark */
+    if (stamp_min == stamp_lim) count = 0;
+    else stamp_min = stamp_lim;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
-	, (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
-	, (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+    fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
+	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
 #endif
 
-fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
-	, (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
-	, (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+    fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
+	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+    }
+
 ajuus:
 fclose (alz_file);
 return;
