@@ -151,7 +151,7 @@
 #define WANT_DUMP_KEYWORD_WEIGHTS 0 /* 0-3 */
 #define WANT_DUMP_ALZHEIMER_PROGRESS 1 /* 0...4 */
 #define WANT_DUMP_ALL_REPLIES 1
-/* dump tree as ascii (costs a lot of disk space) */
+/* dump tree as ascii (costs a LOT of disk space) */
 #define WANT_DUMP_MODEL 0
 
 /* suppress whitespace; only store REAL words. */
@@ -174,9 +174,11 @@
 ** This is expensive. A usable setting might be around sqrt(ALZHEIMER_NODES_MAX)
 ** YMMV
 */
-#define ALZHEIMER_NODES_MAX (200 * 1000 + 2 * 1024 * 1024)
+#define ALZHEIMER_NODES_MAX ( 1 * 1000 * 1000)
+#define ALZHEIMER_NODES_MAX ( 800000 )
 #define ALZHEIMER_NODES_MAX ( 33 * 1000 * 1000)
-#define ALZHEIMER_FACTOR 6000
+#define ALZHEIMER_FACTOR 60
+#define ALZHEIMER_FACTOR 5000
 
 /* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
@@ -341,7 +343,7 @@ static char *directory = NULL;
 static char *last_directory = NULL;
 
 #if WANT_TIMESTAMPED_NODES 
-static Stamp stamp_min, stamp_max;
+static Stamp stamp_min = 0xffffffff, stamp_max=0;
 #endif
 
 static COMMAND command[] = {
@@ -492,12 +494,13 @@ STATIC int myisalnum(int ch);
 STATIC int myiswhite(int ch);
 STATIC int word_is_usable(STRING word);
 STATIC int word_needs_white(STRING string);
+STATIC int word_is_allcaps(STRING string);
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
 STATIC void del_word_dofree(DICT *dict, STRING word);
 void free_tree_recursively(TREE *tree);
-STATIC void model_alzheimer(MODEL * model);
-STATIC int symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
+STATIC unsigned model_alzheimer(MODEL * model, unsigned maxnodecount);
+STATIC unsigned symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
 STATIC int check_interval(unsigned min, unsigned max, unsigned this);
 void read_dict_from_ascii(DICT *dict, char *name);
 static DICT *alz_dict = NULL;
@@ -2451,7 +2454,6 @@ STATIC void save_tree(FILE *file, TREE *node)
 STATIC void load_tree(FILE *file, TREE *node)
 {
     static int level = 0;
-    static int initialised = 0;
     unsigned int cidx;
     unsigned int symbol;
     ChildIndex *ip;
@@ -2462,12 +2464,8 @@ STATIC void load_tree(FILE *file, TREE *node)
     fread(&node->count, sizeof node->count, 1, file);
 #if WANT_TIMESTAMPED_NODES
     fread(&node->stamp, sizeof node->stamp, 1, file);
-    if (!initialised) {
-	initialised++;
-	stamp_min = stamp_max = node->stamp;
-        }
-    if ( node->stamp < stamp_min) stamp_min = node->stamp;
-    else if ( node->stamp > stamp_max) stamp_max = node->stamp;
+    if ( node->stamp > stamp_max) stamp_max = node->stamp;
+    else if ( node->stamp < stamp_min) stamp_min = node->stamp;
 #endif
     fread(&node->branch, sizeof node->branch, 1, file);
     if (node->branch == 0) return;
@@ -2542,8 +2540,9 @@ STATIC bool load_model(char *filename, MODEL *model)
     read_dict_from_ascii(model->dict, "megahal.dic" );
 #endif
     refcount = set_dict_count(model);
-    status("Loaded %lu nodes, %u words. Total refcount= %u\n", memstats.node_cnt,memstats.word_cnt, refcount);
-    status( "Stamp Min=%u Max=%u.\n", (unsigned)stamp_min, (unsigned)stamp_max);
+    status("Loaded %lu nodes, %u words. Total refcount= %u maxnodes=%lu\n"
+	, memstats.node_cnt,memstats.word_cnt, refcount, (unsigned long)ALZHEIMER_NODES_MAX);
+    status( "Stamp Min=%u Max=%u.\n", (unsigned long)stamp_min, (unsigned long)stamp_max);
 
     fclose(file);
 
@@ -2551,9 +2550,10 @@ STATIC bool load_model(char *filename, MODEL *model)
 
 #if ALZHEIMER_FACTOR
     while ( memstats.node_cnt > ALZHEIMER_NODES_MAX) {
-        model_alzheimer(model);
+        model_alzheimer(model, ALZHEIMER_NODES_MAX);
         }
 #endif
+
     return TRUE;
 fail:
     fclose(file);
@@ -2901,6 +2901,19 @@ if (ch == '\f') return 1;
 return 0;
 }
 
+STATIC int word_is_allcaps(STRING string)
+{
+unsigned idx, nupp=0, nlow=0, noth=0;
+
+for(idx = 0; idx < string.length; idx++) {
+	if (myisupper(string.word[idx])) nupp++;
+	else if (myislower(string.word[idx])) nlow++;
+	else noth++;
+	}
+if (nlow || noth) return 0;
+else return 1;
+}
+
 STATIC int word_is_usable(STRING string)
 {
 unsigned idx;
@@ -2976,7 +2989,7 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
     count = urnd(ALZHEIMER_FACTOR);
     if (count == ALZHEIMER_FACTOR/2) {
         initialize_context(model);
-        model_alzheimer(model);
+        model_alzheimer(model, ALZHEIMER_NODES_MAX);
 	}
 #else
     initialize_context(model);
@@ -3090,6 +3103,7 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 	 *		skip over it.
 	 */
 	if (!myisalnum(words->entry[iwrd].string.word[0] )) continue;
+	if (word_is_allcaps(words->entry[iwrd].string)) continue;
         symbol = find_word(model->dict, words->entry[iwrd].string );
         if (symbol == WORD_NIL) continue;
         if (model->dict->entry[symbol].stats.whits > model->dict->stats.whits / model->dict->size ) continue;
@@ -4501,75 +4515,95 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
 static TREE * alz_stack[10] = {NULL,};
 static FILE *alz_file = NULL;
 
-STATIC void model_alzheimer(MODEL * model)
+STATIC unsigned  model_alzheimer(MODEL * model, unsigned maxnodecount)
 {
-Stamp stamp_lim;
-unsigned count;
+Stamp limit;
+unsigned step, width;
+unsigned count, totcount;
+static double dens = 0.0;
 int rc;
 
-if (!model) return;
-if (memstats.node_cnt <= ALZHEIMER_NODES_MAX) return;
+if (!model || ! maxnodecount) return 0;
+if (memstats.node_cnt <= ALZHEIMER_NODES_MAX) return 0;
 
 alz_dict = model->dict;
 
 
 alz_file = fopen ("alzheimer.dmp", "a" );
 
-for( count = 0; !count;	) {
-    stamp_lim = stamp_max-stamp_min;
-    stamp_lim *= (((float)memstats.node_cnt / ALZHEIMER_NODES_MAX) -1);
-    stamp_lim /= 2;
-    // stamp_lim -= stamp_lim/4;
-    if (!stamp_lim) stamp_lim = (stamp_max-stamp_min) / 100;
-    if (!stamp_lim) stamp_lim = 10;
-    stamp_lim += stamp_min;
+if (dens == 0.0) {
+	width = (unsigned)(stamp_max-stamp_min);
+	if (width < 2) return 0;
+	dens = (double)memstats.node_cnt / width ;
+	}
+
+for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
+    width = stamp_max-stamp_min;
+    step = (memstats.node_cnt - maxnodecount) / dens;
+    if (!step) step = width / 100;
+    while (step && step > width/10) step /= 2;
+    if (!step) step = 2;
+    limit = stamp_min + step;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-    fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
-	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
-	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+    fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f Step=%u Limit=%u\n"
+	    , (unsigned)memstats.node_cnt, (unsigned)maxnodecount
+	    , (unsigned)stamp_min, (unsigned)stamp_max
+            , (unsigned)width, dens, step, (unsigned)limit);
 #endif
 
-    fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
-	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
-	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+    fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f Step=%u Limit=%u\n"
+	    , (unsigned)memstats.node_cnt, (unsigned)maxnodecount
+	    , (unsigned)stamp_min, (unsigned)stamp_max
+            , (unsigned)width, dens, step, (unsigned)limit);
 
-    rc = check_interval(stamp_min, stamp_max, stamp_lim);
+    rc = check_interval(stamp_min, stamp_max, limit);
     if (rc) { /* outside interval */
-	    fprintf(stderr, "Model_alzheimer() insde interval Rc=%d Ajuus!\n", rc);
-	    fprintf(alz_file, "Model_alzheimer() insde interval Rc=%d Ajuus!\n", rc);
-	    goto ajuus;
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+	    fprintf(stderr, "Model_alzheimer() outside interval Rc=%d Ajuus!\n", rc);
+#endif
+	    fprintf(alz_file, "Model_alzheimer() outside interval Rc=%d Ajuus!\n", rc);
+	    if (width < 2) goto ajuus;
+	    dens = (double)memstats.node_cnt / width;
+            continue;
 	    }
 
-    rc = symbol_alzheimer_recurse(model->forward, 0, stamp_lim);
-    fprintf(stderr, "symbol_alzheimer_recursed(forward) := %d\n", rc);
-    if (rc > 0) count += rc;
+    count = symbol_alzheimer_recurse(model->forward, 0, limit);
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+    fprintf(stderr, "symbol_alzheimer_recursed(forward) := %u\n", count);
+#endif
+    totcount += count;
 
-    rc = symbol_alzheimer_recurse(model->backward, 0, stamp_lim);
-    fprintf(stderr, "symbol_alzheimer_recursed(backward) := %d\n", rc);
-    if (rc > 0) count += rc;
+    count = symbol_alzheimer_recurse(model->backward, 0, limit);
+#if WANT_DUMP_ALZHEIMER_PROGRESS
+    fprintf(stderr, "symbol_alzheimer_recursed(backward) := %u\n", count);
+#endif
+    totcount += count;
 
     /* Adjust low water mark */
-    if (stamp_min == stamp_lim) count = 0;
-    else stamp_min = stamp_lim;
+    stamp_min = limit;
+    if (count) { dens += 2.0* count / step; dens /= 2; }
+    // else dens = (double)memstats.node_cnt/(stamp_max-stamp_min);
+    else dens *= 0.8;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-    fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
-	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
-	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+    fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f\n"
+	    , (unsigned)memstats.node_cnt, (unsigned)maxnodecount
+	    , (unsigned)stamp_min, (unsigned)stamp_max,(unsigned)(stamp_max-stamp_min), dens);
 #endif
 
-    fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Stamp_lim=%u\n"
+    fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f\n"
 	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
-	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)stamp_lim);
+	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)(stamp_max-stamp_min), dens);
+    if (memstats.node_cnt <= maxnodecount+count) break;
     }
 
 ajuus:
 fclose (alz_file);
-return;
+return totcount;
 }
 
-STATIC int symbol_alzheimer_recurse(TREE *tree, unsigned lev, Stamp lim)
+STATIC unsigned symbol_alzheimer_recurse(TREE *tree, unsigned lev, Stamp lim)
 {
 unsigned slot,count;
 WordNum symbol;
@@ -4601,7 +4635,7 @@ for (slot = tree->branch; slot--> 0;	) {
 #endif
 	rc = check_interval(lim, stamp_max, tree->stamp);
 	if (!rc) { /* inside interval */
-		rc = symbol_alzheimer_recurse(tree->children[slot].ptr, lev, lim);
+		count += symbol_alzheimer_recurse(tree->children[slot].ptr, lev, lim);
 		continue;
 		}
 	else	{	/* slot is stale: remove it */
@@ -4611,7 +4645,7 @@ for (slot = tree->branch; slot--> 0;	) {
 		count++;
 		}
 	}
-return count? -1: rc;
+return count;
 }
 
 /* Check of this inside or above/below interval {min,max}
