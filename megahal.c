@@ -148,6 +148,7 @@
 /* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
 #define WANT_KEYWORD_WEIGHTS 1
+#define WANT_DUMP_DELETE_DICT 1
 #define WANT_DUMP_KEYWORD_WEIGHTS 0 /* 0-3 */
 #define WANT_DUMP_ALZHEIMER_PROGRESS 1 /* 0...4 */
 #define WANT_DUMP_ALL_REPLIES 1
@@ -171,21 +172,33 @@
 ** Zero to disable.
 ** Alzheimer periodically does a complete treewalk (twice)
 ** to find and eliminate nodes it considers too old.
-** This is expensive. A usable setting might be around sqrt(ALZHEIMER_NODES_MAX)
+** This is expensive.
 ** YMMV
 */
 #define ALZHEIMER_NODES_MAX ( 1 * 1000 * 1000)
 #define ALZHEIMER_NODES_MAX ( 800000 )
+#define ALZHEIMER_NODES_MAX ( 1600000 )
 #define ALZHEIMER_NODES_MAX ( 33 * 1000 * 1000)
-#define ALZHEIMER_FACTOR 60
 #define ALZHEIMER_FACTOR 5000
+#define ALZHEIMER_FACTOR 50
 
 /* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
 
+/* Resizing the tree is a space/time tradeoff:
+** resizing it on every insert/delete results in O(N*N) behavior.
+** doing it less often will cost less CPU, but will consume more memory.
+** (formally, it is still O(N*N), but with a smaller O ;-)
+** setting NODE_SIZE_SHRINK to zero will only shrink by halving.
+** NOTE dicts will hardly ever be shrunk; only emptied.
+*/
 #define DICT_SIZE_INITIAL 4
+#define DICT_SIZE_SHRINK 16
 #define NODE_SIZE_INITIAL 2
-/* we don't want results smaller than this */
+#define NODE_SIZE_SHRINK 16
+/* we don't want results smaller than this amount of tokens
+** Note: words and puntuation count as tokens. whitespace doen not
+ */
 #define MIN_PAREL_SIZE 14
 
 #ifdef __mac_os
@@ -271,6 +284,7 @@ struct treeslot {
     ChildIndex link;
     struct node *ptr;
 	};
+
 typedef struct node {
     UsageCnt usage; /* sum of children's count */
     UsageCnt count; /* my count */
@@ -501,7 +515,7 @@ STATIC void del_word_dofree(DICT *dict, STRING word);
 void free_tree_recursively(TREE *tree);
 STATIC unsigned model_alzheimer(MODEL * model, unsigned maxnodecount);
 STATIC unsigned symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
-STATIC int check_interval(unsigned min, unsigned max, unsigned this);
+static int check_interval(unsigned min, unsigned max, unsigned this);
 void read_dict_from_ascii(DICT *dict, char *name);
 static DICT *alz_dict = NULL;
 
@@ -1334,6 +1348,15 @@ dict->entry[top].stats.whits = 0;
 dict->entry[top].string.word = NULL;
 dict->entry[top].string.length = 0;
 dict->entry[top].hash = 0;
+
+if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
+
+#if (WANT_DUMP_DELETE_DICT >= 2)
+    status("dict(%llu/%llu) will be shrunk: %u/%u\n"
+	, dict->stats.whits, dict->nhits, dict->branch, dict->msize);
+#endif
+    resize_dict(dict, dict->size);
+    }
 return ;
 }
 
@@ -1901,6 +1924,7 @@ STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
 	/* cut the node out of the hash chain; save the child. */
     this = *ip;
     *ip = tree->children[this].link;
+    tree->children[this].link = CHILD_NIL;
     child = tree->children[this].ptr ;
 
     /*
@@ -1946,7 +1970,9 @@ kill:
     free_tree_recursively(child);
     memstats.treedel += 1;
     /* fprintf(stderr, "Freed_tree() node_count now=%u treedel = %u\n",  memstats.node_cnt, memstats.treedel ); */
-    if (!tree->branch || tree->branch < tree->msize/2) {
+    // if (!tree->branch || tree->branch <= tree->msize - NODE_SIZE_SHRINK) {
+    if (!tree->branch || tree->branch <= tree->msize / 2 
+	|| (NODE_SIZE_SHRINK && tree->branch <= tree->msize - NODE_SIZE_SHRINK) ) {
 #if (WANT_DUMP_ALZHEIMER_PROGRESS >= 2)
 	status("Tree(%u/%u) will be shrunk: %u/%u\n"
 		, tree->count, tree->usage, tree->branch, tree->msize);
@@ -4628,18 +4654,22 @@ if (rc) { /* Too old: outside interval */
 /* We should work from top to bottom, because it would require less shuffling */
 count = 0;
 for (slot = tree->branch; slot--> 0;	) {
+	TREE *child;
 
 #if (WANT_DUMP_ALZHEIMER_PROGRESS >= 2)
-    fprintf(alz_file, "symbol_alzheimer_recurse(lev=%u lim=%u) enter this slot=%u stamp=%u\n"
-	, lev, lm, slot, tree->stamp);
+    fprintf(alz_file, "symbol_alzheimer_recurse(lev=%u lim=%u) Stamp=%u enter this slot=%u\n"
+	, lev, lim, tree->stamp, slot);
 #endif
-	rc = check_interval(lim, stamp_max, tree->stamp);
+	if (slot >= tree->branch) continue;
+	child =  tree->children[slot].ptr;
+	if (child == NULL) continue;
+	rc = check_interval(lim, stamp_max, child->stamp);
 	if (!rc) { /* inside interval */
-		count += symbol_alzheimer_recurse(tree->children[slot].ptr, lev, lim);
+		count += symbol_alzheimer_recurse(child, lev, lim);
 		continue;
 		}
 	else	{	/* slot is stale: remove it */
-		symbol = tree->children[slot].ptr ? tree->children[slot].ptr->symbol : WORD_NIL;
+		symbol = child->symbol ;
 		memstats.alzheimer += 1;
 		del_symbol_do_free(tree, symbol) ;
 		count++;
@@ -4656,7 +4686,7 @@ return count;
 **	-1 := this above interval (but wrapped)
 ** The two impossible cases return -2.
 */
-STATIC int check_interval(Stamp min, Stamp max, Stamp this)
+static int check_interval(Stamp min, Stamp max, Stamp this)
 {
 switch (4 *(max >= min)
 	+2 *(this >= min)
