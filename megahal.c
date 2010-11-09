@@ -170,24 +170,24 @@
 /* (1/ALZHEIMER_FACTOR) is the chance 
 ** of alzheimer hitting the tree, once per reply.
 ** Zero to disable.
-** Alzheimer periodically does a complete treewalk (twice)
-** to find and eliminate nodes it considers too old.
-** This is expensive.
+** Alzheimer periodically does a complete treewalk (twice) to find and eliminate nodes
+** it considers too old.  This is expensive.
+** ALZHEIMER_FACTOR should be chosen such that
+** alzheimer hits us once every few minutes.
+** (1000/glob_timeout) (one minute) could be a start.
 ** YMMV
 */
-#define ALZHEIMER_NODES_MAX ( 1 * 1000 * 1000)
-#define ALZHEIMER_NODES_MAX ( 800000 )
 #define ALZHEIMER_NODES_MAX ( 1600000 )
 #define ALZHEIMER_NODES_MAX ( 33 * 1000 * 1000)
-#define ALZHEIMER_FACTOR 5000
 #define ALZHEIMER_FACTOR 50
+#define ALZHEIMER_FACTOR 1000
 
 /* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
 
 /* Resizing the tree is a space/time tradeoff:
 ** resizing it on every insert/delete results in O(N*N) behavior.
-** doing it less often will cost less CPU, but will consume more memory.
+** Doing it less often will cost less CPU, but will consume more memory.
 ** (formally, it is still O(N*N), but with a smaller O ;-)
 ** setting NODE_SIZE_SHRINK to zero will only shrink by halving.
 ** NOTE dicts will hardly ever be shrunk; only emptied.
@@ -507,7 +507,8 @@ STATIC int myislower(int ch);
 STATIC int myisalnum(int ch);
 STATIC int myiswhite(int ch);
 STATIC int word_is_usable(STRING word);
-STATIC int word_needs_white(STRING string);
+STATIC int word_needs_white_l(STRING string);
+STATIC int word_needs_white_r(STRING string);
 STATIC int word_is_allcaps(STRING string);
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
@@ -2740,7 +2741,7 @@ STATIC size_t tokenize(char *string, int *sp)
 	if (strspn(ucp+pos, ".,?!" )) { if (!pos) *sp = T_PUNCT; else { *sp = T_INIT; return pos; }}
 	if (strspn(ucp+pos, "@'\"" )) { *sp = T_INIT; return pos ? pos : 1; }
 	if (strspn(ucp+pos, ":;" )) { *sp = T_INIT; return pos ? pos : 1; }
-	if (strspn(ucp+pos, "(){}[]" )) { *sp = T_INIT; return pos ? pos : 1; }
+	if (strspn(ucp+pos, "('\"){}[]" )) { *sp = T_INIT; return pos ? pos : 1; }
 	pos++; continue; /* collect all garbage */
         break;
     case T_PUNCT: /* punctuation */
@@ -2957,20 +2958,36 @@ for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
 return 0;
 }
 
-STATIC int word_needs_white(STRING string)
+STATIC int word_needs_white_l(STRING string)
 {
 unsigned idx;
 
 for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
-	case '[':
 	case ']':
 	case ')':
+	case '}':
 	case '&':
 	case '!':
 	case '?':
 	case ';':
 	case ',':
 	case '.': return 0;
+	default: continue;
+	}
+return 1;
+}
+STATIC int word_needs_white_r(STRING string)
+{
+unsigned idx;
+
+for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
+	case '[':
+	case '(':
+	case '{':
+	case '&':
+	case '-':
+	case '*':
+	return 0;
 	default: continue;
 	}
 return 1;
@@ -3476,6 +3493,7 @@ STATIC char *make_output(DICT *words)
     unsigned int widx;
     size_t length;
     char *output_none = "I am utterly speechless!";
+    char *tags;
 
 
     if (words->size == 0) { return output_none; }
@@ -3492,18 +3510,37 @@ STATIC char *make_output(DICT *words)
 	error("make_output", "Unable to reallocate output.");
 	return output_none;
     }
+    tags = malloc(2+words->size);
+    if (tags) memset(tags, 0, words->size);
+#define NO_SPACE_L 1
+#define NO_SPACE_R 2
+    for(widx = 0; widx < words->size; widx++) {
+	if (!widx || !word_needs_white_l(words->entry[widx].string)) tags[widx] |= NO_SPACE_L;
+	if (!word_needs_white_r(words->entry[widx].string)) tags[widx+1] |= NO_SPACE_R;
+	if (words->entry[widx].string.length == 1 && words->entry[widx].string.word[0] == "'") {
+		if (!widx || words->entry[widx-1].string.length <2) {
+			tags[widx] |= NO_SPACE_L;
+			if (widx < words->size-1) tags[widx+1] |= NO_SPACE_R;
+			}
+		if (widx >= words->size-1 || words->entry[widx+1].string.length <2) {
+			if (widx < words->size-1) tags[widx+1] |= NO_SPACE_R;
+			if (widx > 0) tags[widx-1] |= NO_SPACE_L;
+			}
+		}
+	}
 
     length = 0;
-    for(widx = 0; widx < words->size; widx++)
-	{
+    for(widx = 0; widx < words->size; widx++) {
 #if WANT_SUPPRESS_WHITESPACE
-	if (widx && word_needs_white(words->entry[widx].string)) output[length++] = ' ';
+	// if (widx && word_needs_white(words->entry[widx].string)) output[length++] = ' ';
+	if (!tags[widx]) output[length++] = ' ';
 #endif
 	memcpy(output+length, words->entry[widx].string.word, words->entry[widx].string.length);
 	length += words->entry[widx].string.length;
 	}
 
     output[length] = '\0';
+    free(tags);
 
     return output;
 }
