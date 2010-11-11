@@ -167,15 +167,6 @@
 */
 #define WANT_NEW_TOKENIZER 1
 
-/* improved random generator, using noise from the CPU clock (only works on intel/gcc)
- */
-#define WANT_RDTSC_RANDOM 1
-
-/* reuse the symbol numbers (WordNums) of abandoned tokens
- * This will keep the dictionary compact
- */
-#define WANT_REUSE_SYMBOLS 1
-
 /* (1/ALZHEIMER_FACTOR) is the chance 
 ** of alzheimer hitting the tree, once per reply.
 ** Zero to disable.
@@ -187,10 +178,13 @@
 ** (with a glob_timeout=DEFAULT_TIMEOUT=10 this would result in avg (1000s/2) between sweeps)
 ** YMMV
 */
-#define ALZHEIMER_NODES_MAX ( 34 * 1000 * 1000)
 #define ALZHEIMER_NODES_MAX ( 1600 * 1000 )
-#define ALZHEIMER_FACTOR 300
+#define ALZHEIMER_NODES_MAX ( 33 * 1000 * 1000)
 #define ALZHEIMER_FACTOR 50
+#define ALZHEIMER_FACTOR 300
+
+/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
+#define WANT_RDTSC_RANDOM 1
 
 /* Resizing the tree is a space/time tradeoff:
 ** resizing it on every insert/delete results in O(N*N) behavior.
@@ -240,7 +234,6 @@ typedef enum { FALSE, TRUE } bool;
 #endif
 
 typedef unsigned char StrLen;
-#define MAX_STRING_LENGTH 255
 typedef unsigned int WordNum;
 typedef unsigned int ChildIndex;
 typedef unsigned int DictSize;
@@ -274,9 +267,6 @@ struct	dictslot {
 typedef struct {
     DictSize size;
     DictSize msize;
-#if WANT_REUSE_SYMBOLS
-    WordNum freelist;
-#endif
     struct dictstat	{
 		UsageSum nhits;
 		UsageSum whits;
@@ -444,7 +434,7 @@ STATIC bool initialize_status(char *);
 STATIC void learn_from_input(MODEL *, DICT *);
 STATIC void listvoices(void);
 STATIC void make_greeting(DICT *);
-STATIC DICT *dict_new(void);
+STATIC DICT *new_dict(void);
 
 STATIC char *read_input(char * prompt);
 STATIC void save_model(char *, MODEL *);
@@ -462,8 +452,7 @@ STATIC char *format_output(char *);
 STATIC void empty_dict(DICT *dict);
 STATIC void free_model(MODEL *);
 STATIC void free_tree(TREE *);
-	/* we need to pass this by reference, because we want to set the elements to {0,NULL} */
-STATIC void free_string(STRING *word);
+STATIC void free_string(STRING word);
 STATIC void free_words(DICT *words);
 
 STATIC void initialize_context(MODEL *);
@@ -504,12 +493,10 @@ STATIC unsigned int urnd(unsigned int range);
 STATIC HashVal hash_mem(void *dat, size_t len);
 STATIC WordNum * dict_hnd(DICT *dict, STRING word);
 STATIC WordNum * dict_hnd_tail (DICT *dict, STRING word);
-STATIC WordNum dict_new_slot (DICT *dict);
 STATIC HashVal hash_word(STRING word);
 STATIC int grow_dict(DICT *dict);
-STATIC int dict_resize(DICT *dict, unsigned newsize);
+STATIC int resize_dict(DICT *dict, unsigned newsize);
 STATIC void format_dictslots(struct dictslot * slots, unsigned size);
-STATIC unsigned dict_scan_empty (DICT *dict);
 STATIC unsigned long set_dict_count(MODEL *model);
 STATIC unsigned long dict_inc_refa_node(DICT *dict, TREE *node, WordNum symbol);
 STATIC unsigned long dict_inc_ref_recurse(DICT *dict, TREE *node);
@@ -632,8 +619,8 @@ void megahal_initialize(void)
 		"+------------------------------------------------------------------------+\n"
 		);
 
-    glob_words = dict_new();
-    glob_greets = dict_new();
+    glob_words = new_dict();
+    glob_greets = new_dict();
     change_personality(NULL, 0, &glob_model);
 }
 
@@ -836,8 +823,6 @@ STATIC COMMAND_WORDS execute_command(DICT *words, unsigned int *position)
 	/*
 	 *		The command prefix was found.
 	 */
-	if (!words->entry[iwrd].string.length) continue;
-	if (!words->entry[iwrd].string.word) continue;
 	if (words->entry[iwrd].string.word[words->entry[iwrd].string.length - 1] != '#') continue;
 	    /*
 	     *		Look for a command word.
@@ -1263,10 +1248,10 @@ WordNum *np;
 
 if (!dict) return 0; /* WP: should be WORD_NIL */
 // WP20101022: allow empty token at the end of a sentence
-if (!word.length) return 0; /* WP: should be WORD_NIL */
+// if (!word.length) return 0; /* WP: should be WORD_NIL */
 
 if (dict->size >= dict->msize && grow_dict(dict)) return WORD_NIL;
-np = &dict->entry[ dict->size ].tabl ;
+np = &dict->entry[ dict->size].tabl ;
 
 *np = dict->size++;
 dict->entry[*np].link = WORD_NIL;
@@ -1278,6 +1263,7 @@ dict->entry[*np].string = word;
 dict->entry[*np].hash = *np;
 
 return *np;
+
 }
 /*---------------------------------------------------------------------------*/
 
@@ -1291,21 +1277,21 @@ return *np;
  */
 STATIC WordNum add_word_dodup(DICT *dict, STRING word)
 {
-WordNum *np,num;
+WordNum *np;
 
 if (!word.length) return 0; /* WP: should be WORD_NIL */
 
 np = dict_hnd(dict, word);
 if (!np) return 0; /* WP: should be WORD_NIL */
 
-if ((num = *np) == WORD_NIL) {
+if (*np == WORD_NIL) {
 	STRING this;
-	num = *np = dict_new_slot(dict);
+	*np = dict->size++;
 	this = new_string(word.word, word.length);
-	dict->entry[num].string = this;
-	dict->entry[num].hash = hash_word(this);
+	dict->entry[*np].string = this;
+	dict->entry[*np].hash = hash_word(this);
 	}
-return num;
+return *np;
 
 }
 
@@ -1340,7 +1326,9 @@ dict->entry[this].link = WORD_NIL;
 
 dict->stats.nhits -= dict->entry[this].stats.nhits;
 dict->stats.whits -= dict->entry[this].stats.whits;
-free_string (&dict->entry[this].string);
+free (dict->entry[this].string.word );
+dict->entry[this].string.word = NULL;
+dict->entry[this].string.length = 0;
 
 	/* done deleting. now locate the top element */
 top = --dict->size;
@@ -1372,7 +1360,7 @@ if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
     status("dict(%llu/%llu) will be shrunk: %u/%u\n"
 	, dict->stats.whits, dict->nhits, dict->branch, dict->msize);
 #endif
-    dict_resize(dict, dict->size);
+    resize_dict(dict, dict->size);
     }
 return ;
 }
@@ -1453,7 +1441,7 @@ STATIC void empty_dict(DICT *dict)
     dict->stats.whits = 0;
     dict->stats.nhits = 0;
     dict->size = 0;
-    dict_resize(dict, DICT_SIZE_INITIAL);
+    resize_dict(dict, DICT_SIZE_INITIAL);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1582,19 +1570,19 @@ return dict->entry[ symbol ].stats.whits;
  *		Purpose:		Allocate room for a new dictionary.
  */
 
-STATIC DICT *dict_new(void)
+STATIC DICT *new_dict(void)
 {
     DICT *dict = NULL;
 
     dict = malloc(sizeof *dict);
     if (dict == NULL) {
-	error("dict_new", "Unable to allocate dictionary.");
+	error("new_dict", "Unable to allocate dictionary.");
 	return NULL;
     }
 
     dict->entry = malloc (DICT_SIZE_INITIAL * sizeof *dict->entry);
     if (!dict->entry) {
-	error("dict_new", "Unable to allocate dict->slots.");
+	error("new_dict", "Unable to allocate dict->slots.");
 	free(dict);
 	return NULL;
 	}
@@ -1603,10 +1591,6 @@ STATIC DICT *dict_new(void)
     dict->size = 0;
     dict->stats.nhits = 0;
     dict->stats.whits = 0;
-#if WANT_REUSE_SYMBOLS
-    dict->freelist = WORD_NIL;
-#endif
-
 
     return dict;
 }
@@ -1693,11 +1677,9 @@ STATIC void save_word(FILE *file, STRING word)
  */
 STATIC void load_word(FILE *file, DICT *dict)
 {
-    char buff[1+MAX_STRING_LENGTH];
-    STRING word={0,buff};
+    STRING word;
 
     fread(&word.length, sizeof word.length, 1, file);
-#if 0
     word.word = malloc(word.length);
     if (word.word == NULL) {
 	error("load_word", "Unable to allocate word");
@@ -1706,10 +1688,6 @@ STATIC void load_word(FILE *file, DICT *dict)
     fread(&word.word[0], word.length, 1, file);
     add_word_dodup(dict, word);
     free(word.word);
-#else
-    if (word.length) fread(&word.word[0], word.length, 1, file);
-    add_word_dodup(dict, word);
-#endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1777,7 +1755,7 @@ STATIC MODEL *new_model(int order)
 	goto fail;
     }
     initialize_context(model);
-    model->dict = dict_new();
+    model->dict = new_dict();
     initialize_dict(model->dict);
 
     return model;
@@ -2220,7 +2198,7 @@ if (altsym!=symbol) fprintf(stderr, "AltSym %u/%u ('%*.*s') %u/%llu\n"
 #endif
 /*		, (double ) dict->entry[i].stats.nhits * dict->size / dict->stats.node */
 
-// free_string(&alt);
+// free_string(alt);
 if (altsym==symbol) {
 	return ((double)dict->stats.whits / dict->size)
 		/ (0.5 + dict->entry[symbol].stats.whits)
@@ -2234,8 +2212,8 @@ if (altsym==symbol) {
 
 STATIC STRING word_dup_othercase(STRING org)
 {
-static char dangerous[1+MAX_STRING_LENGTH];
-STRING new = {0,dangerous};
+static char zzz[256];
+STRING new = {0,zzz};
 unsigned ii,chg;
 
 new.length = org.length;
@@ -2341,7 +2319,7 @@ STATIC void train(MODEL *model, char *filename)
     length = ftell(file);
     rewind(file);
 
-    words = dict_new();
+    words = new_dict();
 
     progress("Training from file", 0, 1);
     while( fgets(buffer, sizeof buffer, file) ) {
@@ -2598,8 +2576,6 @@ STATIC bool load_model(char *filename, MODEL *model)
 
     fclose(file);
 
-    refcount = dict_scan_empty (model->dict);
-    fprintf(stderr, "Load_dict: Nuked %u slots\n" , refcount);
     show_dict(model->dict);
 
 #if ALZHEIMER_FACTOR
@@ -3087,7 +3063,7 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
     output = output_none;
 
 #if 0
-    if (dummy == NULL) dummy = dict_new();
+    if (dummy == NULL) dummy = new_dict();
     replywords = one_reply(model, dummy);
     if (dissimilar(words, replywords)) output = make_output(replywords);
 #else
@@ -3161,7 +3137,7 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
     unsigned swapped;
     WordNum symbol;
 
-    if (glob_keys == NULL) glob_keys = dict_new();
+    if (glob_keys == NULL) glob_keys = new_dict();
 #if (KEYWORD_DICT_SIZE)
 /* perform russian roulette on the keywords. */
     while ( glob_keys->size > KEYWORD_DICT_SIZE /* +words->size */ ) {
@@ -3312,7 +3288,7 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
     WordNum symbol;
     bool start = TRUE;
 
-    if (replies == NULL) replies = dict_new();
+    if (replies == NULL) replies = new_dict();
     else empty_dict(replies);
 
     /*
@@ -3572,9 +3548,9 @@ STATIC char *make_output(DICT *words)
     for(widx = 0; widx < words->size; widx++) {
 	if (!widx			|| dont_need_white_l(words->entry[widx].string)) tags[widx] |= NO_SPACE_L;
 	if (widx == words->size-1	|| dont_need_white_r(words->entry[widx].string)) tags[widx] |= NO_SPACE_R;
-	if (words->entry[widx].string.length == 1 && words->entry[widx].string.word[0] == '\'' ) { sqcnt++; tags[widx] |= IS_SINGLE; }
-	if (words->entry[widx].string.length == 1 && words->entry[widx].string.word[0] == '"' ) { dqcnt++; tags[widx] |= IS_DOUBLE; }
-	if (words->entry[widx].string.length == 1 && words->entry[widx].string.word[0] == '-' ) { hycnt++; tags[widx] |= IS_HYPHEN; }
+	if (words->entry[widx].string.length <= 1 && words->entry[widx].string.word[0] == '\'' ) { sqcnt++; tags[widx] |= IS_SINGLE; }
+	if (words->entry[widx].string.length <= 1 && words->entry[widx].string.word[0] == '"' ) { dqcnt++; tags[widx] |= IS_DOUBLE; }
+	if (words->entry[widx].string.length <= 1 && words->entry[widx].string.word[0] == '-' ) { hycnt++; tags[widx] |= IS_HYPHEN; }
 	}
 
 	/* First detect o'Hara and don't */
@@ -3586,14 +3562,14 @@ STATIC char *make_output(DICT *words)
 	if (widx <words->size-1) { fprintf(stderr, "Right:"); dump_word(stderr, words->entry[widx+1].string); fputc('\n', stderr); }
 	***/
 	/* if the word to the left is absent or 1char we dont want a white inbetween */
-	if (!widx || words->entry[widx-1].string.length == 1) {
+	if (!widx || words->entry[widx-1].string.length <2) {
 		tags[widx] |= NO_SPACE_L;
 		tags[widx] |= NO_SPACE_R;
 		tags[widx] &= ~IS_SINGLE;
 		sqcnt--;
 		}
 	/* if the word to the right is absent or 1char we dont want a white inbetween */
-	if (widx == words->size-1 || words->entry[widx+1].string.length == 1) {
+	if (widx == words->size-1 || words->entry[widx+1].string.length <2) {
 		tags[widx] |= NO_SPACE_L;
 		tags[widx] |= NO_SPACE_R;
 		tags[widx] &= ~IS_SINGLE;
@@ -3872,8 +3848,8 @@ STATIC void free_swap(SWAP *swap)
     if (swap == NULL) return;
 
     for(idx = 0; idx < swap->size; idx++) {
-	free_string(&swap->pairs[idx].from);
-	free_string(&swap->pairs[idx].to);
+	free_string(swap->pairs[idx].from);
+	free_string(swap->pairs[idx].to);
     }
     free(swap->pairs);
     // free(swap->from);
@@ -3896,7 +3872,7 @@ STATIC DICT *read_dict(char *filename)
     char *string;
     char buffer[1024];
 
-    this = dict_new();
+    this = new_dict();
 
     if (filename == NULL) return this;
 
@@ -4438,16 +4414,16 @@ STATIC void free_words(DICT *words)
     if (words == NULL) return;
 
     if (words->entry != NULL)
-	for(iwrd = 0; iwrd < words->size; iwrd++) free_string(&words->entry[iwrd].string);
+	for(iwrd = 0; iwrd < words->size; iwrd++) free_string(words->entry[iwrd].string);
 }
 
 /*---------------------------------------------------------------------------*/
 
-STATIC void free_string(STRING *wp)
+STATIC void free_string(STRING word)
 {
-    free(wp->word);
-    wp->word = NULL;
-    wp->length = 0;
+    free(word.word);
+    word.word = NULL;
+    word.length = 0;
 }
 
 /*===========================================================================*/
@@ -4628,13 +4604,12 @@ WordNum *np;
 unsigned hash,slot;
 
 /* We always assume that the next operation will be an insert, so there needs to be at least
- * one free slot.
- * If the seeked element is not present, np will point
- * to the place where it should be inserted. (either the table or link pointer)
+ * one free spot.
+ * If the seeked element is not present, *np will point
+ * to the place where it is to be inserted. (the slot after the last used item.)
  */
 if (dict->size >= dict->msize && grow_dict(dict)) return NULL;
 
-if (word.word && word.length) {
 hash = hash_word(word);
 slot = hash % dict->msize;
 
@@ -4643,9 +4618,6 @@ for (np = &dict->entry[slot].tabl ; *np != WORD_NIL ; np = &dict->entry[*np].lin
 	if ( wordcmp(dict->entry[*np].string , word)) continue;
 	break;
 	}
-	}
-else for (np = &dict->freelist ; *np != WORD_NIL ; np = &dict->entry[*np].link ) {;}
-
 return np;
 }
 
@@ -4662,104 +4634,43 @@ for (np = dict_hnd(dict,word); np ; np = &dict->entry[*np].link ) {
 return np;
 }
 
-STATIC WordNum dict_new_slot (DICT *dict)
-{
-WordNum num;
-
-#if WANT_REUSE_SYMBOLS
-WordNum *np;
-
-np = &dict->freelist;
-if ((num = *np) != WORD_NIL) {
-    *np = dict->entry[num].link ;
-    }
-else
-#endif /* WANT_REUSE_SYMBOLS */
-    {
-    num = dict->size++;
-    }
-dict->entry[num].link = WORD_NIL;
-return num;
-}
-
-STATIC unsigned dict_scan_empty (DICT *dict)
-{
-unsigned slot,item,cnt;
-WordNum *dst,*src;
-
-dst = &dict->freelist;
-for (cnt=slot = 0; slot < dict->msize; slot++) {
-	for (src = &dict->entry[slot].tabl; *src != WORD_NIL; ) {
-		item = *src;
-		if (dict->entry[item].stats.whits || dict->entry[item].stats.nhits) {
-			break;
-			src = &dict->entry[slot].link; continue;
-			}
-		*src = dict->entry[item].link;
-		dict->entry[item].link = WORD_NIL;
-
-		free_string (&dict->entry[item].string);
-		*dst = item;
-		dst = &dict->entry[item].link;
-		cnt++;
-		}
-	}
-return cnt;
-}
-
 STATIC int grow_dict(DICT *dict)
 {
     unsigned newsize;
 
     newsize = dict->size ? dict->size + dict->size/2 : DICT_SIZE_INITIAL;
-    return dict_resize(dict, newsize);
+    return resize_dict(dict, newsize);
 }
 
 
-STATIC int dict_resize(DICT *dict, unsigned newsize)
+STATIC int resize_dict(DICT *dict, unsigned newsize)
 {
     struct dictslot *old;
-    WordNum item;
+    WordNum item,slot;
 
     old = dict->entry ;
     while (newsize < dict->size) newsize += 2;
     dict->entry = malloc (newsize * sizeof *dict->entry);
     if (!dict->entry) {
-	error("dict_resize", "Unable to allocate dict->slots.");
+	error("resize_dict", "Unable to allocate dict->slots.");
     	dict->entry = old;
 	return -1;
 	}
     dict->msize = newsize;
     format_dictslots(dict->entry, dict->msize);
 
-#if WANT_REUSE_SYMBOLS
-    dict->freelist = WORD_NIL;
     for (item =0 ; item < dict->size; item++) {
-    		WordNum *np;
-		if (old[item].string.word != NULL) {
-    			WordNum slot;
-			slot = old[item].hash % dict->msize;
-			np = &dict->entry[slot].tabl;
-			}
-		else { np = &dict->freelist; }
-		for(	; *np != WORD_NIL; np = &dict->entry[*np].link ) {;}
-		*np = item;
-		dict->entry[item].hash = old[item].hash;
-		dict->entry[item].stats = old[item].stats;
-		dict->entry[item].string = old[item].string;
-		}
-#else /* WANT_REUSE_SYMBOLS */
-    for (item =0 ; item < dict->size; item++) {
-    		WordNum slot, *np;
+		WordNum *np;
 		slot = old[item].hash % dict->msize;
-		for( np = &dict->entry[slot].tabl;  *np != WORD_NIL; np = &dict->entry[*np].link ) {;}
+		for( np = &dict->entry[slot].tabl; np; np = &dict->entry[*np].link ) {
+			if (*np == WORD_NIL) break;
+			}
 		*np = item;
 		dict->entry[item].hash = old[item].hash;
 		dict->entry[item].stats.nhits = old[item].stats.nhits;
 		dict->entry[item].stats.whits = old[item].stats.whits;
 		dict->entry[item].string = old[item].string;
 		}
-#endif /* WANT_REUSE_SYMBOLS */
     free (old);
     return 0; /* success */
 }
