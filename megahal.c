@@ -174,13 +174,14 @@
 ** it considers too old.  This is expensive.
 ** ALZHEIMER_FACTOR should be chosen such that
 ** alzheimer hits us once every few minutes.
-** (1000/glob_timeout) (one minute) could be a start.
+** 100 could be a start. 
+** (with a glob_timeout=DEFAULT_TIMEOUT=10 this would result in avg (1000s/2) between sweeps)
 ** YMMV
 */
-#define ALZHEIMER_NODES_MAX ( 1600000 )
+#define ALZHEIMER_NODES_MAX ( 1600 * 1000 )
 #define ALZHEIMER_NODES_MAX ( 33 * 1000 * 1000)
 #define ALZHEIMER_FACTOR 50
-#define ALZHEIMER_FACTOR 1000
+#define ALZHEIMER_FACTOR 300
 
 /* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
@@ -241,6 +242,7 @@ typedef unsigned int UsageCnt;
 typedef unsigned int HashVal;
 typedef unsigned int Stamp;
 typedef unsigned long long BigThing;
+typedef unsigned long long UsageSum;
 BigThing rdtsc_rand(void);
 
 #define WORD_NIL ((WordNum)-1)
@@ -256,17 +258,18 @@ struct	dictslot {
 	WordNum link;
 	HashVal hash;
 	struct wordstat {
-		unsigned nhits;
-		unsigned whits;
+		UsageCnt nhits;
+		UsageCnt whits;
 		} stats;
 	STRING string;
 	};
+
 typedef struct {
     DictSize size;
     DictSize msize;
     struct dictstat	{
-		unsigned long long nhits;
-		unsigned long long whits;
+		UsageSum nhits;
+		UsageSum whits;
 		} stats;
     struct dictslot *entry;
 } DICT;
@@ -507,8 +510,8 @@ STATIC int myislower(int ch);
 STATIC int myisalnum(int ch);
 STATIC int myiswhite(int ch);
 STATIC int word_is_usable(STRING word);
-STATIC int word_needs_white_l(STRING string);
-STATIC int word_needs_white_r(STRING string);
+STATIC int dont_need_white_l(STRING string);
+STATIC int dont_need_white_r(STRING string);
 STATIC int word_is_allcaps(STRING string);
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
@@ -530,6 +533,7 @@ STATIC void show_memstat(char *msg);
 STATIC STRING word_dup_othercase(STRING org);
 double word_weight(DICT *dict, STRING word);
 double symbol_weight(DICT *dict, WordNum symbol);
+STATIC void dump_word(FILE *fp, STRING word);
 /* Function: setnoprompt
 
    Purpose: Set noprompt variable.
@@ -2212,7 +2216,6 @@ static char zzz[256];
 STRING new = {0,zzz};
 unsigned ii,chg;
 
-// new = new_string(org.word, org.length);
 new.length = org.length;
 
 for (chg=ii = 0; ii < org.length; ii++) { /* Attempt Initcaps */
@@ -2958,25 +2961,38 @@ for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
 return 0;
 }
 
-STATIC int word_needs_white_l(STRING string)
+/*
+** These functions should more or less match with the tokeniser.
+** The most important shared logic is that - " ' 
+** should always be separate (single character) tokens
+** ; except when used in decimal numerics.
+** Also, "()[]{}" should be kept separate 1char tokens.
+*/
+STATIC int dont_need_white_l(STRING string)
 {
 unsigned idx;
 
 for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
+	case '.': 
+	case ',':
+		if (idx) continue; /* this is because dot and comma can occur in decimal numerics */
+	case ':':
+	case ';':
+	case '?':
+	case '!':
 	case ']':
 	case ')':
 	case '}':
 	case '&':
-	case '!':
-	case '?':
-	case ';':
-	case ',':
-	case '.': return 0;
+	case '*':
+	case '/':
+	case '%':
+		return 1;
 	default: continue;
 	}
-return 1;
+return 0;
 }
-STATIC int word_needs_white_r(STRING string)
+STATIC int dont_need_white_r(STRING string)
 {
 unsigned idx;
 
@@ -2986,11 +3002,13 @@ for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
 	case '{':
 	case '&':
 	case '-':
+	case '+':
 	case '*':
-	return 0;
+	case '/':
+		return 1;
 	default: continue;
 	}
-return 1;
+return 0;
 }
 /*---------------------------------------------------------------------------*/
 /*
@@ -3493,11 +3511,17 @@ STATIC char *make_output(DICT *words)
     unsigned int widx;
     size_t length;
     char *output_none = "I am utterly speechless!";
+#if WANT_SUPPRESS_WHITESPACE
     char *tags;
+    unsigned sqcnt=0, dqcnt=0, hycnt=0;
+    int begin;
+#endif
 
 
     if (words->size == 0) { return output_none; }
-
+	/* calculate the space we'll need.
+	** We assume one space between adjacent wordst plus a NUL at the end.
+	*/
     length = 1;
 #if WANT_SUPPRESS_WHITESPACE
     for(widx = 0; widx < words->size; widx++) length += 1+ words->entry[widx].string.length;
@@ -3510,37 +3534,115 @@ STATIC char *make_output(DICT *words)
 	error("make_output", "Unable to reallocate output.");
 	return output_none;
     }
+
+#if WANT_SUPPRESS_WHITESPACE
     tags = malloc(2+words->size);
     if (tags) memset(tags, 0, words->size);
 #define NO_SPACE_L 1
 #define NO_SPACE_R 2
+#define IS_SINGLE 4
+#define IS_DOUBLE 8
+#define IS_HYPHEN 16
+
+	/* do we want a white before or after the token at [widx] ? */
     for(widx = 0; widx < words->size; widx++) {
-	if (!widx || !word_needs_white_l(words->entry[widx].string)) tags[widx] |= NO_SPACE_L;
-	if (!word_needs_white_r(words->entry[widx].string)) tags[widx+1] |= NO_SPACE_R;
-	if (words->entry[widx].string.length == 1 && words->entry[widx].string.word[0] == "'") {
-		if (!widx || words->entry[widx-1].string.length <2) {
-			tags[widx] |= NO_SPACE_L;
-			if (widx < words->size-1) tags[widx+1] |= NO_SPACE_R;
-			}
-		if (widx >= words->size-1 || words->entry[widx+1].string.length <2) {
-			if (widx < words->size-1) tags[widx+1] |= NO_SPACE_R;
-			if (widx > 0) tags[widx-1] |= NO_SPACE_L;
-			}
+	if (!widx			|| dont_need_white_l(words->entry[widx].string)) tags[widx] |= NO_SPACE_L;
+	if (widx == words->size-1	|| dont_need_white_r(words->entry[widx].string)) tags[widx] |= NO_SPACE_R;
+	if (words->entry[widx].string.length <= 1 && words->entry[widx].string.word[0] == '\'' ) { sqcnt++; tags[widx] |= IS_SINGLE; }
+	if (words->entry[widx].string.length <= 1 && words->entry[widx].string.word[0] == '"' ) { dqcnt++; tags[widx] |= IS_DOUBLE; }
+	if (words->entry[widx].string.length <= 1 && words->entry[widx].string.word[0] == '-' ) { hycnt++; tags[widx] |= IS_HYPHEN; }
+	}
+
+	/* First detect o'Hara and don't */
+    if (sqcnt >0) for(widx = 0; widx < words->size; widx++) {
+	if ( !(tags[widx] & IS_SINGLE)) continue;
+	/****
+	 fprintf(stderr, "Single:"); dump_word(stderr, words->entry[widx].string);
+	if (widx) { fprintf(stderr, "left:"); dump_word(stderr, words->entry[widx-1].string); fputc('\n', stderr); }
+	if (widx <words->size-1) { fprintf(stderr, "Right:"); dump_word(stderr, words->entry[widx+1].string); fputc('\n', stderr); }
+	***/
+	/* if the word to the left is absent or 1char we dont want a white inbetween */
+	if (!widx || words->entry[widx-1].string.length <2) {
+		tags[widx] |= NO_SPACE_L;
+		tags[widx] |= NO_SPACE_R;
+		tags[widx] &= ~IS_SINGLE;
+		sqcnt--;
+		}
+	/* if the word to the right is absent or 1char we dont want a white inbetween */
+	if (widx == words->size-1 || words->entry[widx+1].string.length <2) {
+		tags[widx] |= NO_SPACE_L;
+		tags[widx] |= NO_SPACE_R;
+		tags[widx] &= ~IS_SINGLE;
 		}
 	}
+
+	/* Try to match pairs of single quotes. This is rude: we don't care about nesting. */
+    if (sqcnt >1) for(begin= -1,widx = 0; widx < words->size; widx++) {
+		if (!(tags[widx] & IS_SINGLE)) continue;
+		if (begin < 0) {begin = widx; continue; }
+		tags[begin] |= NO_SPACE_R; tags[begin] &= ~NO_SPACE_L; if (begin) tags[begin-1] &= ~NO_SPACE_R;
+		tags[widx] |= NO_SPACE_L; tags[widx] &= ~NO_SPACE_R; if (begin < words->size-1) tags[begin+1] &= ~NO_SPACE_L;
+		tags[begin] &= ~IS_SINGLE;
+		tags[widx] &= ~IS_SINGLE;
+		begin = -1;
+		sqcnt -= 2;
+		}
+
+	/* idem: double quotes */
+    if (dqcnt >1) for(begin= -1,widx = 0; widx < words->size; widx++) {
+		if (!(tags[widx] & IS_DOUBLE)) continue;
+		if (begin < 0) {begin = widx; continue; }
+		tags[begin] |= NO_SPACE_R;
+		tags[widx] |= NO_SPACE_L;
+		tags[begin] &= ~IS_DOUBLE;
+		tags[widx] &= ~IS_DOUBLE;
+		begin = -1;
+		dqcnt -= 2;
+		}
+	/* Idem: hyphens  */
+    if (hycnt >1) for(begin= -1,widx = 0; widx < words->size; widx++) {
+		if (!(tags[widx] & IS_HYPHEN)) continue;
+		if (begin < 0) {begin = widx; continue; }
+		tags[begin] |= NO_SPACE_R;
+		tags[widx] |= NO_SPACE_L;
+		tags[begin] &= ~IS_HYPHEN;
+		tags[widx] &= ~IS_HYPHEN;
+		begin = -1;
+		hycnt -= 2;
+		}
+	/* Final pass: cleanup.
+	** if there are any unmached quotes or hyphens left,
+	**  they don't want whitspace around them. Rude, again.
+	*/
+    if (sqcnt+dqcnt+hycnt) for(widx = 0; widx < words->size; widx++) {
+		if (!(tags[widx] & (IS_SINGLE | IS_DOUBLE | IS_HYPHEN))) continue;
+		tags[widx] |= NO_SPACE_L;
+		tags[widx] |= NO_SPACE_R;
+		}
+#endif
 
     length = 0;
     for(widx = 0; widx < words->size; widx++) {
 #if WANT_SUPPRESS_WHITESPACE
-	// if (widx && word_needs_white(words->entry[widx].string)) output[length++] = ' ';
-	if (!tags[widx]) output[length++] = ' ';
+	if (!widx) {;}
+	else if (tags[widx] & NO_SPACE_L ) {;}
+	else if (tags[widx-1] & NO_SPACE_R) {;}
+	else output[length++] = ' ';
 #endif
 	memcpy(output+length, words->entry[widx].string.word, words->entry[widx].string.length);
 	length += words->entry[widx].string.length;
 	}
 
     output[length] = '\0';
+
+#if WANT_SUPPRESS_WHITESPACE
     free(tags);
+#undef NO_SPACE_L
+#undef NO_SPACE_R
+#undef IS_SINGLE
+#undef IS_DOUBLE
+#undef IS_HYPHEN
+#endif
 
     return output;
 }
@@ -4594,6 +4696,10 @@ alz_dict = model->dict;
 
 alz_file = fopen ("alzheimer.dmp", "a" );
 
+	/* dens is an estimate of the amount of nodes we expect to reap per timestamp
+	** step is our estimate for the number of steps we need to add to stamp_min to harvest
+	** the intended amount of nodes. (= bring down memstats.node_cnt to maxnodecount)
+	*/
 if (dens == 0.0) {
 	width = (unsigned)(stamp_max-stamp_min);
 	if (width < 2) return 0;
@@ -4643,10 +4749,15 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
 #endif
     totcount += count;
 
-    /* Adjust low water mark */
     stamp_min = limit;
+	/*
+	** adjust running average of density.
+	**  If nothing is harvested, increase the stepsize by lowering the density estimate.
+	**  0.8 might overshoot.  maybe 0.9...0.95 is better, but that may take too many iterations.
+	** NOTE: we only use the count for the backward tree, and assume the same yield from the
+	** forward tree.
+	*/
     if (count) { dens += 2.0* count / step; dens /= 2; }
-    // else dens = (double)memstats.node_cnt/(stamp_max-stamp_min);
     else dens *= 0.8;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
@@ -4658,6 +4769,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
     fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f\n"
 	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODES_MAX
 	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)(stamp_max-stamp_min), dens);
+	/* Avoid the next iteration to overshoot (we expect to harvest 2*count) */
     if (memstats.node_cnt <= maxnodecount+count) break;
     }
 
@@ -4739,4 +4851,11 @@ switch (4 *(max >= min)
 	case 7: return -1;
 	}
 return 0;
+}
+
+STATIC void dump_word(FILE *fp, STRING word)
+{
+
+fprintf(fp,"'%*.*s'"
+	,  (int) word.length,  (int) word.length,  word.word );
 }
