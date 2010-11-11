@@ -152,8 +152,8 @@
 #define WANT_DUMP_KEYWORD_WEIGHTS 0 /* 0-3 */
 #define WANT_DUMP_ALZHEIMER_PROGRESS 1 /* 0...4 */
 #define WANT_DUMP_ALL_REPLIES 1
-/* dump tree as ascii (costs a LOT of disk space) 1:=forward, 2:=backward */
-#define WANT_DUMP_MODEL 3
+/* dump tree as ascii (costs a LOT of disk space) */
+#define WANT_DUMP_MODEL 0
 
 /* suppress whitespace; only store REAL words. */
 #define WANT_SUPPRESS_WHITESPACE 1
@@ -174,7 +174,7 @@
 /* reuse the symbol numbers (WordNums) of abandoned tokens
  * This will keep the dictionary compact
  */
-#define WANT_REUSE_SYMBOLS 0
+#define WANT_REUSE_SYMBOLS 1
 
 /* (1/ALZHEIMER_FACTOR) is the chance 
 ** of alzheimer hitting the tree, once per reply.
@@ -489,7 +489,7 @@ STATIC void save_tree(FILE *, TREE *);
 STATIC void save_word(FILE *, STRING);
 STATIC WordNum seed(MODEL *, DICT *);
 
-STATIC void dump_dict(DICT *);
+STATIC void show_dict(DICT *);
 STATIC void speak(char *);
 STATIC bool status(char *, ...);
 STATIC void train(MODEL *, char *);
@@ -508,7 +508,7 @@ STATIC WordNum dict_new_slot (DICT *dict);
 STATIC HashVal hash_word(STRING word);
 STATIC int grow_dict(DICT *dict);
 STATIC int dict_resize(DICT *dict, unsigned newsize);
-STATIC void format_dictslots(struct dictslot * slots, unsigned size, int links_only);
+STATIC void format_dictslots(struct dictslot * slots, unsigned size);
 STATIC unsigned dict_scan_empty (DICT *dict);
 STATIC unsigned long set_dict_count(MODEL *model);
 STATIC unsigned long dict_inc_refa_node(DICT *dict, TREE *node, WordNum symbol);
@@ -1288,14 +1288,12 @@ return *np;
  *						assigned to the word.  If the word already exists in
  *						the dictionary, then return its current identifier
  *						without adding it again.
- * Note to guarantee symbol stabitlity, this function MUST accept 
- * null words (either length:=0 or word:= NULL), and these *must* all be unique...
  */
 STATIC WordNum add_word_dodup(DICT *dict, STRING word)
 {
 WordNum *np,num;
 
-// if (!word.length) return 0; /* WP: should be WORD_NIL */
+if (!word.length) return 0; /* WP: should be WORD_NIL */
 
 np = dict_hnd(dict, word);
 if (!np) return 0; /* WP: should be WORD_NIL */
@@ -1544,9 +1542,9 @@ return ret;
 STATIC unsigned long dict_inc_ref_node(DICT *dict, TREE *node, WordNum symbol)
 {
 
-if (!dict /* ?? || !node */ || symbol >= dict->size ) return 0;
+if (!dict || !node || symbol >= dict->size ) return 0;
 
-if (!node || node->count <= 1) return dict_inc_ref(dict, symbol, 1, 1);
+if (node->count <= 1) return dict_inc_ref(dict, symbol, 1, 1);
 else return dict_inc_ref(dict, symbol, 0, node->count);
 
 }
@@ -1601,7 +1599,7 @@ STATIC DICT *dict_new(void)
 	return NULL;
 	}
     dict->msize = DICT_SIZE_INITIAL;
-    format_dictslots(dict->entry, dict->msize, 0);
+    format_dictslots(dict->entry, dict->msize);
     dict->size = 0;
     dict->stats.nhits = 0;
     dict->stats.whits = 0;
@@ -1613,19 +1611,13 @@ STATIC DICT *dict_new(void)
     return dict;
 }
 
-STATIC void format_dictslots(struct dictslot * slots, unsigned size, int links_only)
+STATIC void format_dictslots(struct dictslot * slots, unsigned size)
 {
     unsigned idx;
 
-    if (links_only) for (idx = 0; idx < size; idx++) {
+    for (idx = 0; idx < size; idx++) {
 	slots[idx].tabl = WORD_NIL;
 	slots[idx].link = WORD_NIL;
-	}
-
-    else for (idx = 0; idx < size; idx++) {
-	slots[idx].tabl = WORD_NIL;
-	slots[idx].link = WORD_NIL;
-
 	slots[idx].hash = 0xe;
 	slots[idx].stats.nhits = 0;
 	slots[idx].stats.whits = 0;
@@ -2377,14 +2369,14 @@ STATIC void train(MODEL *model, char *filename)
  *
  *		Purpose:		Display the dictionary for training purposes.
  */
-void dump_dict(DICT *dict)
+void show_dict(DICT *dict)
 {
     unsigned int iwrd;
     FILE *file;
 
     file = fopen("megahal.dic", "w");
     if (file == NULL) {
-	warn("dump_dict", "Unable to open file");
+	warn("show_dict", "Unable to open file");
 	return;
     }
 
@@ -2396,9 +2388,7 @@ fprintf(file, "# TotStats= %llu %llu Words= %lu/%lu\n"
 		, (unsigned long) dict->entry[iwrd].stats.nhits, (unsigned long) dict->entry[iwrd].stats.whits
 		, (double ) dict->entry[iwrd].stats.nhits * dict->size / dict->stats.nhits
 		, (double ) dict->entry[iwrd].stats.whits * dict->size / dict->stats.whits
-		, (int) dict->entry[iwrd].string.length, (int) dict->entry[iwrd].string.length
-		, dict->entry[iwrd].string.word ? dict->entry[iwrd].string.word : ""
-		 );
+		, (int) dict->entry[iwrd].string.length, (int) dict->entry[iwrd].string.length, dict->entry[iwrd].string.word );
     }
 
     fclose(file);
@@ -2455,7 +2445,7 @@ STATIC void save_model(char *modelname, MODEL *model)
     filename = realloc(filename, strlen(directory)+strlen(SEP)+12);
     if (filename == NULL) error("save_model","Unable to allocate filename");
 
-    dump_dict(model->dict);
+    show_dict(model->dict);
     if (filename == NULL) return;
 
     sprintf(filename, "%s%smegahal.brn", directory, SEP);
@@ -2564,7 +2554,7 @@ STATIC bool load_model(char *filename, MODEL *model)
 {
     FILE *file;
     char cookie[16];
-    unsigned count;
+    unsigned refcount;
 
 
     if (filename == NULL) return FALSE;
@@ -2601,18 +2591,16 @@ STATIC bool load_model(char *filename, MODEL *model)
 #else
     read_dict_from_ascii(model->dict, "megahal.dic" );
 #endif
-    count = set_dict_count(model);
+    refcount = set_dict_count(model);
     status("Loaded %lu nodes, %u words. Total refcount= %u maxnodes=%lu\n"
-	, memstats.node_cnt,memstats.word_cnt, count, (unsigned long)ALZHEIMER_NODES_MAX);
+	, memstats.node_cnt,memstats.word_cnt, refcount, (unsigned long)ALZHEIMER_NODES_MAX);
     status( "Stamp Min=%u Max=%u.\n", (unsigned long)stamp_min, (unsigned long)stamp_max);
 
     fclose(file);
 
-#if WANT_REUSE_SYMBOLS
-    count = dict_scan_empty (model->dict);
-    fprintf(stderr, "Load_dict: Nuked %u slots\n" , count);
-#endif
-    dump_dict(model->dict);
+    refcount = dict_scan_empty (model->dict);
+    fprintf(stderr, "Load_dict: Nuked %u slots\n" , refcount);
+    show_dict(model->dict);
 
 #if ALZHEIMER_FACTOR
     while ( memstats.node_cnt > ALZHEIMER_NODES_MAX) {
@@ -4643,35 +4631,24 @@ unsigned hash,slot;
  * one free slot.
  * If the seeked element is not present, np will point
  * to the place where it should be inserted. (either the table or link pointer)
- * Ugly: we need to accempt NUL words and guarantee that they are appended seperately:
- * the chain at [slot=0] is basically a linked list of nonexisting symbols.
- * which can be hoisted into the freelist lateron)
  */
 if (dict->size >= dict->msize && grow_dict(dict)) return NULL;
 
-if (!word.word || !word.length) {
-#if WANT_REUSE_SYMBOLS
-    for (np = &dict->freelist ; *np != WORD_NIL ; np = &dict->entry[*np].link ) {;}
-#else
-	/* we put a hashvalue of zero on the empty symbol(s) */
-    for (np = &dict->entry[0].tabl ; *np != WORD_NIL ; np = &dict->entry[*np].link ) {;}
-#endif
-	}
-else 
-    {
-    hash = hash_word(word);
-    slot = hash % dict->msize;
+if (word.word && word.length) {
+hash = hash_word(word);
+slot = hash % dict->msize;
 
-    for (np = &dict->entry[slot].tabl ; *np != WORD_NIL ; np = &dict->entry[*np].link ) {
+for (np = &dict->entry[slot].tabl ; *np != WORD_NIL ; np = &dict->entry[*np].link ) {
 	if ( dict->entry[*np].hash != hash) continue;
 	if ( wordcmp(dict->entry[*np].string , word)) continue;
 	break;
 	}
-    }
+	}
+else for (np = &dict->freelist ; *np != WORD_NIL ; np = &dict->entry[*np].link ) {;}
 
 return np;
 }
-	/* Find a handle for word, but always of the end of its chain, allowing dplicates */
+
 STATIC WordNum * dict_hnd_tail (DICT *dict, STRING word)
 {
 WordNum *np;
@@ -4685,10 +4662,6 @@ for (np = dict_hnd(dict,word); np ; np = &dict->entry[*np].link ) {
 return np;
 }
 
-	/* allocate a new slot in a dictionary.
-	** this is either from the freelist (if enabled and non-empty),
-	** or at the end-of array(which needs to be large enough).
-	*/
 STATIC WordNum dict_new_slot (DICT *dict)
 {
 WordNum num;
@@ -4699,7 +4672,6 @@ WordNum *np;
 np = &dict->freelist;
 if ((num = *np) != WORD_NIL) {
     *np = dict->entry[num].link ;
-    free_string (&dict->entry[num].string);
     }
 else
 #endif /* WANT_REUSE_SYMBOLS */
@@ -4710,13 +4682,6 @@ dict->entry[num].link = WORD_NIL;
 return num;
 }
 
-#if WANT_REUSE_SYMBOLS
-	/* Scan dictonary for unused symbols (hitzounts both zero)
-	** cut them out of their chains,
-	** and put them on the ->freelist linked list.
-	** Note: since an element is either allocated or free,
-	** the .link -member is used for both the hash chain and the freelist.
-	*/
 STATIC unsigned dict_scan_empty (DICT *dict)
 {
 unsigned slot,item,cnt;
@@ -4724,18 +4689,16 @@ WordNum *dst,*src;
 
 dst = &dict->freelist;
 for (cnt=slot = 0; slot < dict->msize; slot++) {
-	fprintf(stderr, "Slot %u:", slot);
 	for (src = &dict->entry[slot].tabl; *src != WORD_NIL; ) {
 		item = *src;
-		fprintf(stderr, "Item %u {%u,%u}:", item, dict->entry[item].stats.whits, dict->entry[item].stats.nhits);
-		if (!item || dict->entry[item].stats.whits || dict->entry[item].stats.nhits) {
-			// break;
-			src = &dict->entry[item].link; continue;
+		if (dict->entry[item].stats.whits || dict->entry[item].stats.nhits) {
+			break;
+			src = &dict->entry[slot].link; continue;
 			}
 		*src = dict->entry[item].link;
 		dict->entry[item].link = WORD_NIL;
 
-		// free_string (&dict->entry[item].string);
+		free_string (&dict->entry[item].string);
 		*dst = item;
 		dst = &dict->entry[item].link;
 		cnt++;
@@ -4743,7 +4706,6 @@ for (cnt=slot = 0; slot < dict->msize; slot++) {
 	}
 return cnt;
 }
-#endif
 
 STATIC int grow_dict(DICT *dict)
 {
@@ -4756,80 +4718,49 @@ STATIC int grow_dict(DICT *dict)
 
 STATIC int dict_resize(DICT *dict, unsigned newsize)
 {
-    struct dictslot *org;
-    unsigned oldsize,cpysize;
+    struct dictslot *old;
+    WordNum item;
 
-    org = dict->entry ;
-    /* fprintf(stderr, "Dict_resize{%u,%u} newsize=%u\n", dict->size,dict->msize,newsize); */
+    old = dict->entry ;
     while (newsize < dict->size) newsize += 2;
     dict->entry = malloc (newsize * sizeof *dict->entry);
     if (!dict->entry) {
 	error("dict_resize", "Unable to allocate dict->slots.");
-    	dict->entry = org;
+    	dict->entry = old;
 	return -1;
 	}
-    oldsize = dict->msize;
-    cpysize = oldsize < newsize ? oldsize : newsize;
-    memcpy(dict->entry, org, cpysize * sizeof *dict->entry);
-    if (newsize > oldsize) memset(dict->entry, 0, (newsize-oldsize) * sizeof *dict->entry);
-    format_dictslots(dict->entry, newsize, 1);
     dict->msize = newsize;
+    format_dictslots(dict->entry, dict->msize);
 
 #if WANT_REUSE_SYMBOLS
-    {
-    Wordnum oldfree = dict->freelist ;
-    Wordnum *src = &oldfree;
-    Wordnum *dst = &dict->freelist;
     dict->freelist = WORD_NIL;
-	/* salvage the freelist. 
-	** Unlink the freelist nodes from the original 
-	** This must be done before repositioning the allocated nodes, because
-	** free&allocated items (might) share (part of) the linked lists.
-	*/
-    while (*src != WORD_NIL) {
-	item = *src;
-	*dst = item;
-	*src = WORD_NIL;
-	src = &org[item].link;
-	dst = &dict->entry[item].link;
-	}
-    }
-#endif /* WANT_REUSE_SYMBOLS */
-#if 1
-    {
-    WordNum item;
+    for (item =0 ; item < dict->size; item++) {
+    		WordNum *np;
+		if (old[item].string.word != NULL) {
+    			WordNum slot;
+			slot = old[item].hash % dict->msize;
+			np = &dict->entry[slot].tabl;
+			}
+		else { np = &dict->freelist; }
+		for(	; *np != WORD_NIL; np = &dict->entry[*np].link ) {;}
+		*np = item;
+		dict->entry[item].hash = old[item].hash;
+		dict->entry[item].stats = old[item].stats;
+		dict->entry[item].string = old[item].string;
+		}
+#else /* WANT_REUSE_SYMBOLS */
     for (item =0 ; item < dict->size; item++) {
     		WordNum slot, *np;
-		slot = org[item].hash % dict->msize;
+		slot = old[item].hash % dict->msize;
 		for( np = &dict->entry[slot].tabl;  *np != WORD_NIL; np = &dict->entry[*np].link ) {;}
 		*np = item;
-		dict->entry[item].hash = org[item].hash;
-		dict->entry[item].stats.nhits = org[item].stats.nhits;
-		dict->entry[item].stats.whits = org[item].stats.whits;
-		dict->entry[item].string = org[item].string;
+		dict->entry[item].hash = old[item].hash;
+		dict->entry[item].stats.nhits = old[item].stats.nhits;
+		dict->entry[item].stats.whits = old[item].stats.whits;
+		dict->entry[item].string = old[item].string;
 		}
-    }
-#else
-    {
-    WordNum *src,*dst ;
-    WordNum oldslot,newslot;
-	/*
-	** walk the source chains, for every element there:
-	** find its slot on the newtable,
-	** find the end of that chain,
-	** and append it there.
-	*/
-    for (oldslot = 0 ; oldslot < oldsize; oldslot++) {
-	for( src = &org[oldslot].tabl;  *src != WORD_NIL; src = &org[*src].link ) {
-	    newslot = org[*src].hash % newsize;
-	    for( dst = &dict->entry[newslot].tabl;  *dst != WORD_NIL; dst = &dict->entry[*dst].link ) {;}
-	    *dst = *src;
-            dict->entry[*dst].link = WORD_NIL;
-            }
-	}
-    }
-#endif
-    free (org);
+#endif /* WANT_REUSE_SYMBOLS */
+    free (old);
     return 0; /* success */
 }
 
