@@ -140,6 +140,8 @@
 #define COOKIE "Wakker0.0"
 #define DEFAULT_TIMEOUT 10
 #define DEFAULT_DIR "."
+#define MY_NAME "MegaHAL"
+#define MY_NAME "PlasBot"
 
 #define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
@@ -166,7 +168,7 @@
 
 #define WANT_DUMP_ALZHEIMER_PROGRESS 1 /* 0...4 */
 #define WANT_DUMP_ALL_REPLIES 1
-	/* dump tree as ascii (costs a LOT of disk space)
+	/* dump tree as ascii (This will cost a LOT of disk space)
 	** 1 := only dump forward tree
 	** 2 := only dump backward tree
 	** 3 := dump both.
@@ -199,7 +201,7 @@
 	*/
 #define KEYWORD_DICT_SIZE 23
 
-	/* Alternative tokeniser. Attempts to keep dotted acronyms and (floating point) numbers intact.  */
+	/* Alternative tokeniser. Attempts to keep dotted acronyms and (floating point) numbers intact. */
 #define WANT_NEW_TOKENIZER 1
 
 	/*
@@ -229,7 +231,7 @@
 	/* Resizing the tree is a space/time tradeoff:
 	** resizing it on every insert/delete results in O(N*N) behavior.
 	** Doing it less often will cost less CPU, but will consume more memory.
-	** (formally, it is still O(N*N), but with a smaller O ;-)
+	** (formally, it still is O(N*N), but with a smaller O ;-)
 	** setting NODE_SIZE_SHRINK to zero will only shrink by halving.
 	** NOTE dicts will hardly ever be shrunk; only emptied.
 	*/
@@ -241,6 +243,8 @@
 	** Note: words and puntuation count as tokens. whitespace doen not
  	*/
 #define MIN_REPLY_SIZE 14
+	/* Dont maintain a hashtable for the lineair dict used to store the reply */
+#define WANT_FLAT_NOFUSS 0
 
 #ifdef __mac_os
 #define bool Boolean
@@ -286,6 +290,8 @@ typedef unsigned long long UsageSum;
 BigThing rdtsc_rand(void);
 
 #define WORD_NIL ((WordNum)-1)
+#define WORD_ERR ((WordNum)0)
+#define WORD_FIN ((WordNum)1)
 #define CHILD_NIL ((ChildIndex)-1)
 
 typedef struct {
@@ -366,10 +372,20 @@ typedef struct {
     COMMAND_WORDS command;
 } COMMAND;
 
+#define CROSS_DICT_SIZE 20
+struct crossdictcell {
+	unsigned long sum[CROSS_DICT_SIZE];
+	unsigned long long sumsq[CROSS_DICT_SIZE];
+	};
+struct crossdict {
+	WordNum domain[CROSS_DICT_SIZE];
+	struct crossdictcell total;
+	struct crossdictcell totals[CROSS_DICT_SIZE];
+	struct crossdictcell cells[CROSS_DICT_SIZE*CROSS_DICT_SIZE];
+	};
+
 /*===========================================================================*/
 
-#define MY_NAME "MegaHAL"
-#define MY_NAME "PlasBot"
 static char *errorfilename = "megahal.log";
 static char *statusfilename = "megahal.txt";
 static int glob_width = 75;
@@ -1288,6 +1304,7 @@ STATIC char *format_output(char *output)
  *		Purpose:		Append a word to a dictionary, and return the identifier assigned to the word.
  *						The index is not searched or updated, and the new word is not dupped, only referenced.
  */
+#if WANT_FLAT_NOFUSS
 STATIC WordNum add_word_nofuss(DICT *dict, STRING word)
 {
 WordNum *np;
@@ -1311,6 +1328,25 @@ dict->entry[*np].hash = *np;
 return *np;
 
 }
+#else
+STATIC WordNum add_word_nofuss(DICT *dict, STRING word)
+{
+WordNum symbol,*np;
+
+if (!dict) return WORD_NIL;
+
+np = dict_hnd_tail(dict, word);
+symbol = dict->size++;
+*np = symbol;
+
+dict->entry[symbol].link = WORD_NIL;
+dict->entry[symbol].hash = hash_word(word);
+dict->entry[symbol].string = word;
+
+return *np;
+
+}
+#endif /* WANT_FLAT_NOFUSS */
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -1826,7 +1862,9 @@ fail:
 STATIC void update_model(MODEL *model, WordNum symbol)
 {
     unsigned int iord;
-
+	/* this is a bit defensive; these symbols should never occur */
+    if (symbol == WORD_NIL) return;
+    if (symbol == WORD_ERR) return;
     /*
      *		Update all of the models in the current context with the specified
      *		symbol.
@@ -2337,7 +2375,7 @@ STATIC void learn_from_input(MODEL *model, DICT *words)
 	update_model(model, symbol);
     }
     /*
-     *		Add the sentence-terminating symbol.
+     *		Add the sentence-terminating symbol. (for the beginning of the sentence)
      */
     update_model(model, 1);
 
@@ -3289,6 +3327,11 @@ STATIC void schrink_keywords(DICT *words, unsigned newsize)
 
     while ( words->size > newsize ) {
 	ikey = urnd(words->size) ;
+		/* This is ugly. There appears to be a "reference leak" somewhere in
+		** the keyword dict, causing underflow in the totals.
+		** This is an attempt to (at least) stabilize the totals by maintaining a floating average,
+		** in such a way that the totals never underflow. The totals will be incorrect, but exact scaling is not needed.
+		*/
 	whits = ( 9* whits + 1* words->entry[ikey].stats.whits) / (10);
 	nhits = ( 9* nhits + 1* words->entry[ikey].stats.nhits) / (10);
 	if (words->entry[ikey].stats.whits > whits) {	words->entry[ikey].stats.whits -= sqrt(whits); continue; }
@@ -3309,7 +3352,7 @@ return;
  */
 STATIC void add_key(MODEL *model, DICT *keywords, STRING word)
 {
-    WordNum ksymbol;
+    WordNum ksymbol,oldtopsym;
 
     if (!myisalnum(word.word[0])) return;
 #if DONT_WANT_THIS
@@ -3324,9 +3367,11 @@ STATIC void add_key(MODEL *model, DICT *keywords, STRING word)
     }
 #endif
 
+    oldtopsym = (keywords->size>0) ? keywords->size-1 : WORD_NIL;
     ksymbol = add_word_dodup(keywords, word);
     if (ksymbol == WORD_NIL) return;
-    if (ksymbol == keywords->size-1) {
+	/* is this a freshly inserted symbol ? */
+    if (ksymbol == keywords->size-1 && ksymbol != oldtopsym) {
 	dict_inc_ref(keywords, ksymbol, 1, KEYWORD_DICT_SIZE);
 	}
     else {
@@ -3935,9 +3980,8 @@ STATIC DICT *read_dict(char *filename)
 {
     DICT *this;
     FILE *fp = NULL;
-    STRING word;
-    char *string;
     char buffer[1024];
+    STRING word ={0,buffer};
 
     this = new_dict();
 
@@ -3948,10 +3992,21 @@ STATIC DICT *read_dict(char *filename)
 
     while( fgets(buffer, sizeof buffer, fp) ) {
 	if (buffer[0] == '#') continue;
+#if 0
+        {
+        char *string;
 	string = strtok(buffer, "\t \n#");
 	if ( !string || !*string) continue;
 
 	word = new_string(buffer, 0);
+        }
+#else
+        {
+        size_t len;
+        word.length = len = strcspn (buffer, "\t \n#" );
+        if (!len) continue;
+        }
+#endif
 	add_word_dodup(this, word);
     }
 
@@ -4923,4 +4978,21 @@ STATIC void dump_word(FILE *fp, STRING word)
 
 fprintf(fp,"'%*.*s'"
 	,  (int) word.length,  (int) word.length,  word.word );
+}
+
+/*
+struct crossdictcell {
+	unsigned long sum[CROSS_DICT_SIZE];
+	unsigned long long sumsq[CROSS_DICT_SIZE];
+	};
+struct crossdict {
+	WordNum domain[CROSS_DICT_SIZE];
+	struct crossdictcell total;
+	struct crossdictcell totals[CROSS_DICT_SIZE];
+	struct crossdictcell cells[CROSS_DICT_SIZE*CROSS_DICT_SIZE];
+	};
+*/
+void cross_add_pair(WordNum one, WordNum two)
+{
+
 }
