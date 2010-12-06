@@ -244,7 +244,7 @@
  	*/
 #define MIN_REPLY_SIZE 14
 	/* Dont maintain a hashtable for the lineair dict used to store the reply */
-#define WANT_FLAT_NOFUSS 0
+#define WANT_FLAT_NOFUSS 1
 
 #ifdef __mac_os
 #define bool Boolean
@@ -316,6 +316,7 @@ typedef struct {
     struct dictstat	{
 		UsageSum nhits;
 		UsageSum whits;
+    		DictSize nonzero;
 		} stats;
     struct dictslot *entry;
 } DICT;
@@ -371,18 +372,6 @@ typedef struct {
     char *helpstring;
     COMMAND_WORDS command;
 } COMMAND;
-
-#define CROSS_DICT_SIZE 20
-struct crossdictcell {
-	unsigned long sum[CROSS_DICT_SIZE];
-	unsigned long long sumsq[CROSS_DICT_SIZE];
-	};
-struct crossdict {
-	WordNum domain[CROSS_DICT_SIZE];
-	struct crossdictcell total;
-	struct crossdictcell totals[CROSS_DICT_SIZE];
-	struct crossdictcell cells[CROSS_DICT_SIZE*CROSS_DICT_SIZE];
-	};
 
 /*===========================================================================*/
 
@@ -1343,7 +1332,7 @@ dict->entry[symbol].link = WORD_NIL;
 dict->entry[symbol].hash = hash_word(word);
 dict->entry[symbol].string = word;
 
-return *np;
+return symbol;
 
 }
 #endif /* WANT_FLAT_NOFUSS */
@@ -1406,6 +1395,7 @@ if (this == dict->entry[this].link) {
 *np = dict->entry[this].link;
 dict->entry[this].link = WORD_NIL;
 
+if ( dict->entry[this].stats.nhits ) dict->stats.nonzero -= 1;
 dict->stats.nhits -= dict->entry[this].stats.nhits;
 dict->stats.whits -= dict->entry[this].stats.whits;
 free (dict->entry[this].string.word );
@@ -1439,8 +1429,8 @@ dict->entry[top].hash = 0;
 if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
 
 #if (WANT_DUMP_DELETE_DICT >= 2)
-    status("dict(%llu/%llu) will be shrunk: %u/%u\n"
-	, dict->stats.whits, dict->nhits, dict->branch, dict->msize);
+    status("dict(%llu:%llu/%llu) will be shrunk: %u/%u\n"
+	, dict->stats.whits, dict->stats.nhits, dict->stats.nonzero, dict->branch, dict->msize);
 #endif
     resize_dict(dict, dict->size);
     }
@@ -1522,6 +1512,7 @@ STATIC void empty_dict(DICT *dict)
     if (!dict) return;
     dict->stats.whits = 0;
     dict->stats.nhits = 0;
+    dict->stats.nonzero = 0;
     dict->size = 0;
     resize_dict(dict, DICT_SIZE_INITIAL);
 }
@@ -1577,11 +1568,12 @@ STATIC void initialize_dict(DICT *dict)
 /* NOTE: The constants 0 AND 1 refering to thes two array elements
 ** are hardcoded at a few places in the source..
 */
-    STRING word = {7, "<ERROR>" };
-    STRING end = {5, "<FIN>" };
+    static STRING word = {7, "<ERROR>" };
+    static STRING end = {5, "<FIN>" };
 
     dict->stats.whits = 0;
     dict->stats.nhits = 0;
+    dict->stats.nonzero = 0;
     add_word_dodup(dict, word);
     add_word_dodup(dict, end);
 }
@@ -1591,6 +1583,9 @@ STATIC unsigned long set_dict_count(MODEL *model)
 unsigned ret=0;
 
 if (!model) return 0;
+	/* all words are born unrefd */
+if (model->dict) model->dict->stats.nonzero = 0;
+
 ret += dict_inc_ref_recurse(model->dict, model->forward);
 ret += dict_inc_ref_recurse(model->dict, model->backward);
 
@@ -1627,6 +1622,7 @@ STATIC unsigned long dict_inc_ref(DICT *dict, WordNum symbol, unsigned nhits, un
 
 if (!dict || symbol >= dict->size ) return 0;
 
+if (dict->entry[ symbol ].stats.nhits == 0 ) dict->stats.nonzero += 1;
 dict->entry[ symbol ].stats.nhits += nhits;
 dict->stats.nhits += nhits;
 dict->entry[ symbol ].stats.whits += whits;
@@ -1641,6 +1637,7 @@ STATIC unsigned long dict_dec_ref(DICT *dict, WordNum symbol, unsigned nhits, un
 if (!dict || symbol >= dict->size ) return 0;
 
 dict->entry[ symbol ].stats.nhits -= nhits;
+if (dict->entry[ symbol ].stats.nhits ==0 ) dict->stats.nonzero -= 1;
 dict->stats.nhits -= nhits;
 dict->entry[ symbol ].stats.whits -= whits;
 dict->stats.whits -= whits;
@@ -1674,6 +1671,7 @@ STATIC DICT *new_dict(void)
     dict->msize = DICT_SIZE_INITIAL;
     format_dictslots(dict->entry, dict->msize);
     dict->size = 0;
+    dict->stats.nonzero = 0;
     dict->stats.nhits = 0;
     dict->stats.whits = 0;
 
@@ -2273,14 +2271,14 @@ if (!np || *np == WORD_NIL) altsym = symbol;
 else altsym = *np;
 
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 8)
-fprintf(stderr, "Symbol %u/%u ('%*.*s') %u/%llu\n"
-	, symbol, (unsigned)dict->size
+fprintf(stderr, "Symbol %u/%u:%u ('%*.*s') %u/%llu\n"
+	, symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
 	, (int)dict->entry[symbol].string.length, (int)dict->entry[symbol].string.length, (int)dict->entry[symbol].string.word
 	, (unsigned)dict->entry[symbol].stats.whits
 	, (unsigned long long)dict->stats.whits
 	);
-if (altsym != symbol) fprintf(stderr, "AltSym %u/%u ('%*.*s') %u/%llu\n"
-	, symbol, (unsigned)dict->size
+if (altsym != symbol) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
+	, symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
 	, (int)dict->entry[altsym].string.length, (int)dict->entry[altsym].string.length, (int)dict->entry[altsym].string.word
 	, (unsigned)dict->entry[altsym].stats.whits
 	, (unsigned long long)dict->stats.whits
@@ -2289,11 +2287,11 @@ if (altsym != symbol) fprintf(stderr, "AltSym %u/%u ('%*.*s') %u/%llu\n"
 /*		, (double ) dict->entry[i].stats.nhits * dict->size / dict->stats.node */
 
 if (altsym==symbol) {
-	return ((double)dict->stats.whits / dict->size)
+	return ((double)dict->stats.whits / dict->stats.nonzero) /* used to be size */
 		/ (0.5 + dict->entry[symbol].stats.whits)
 		;
 } else {
-	return ((double)dict->stats.whits * 2 / dict->size)
+	return ((double)dict->stats.whits * 2 / dict->stats.nonzero) /* used to be size */
 		/ (0.5 + dict->entry[symbol].stats.whits + dict->entry[altsym].stats.whits)
 		;
 	}
@@ -2447,14 +2445,14 @@ void show_dict(DICT *dict)
 	return;
     }
 
-fprintf(fp, "# TotStats= %llu %llu Words= %lu/%lu\n"
+fprintf(fp, "# TotStats= %llu %llu Words= %lu/%lu Nonzero=%lu\n"
 	, (unsigned long long) dict->stats.nhits, (unsigned long long) dict->stats.whits
-	, (unsigned long) dict->size, (unsigned long) dict->msize );
+	, (unsigned long) dict->size, (unsigned long) dict->msize , (unsigned long) dict->stats.nonzero );
     for(iwrd = 0; iwrd < dict->size; iwrd++) {
 	    fprintf(fp, "%lu\t%lu\t(%6.4e / %6.4e)\t%*.*s\n"
 		, (unsigned long) dict->entry[iwrd].stats.nhits, (unsigned long) dict->entry[iwrd].stats.whits
-		, (double ) dict->entry[iwrd].stats.nhits * dict->size / dict->stats.nhits
-		, (double ) dict->entry[iwrd].stats.whits * dict->size / dict->stats.whits
+		, (double ) dict->entry[iwrd].stats.nhits * dict->stats.nonzero / dict->stats.nhits /* used to be size */
+		, (double ) dict->entry[iwrd].stats.whits * dict->stats.nonzero / dict->stats.whits /* used to be size */
 		, (int) dict->entry[iwrd].string.length, (int) dict->entry[iwrd].string.length, dict->entry[iwrd].string.word );
     }
 
@@ -4811,13 +4809,16 @@ int rc;
 if (!model || ! maxnodecount) return 0;
 if (memstats.node_cnt <= ALZHEIMER_NODE_COUNT) return 0;
 
+	/* this is ugly: we set a global variable to allow the
+	** dec_ref() functions access to model->dict.
+	*/
 alz_dict = model->dict;
 
 
 alz_file = fopen ("alzheimer.dmp", "a" );
 
-	/* dens is an estimate of the amount of nodes we expect to reap per timestamp
-	** step is our estimate for the number of steps we need to add to stamp_min to harvest
+	/* 'dens' is an estimate of the amount of nodes we expect to reap per timestamp,
+	** 'step' is our estimate for the number of steps we need to add to stamp_min to harvest
 	** the intended amount of nodes. (= bring down memstats.node_cnt to maxnodecount)
 	*/
 if (dens == 0.0) {
@@ -4831,7 +4832,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
     step = (memstats.node_cnt - maxnodecount) / dens;
     if (!step) step = width / 100;
     while (step && step > width/10) step /= 2;
-    if (!step) step = 2;
+    if (!step) step = 1;
     limit = stamp_min + step;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
@@ -4874,7 +4875,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
 	** adjust running average of density.
 	**  If nothing is harvested, increase the stepsize by lowering the density estimate.
 	**  0.8 might overshoot.  maybe 0.9...0.95 is better, but that may take too many iterations.
-	** NOTE: we only use the count for the backward tree, and assume the same yield from the
+	** NOTE: we only compute the count for the backward tree, and assume the same yield from the
 	** forward tree.
 	*/
     if (count) { dens += 2.0* count / step; dens /= 2; }
@@ -4980,19 +4981,3 @@ fprintf(fp,"'%*.*s'"
 	,  (int) word.length,  (int) word.length,  word.word );
 }
 
-/*
-struct crossdictcell {
-	unsigned long sum[CROSS_DICT_SIZE];
-	unsigned long long sumsq[CROSS_DICT_SIZE];
-	};
-struct crossdict {
-	WordNum domain[CROSS_DICT_SIZE];
-	struct crossdictcell total;
-	struct crossdictcell totals[CROSS_DICT_SIZE];
-	struct crossdictcell cells[CROSS_DICT_SIZE*CROSS_DICT_SIZE];
-	};
-*/
-void cross_add_pair(WordNum one, WordNum two)
-{
-
-}
