@@ -1,5 +1,4 @@
 
-
 #define IDX_NIL ((unsigned int)-1)
 #define WANT_LRU 0
 #define WANT_RESIZE 1
@@ -37,6 +36,7 @@ struct crosstab {
 #endif
 	struct rowstats total;
 	double score;
+	char meuk[22];
 	unsigned int *index;
 	double *scores;
 	struct crossrow *table;
@@ -46,6 +46,7 @@ struct crosstab {
 void crosstab_show(FILE *fp, struct crosstab *ptr );
 struct crosstab *crosstab_init(unsigned int newsize);
 void crosstab_resize(struct crosstab * ptr, unsigned int newsize);
+void crosstab_reduce(struct crosstab * ptr, unsigned int newsize);
 void crosstab_free(struct crosstab *ptr);
 void crosstab_add_pair(struct crosstab *ptr,  unsigned int one, unsigned int two);
 void crosstab_print(FILE *fp, struct crosstab *ptr );
