@@ -9,13 +9,13 @@
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 
-static void cross_wipe_num(struct crosstab *ptr,unsigned int xxx);
-static unsigned int cross_find_index(struct crosstab *ptr,unsigned int num);
+static void cross_wipe_num(struct crosstab *ptr,unsigned int slot);
+static unsigned int cross_find_slot(struct crosstab *ptr,unsigned int num);
 static unsigned int cross_alloc_slot(struct crosstab *ptr);
 static unsigned int cross_find_victim(struct crosstab *ptr);
 static unsigned int *crosstab_hnd(struct crosstab *ptr, unsigned int key);
 static void row_format_slots(struct crossrow *tab, unsigned int cnt);
-static void crosstab_rehash(struct crosstab * ptr, unsigned int newsize);
+static void crosstab_rebuild(struct crosstab * ptr, unsigned int newsize);
 /* static struct crosstab glob_crosstab; */
 static double calcterm(double total, double this);
 double iterding(double *vec, unsigned int *mx, unsigned int cnt);
@@ -23,6 +23,7 @@ static void index_doubles( unsigned *index, double *values, unsigned cnt);
 static int cmp_ranked_double(const void *l, const void *r);
 static void index2_2d( unsigned *target, unsigned *index, unsigned cnt);
 static unsigned permute_doubles( double *values, unsigned *index, unsigned cnt);
+static unsigned permute_unsigned( unsigned *values, unsigned *index, unsigned cnt);
 static unsigned permute_rows( struct crossrow *rows, unsigned *index, unsigned cnt);
 
 
@@ -36,7 +37,7 @@ else	return x+(y*(y+1))/2;
 	/* the amount of cells we need for an LU matrix */
 #define LUSIZE(s) (((s)*((s)+1))/2)
 
-static unsigned int cross_find_index(struct crosstab *ptr,unsigned int num)
+static unsigned int cross_find_slot(struct crosstab *ptr,unsigned int num)
 {
 unsigned int idx, *up;
 
@@ -45,7 +46,7 @@ up = crosstab_hnd(ptr, num);
 if (*up != IDX_NIL) return *up;
 
 idx = cross_alloc_slot(ptr);
-fprintf(stderr, "Find_index(%u) alloced %u\n", num, idx);
+fprintf(stderr, "Find_slot(%u) alloced %u\n", num, idx);
 ptr->table[idx].hash.key = num;
 	/* REsearch hashtable because array has been realloced */
 up = crosstab_hnd(ptr, num);
@@ -99,38 +100,28 @@ up = crosstab_hnd(ptr, ptr->table[victim].hash.key );
 return victim;
 }
 
-/* remove one "index" from the crosstable.
+/* remove one "slot" from the crosstable.
 ** substract all it's values from the row/columns totals
 ** from the grand total, 
 ** set it's cell and row/column totals to zero.
 */
-static void cross_wipe_num(struct crosstab *ptr,unsigned int idx)
+static void cross_wipe_num(struct crosstab *ptr,unsigned int slot)
 {
 unsigned int xy,zzz;
 
 
-fprintf(stderr, "wipenum(%u->%u)\n", idx, ptr->table[idx].hash.key );
+fprintf(stderr, "wipenum(%u->%u)\n", slot, ptr->table[slot].hash.key );
 	/* grand total */
-if (ptr->table[idx].stats.sum) {
+if (ptr->table[slot].stats.sum) {
 	ptr->total.uniq -= 1;
+	ptr->total.sum -= ptr->table[slot].stats.sum;
 	}
-ptr->total.sum -= ptr->table[idx].stats.sum;
 	/* the row/columns totals for other indices (including ourself) */
 for (xy=0; xy < ptr->msize; xy++ ) {
 	if (ptr->table[xy].hash.key == IDX_NIL ) continue;
-	zzz = XY2ZZ(idx,xy);
+	zzz = XY2ZZ(slot,xy);
 	if (ptr->matrix[zzz] > 0) {
-		ptr->table[xy].stats.uniq -= 1;
-		ptr->table[xy].stats.sum -= ptr->matrix[zzz];
-		}
-	}
-
-for (xy=0; xy < ptr->msize; xy++ ) {
-	if (ptr->table[xy].hash.key == IDX_NIL ) continue;
-	if (xy == idx) continue;
-	zzz = XY2ZZ(xy,idx);
-	if (ptr->matrix[zzz] > 0) {
-		ptr->table[xy].stats.uniq -= 1;
+		if (xy != slot); ptr->table[xy].stats.uniq -= 1;
 		ptr->table[xy].stats.sum -= ptr->matrix[zzz];
 		}
 	}
@@ -138,19 +129,14 @@ for (xy=0; xy < ptr->msize; xy++ ) {
 	/* reset all the cells that use idx as a row or column */
 for (xy=0; xy < ptr->msize; xy++ ) {
 	if (ptr->table[xy].hash.key == IDX_NIL ) continue;
-	zzz = XY2ZZ(idx,xy);
-	ptr->matrix[zzz] = 0;
-	}
-for (xy=0; xy < ptr->msize; xy++ ) {
-	if (ptr->table[xy].hash.key == IDX_NIL ) continue;
-	zzz = XY2ZZ(xy,idx);
+	zzz = XY2ZZ(slot,xy);
 	ptr->matrix[zzz] = 0;
 	}
 
 	/* our row/col total */
-ptr->table[idx].stats.sum = 0;
-ptr->table[idx].stats.uniq = 0;
-ptr->table[idx].hash.key = IDX_NIL;
+ptr->table[slot].stats.sum = 0;
+ptr->table[slot].stats.uniq = 0;
+ptr->table[slot].hash.key = IDX_NIL;
 return ;
 }
 
@@ -158,8 +144,8 @@ void crosstab_add_pair(struct crosstab *ptr,unsigned int one, unsigned int two)
 {
 unsigned int zzz,xxx,yyy;
 
-xxx = cross_find_index(ptr,one); 
-yyy = cross_find_index(ptr,two); 
+xxx = cross_find_slot(ptr,one); 
+yyy = cross_find_slot(ptr,two); 
 
 if (xxx > yyy) { zzz = xxx; xxx = yyy; yyy = zzz; }
 
@@ -172,20 +158,13 @@ if (ptr->matrix[zzz] == 0) {
 		ptr->table[yyy].stats.uniq += 1;
 		}
 	}
-/* ptr->table[xxx].term -= calcterm(ptr->table[xxx].stats.sum, ptr->matrix[zzz]);
-if (yyy != xxx) {
-	ptr->table[yyy].term -= calcterm(ptr->table[yyy].stats.sum, ptr->matrix[zzz]);
-	}
-*/
+
 ptr->matrix[zzz] += 1;
 ptr->table[xxx].stats.sum += 1;
 ptr->total.sum += 1;
-/* ptr->table[xxx].term += calcterm(ptr->table[xxx].stats.sum, ptr->matrix[zzz]); */
+
 if (yyy != xxx) {
 	ptr->table[yyy].stats.sum += 1;
-/* if (yyy != xxx) {
-	ptr->table[yyy].term += calcterm(ptr->table[yyy].stats.sum, ptr->matrix[zzz]);
-*/
 	}
 
 return;
@@ -201,11 +180,6 @@ ptr = malloc (sizeof *ptr);
 if (!ptr) return NULL;
 ptr->msize = 0;
 ptr->freelist = IDX_NIL;
-
-#if WANT_LRU
-ptr->lru.oldest = IDX_NIL;
-ptr->lru.newest = IDX_NIL;
-#endif
 
 ptr->total.uniq = 0;
 ptr->total.sum = 0;
@@ -270,18 +244,6 @@ for (idx = oldsize; idx < newsize; idx++) {
 	}
 *up = IDX_NIL;
 
-#if WANT_LRU
-	/* push into LRU list */
-for (idx = oldsize; idx < newsize; idx++) {
-	ptr->table[idx].lru.older = idx-1;
-	ptr->table[idx].lru.newer = idx+1;
-	}
-if (newsize > oldsize) {
-	ptr->table[newsize-1].lru.newer = ptr->lru.oldest;
-	ptr->lru.oldest = oldsize;
-	}
-#endif
-
 ptr->table = realloc (ptr->table, newsize * sizeof *ptr->table);
 ptr->index = realloc (ptr->index, newsize * sizeof *ptr->index);
 ptr->scores = realloc (ptr->scores, newsize * sizeof *ptr->scores);
@@ -300,47 +262,115 @@ for (idx=LUSIZE(oldsize); idx < LUSIZE(newsize); idx++ ) {
 return ;
 }
 
-static void crosstab_rehash(struct crosstab * ptr, unsigned int newsize)
+void crosstab_reduce(struct crosstab * ptr, unsigned int newsize)
 {
-unsigned int idx,totsize;
-unsigned int *up;
-unsigned int *fp;
+unsigned idx, iter;
+unsigned int *index_2d;
+double oldval,frac;
+
+if (!ptr || newsize >= ptr->msize) return;
+
+for (idx=0; idx < ptr->msize; idx++ ) {
+	ptr->scores[idx] = (double) 0.5 * ptr->table[idx].stats.sum / ptr->total.sum;
+	}
+for (iter =0; iter < 100; iter++) {
+	oldval = ptr->score;
+	ptr->score = iterding (ptr->scores , ptr->matrix, ptr->msize );
+	frac = (ptr->score-oldval)/ ptr->score;
+	fprintf(stderr, "Iter=%2u val=%6.4f (%6.5f)\n"
+		, iter, ptr->score, frac
+		);
+	if (fabs(frac) <= 0.001) break;
+	}
+
+index_doubles(ptr->index, ptr->scores, ptr->msize);
+fprintf(stderr, "NewIdx " );
+for (idx=0; idx < ptr->msize; idx++ ) {
+	fprintf(stderr, " | %5u ", ptr->index[idx] );
+	}
+fprintf(stderr, "\nTheVect" );
+for (idx=0; idx < ptr->msize; idx++ ) {
+	iter = ptr->index[idx];
+	fprintf(stderr, " | %6.4f", ptr->scores[iter] );
+	}
+fprintf(stderr, " | %6.4f\n", ptr->score);
+
+#if 0
+index_2d = malloc (LUSIZE(ptr->msize) * sizeof *index_2d);
+index2_2d( index_2d, ptr->index, ptr->msize);
+
+fprintf(stderr, "\n2d=%3u ", LUSIZE(ptr->msize) );
+for (idx=0; idx < LUSIZE(ptr->msize); idx++ ) {
+	fprintf(stderr, " | %5u ", index_2d[idx] );
+	}
+fprintf(stderr, "\n..\n" );
+permute_unsigned(ptr->matrix, index_2d, LUSIZE(ptr->msize) );
+free(index_2d);
+iter = permute_rows(ptr->table, ptr->index, ptr->msize );
+#endif
+crosstab_rebuild(ptr, newsize);
+
+}
+
+static void crosstab_rebuild(struct crosstab * ptr, unsigned int newsize)
+{
+unsigned int idx,slot,totsize;
+unsigned int *up, *fp;
 
 totsize = ptr->msize;
-fprintf(stderr, "cronsstab_rehash(%u) oldsize=%u\n", newsize, totsize);
+fprintf(stderr, "Crosstab_rehash(%u) Totsize=%u\n", newsize, totsize);
 
 	/* reset freelist */
+#if 0
 ptr->freelist = IDX_NIL;
 fp = &ptr->freelist;
 
 row_format_slots( ptr->table , totsize );
-for (idx =0 ; idx < newsize; idx++) {
-	if ( ptr->table[idx].hash.key == IDX_NIL) {
-		*fp = idx;
-		fp = &ptr->table[idx].hash.link;
+for (slot =0 ; slot < totsize; slot++) {
+	if ( ptr->table[slot].hash.key == IDX_NIL) {
+		fprintf(stderr, "[isFree %u]", slot);
+		*fp = slot;
+		fp = &ptr->table[slot].hash.link;
 		}
 	else	{
-		up = crosstab_hnd(ptr, ptr->table[idx].hash.key );
-		*up = idx;
+		fprintf(stderr, "[Keep %u]", slot);
+		up = crosstab_hnd(ptr, ptr->table[slot].hash.key );
+		*up = slot;
 		}
 	}
 
 	/* append to freelist */
-for (; idx < totsize; idx++) {
+for (slot=newsize; slot < totsize; slot++) {
+	if ( ptr->table[slot].hash.key == IDX_NIL) continue;
+	fprintf(stderr, "[DontWipeFree %u]", slot);
+	up = crosstab_hnd(ptr, ptr->table[slot].hash.key );
+	cross_wipe_num(ptr, slot);
+	*up = ptr->table[slot].hash.link;
+	fprintf(stderr, "[AddFree %u]", slot);
+	*fp = slot;
+	fp = &ptr->table[slot].hash.link;
+	}
+/* *fp = IDX_NIL; */
+
+for (slot=0; slot < totsize; slot++) {
+	ptr->index[slot] = slot;
+	}
+#else
+
+	/* add to freelist */
+for(fp = &ptr->freelist; *fp != IDX_NIL; fp = &ptr->table[slot].hash.link) {;}
+
+for (slot=newsize; slot < totsize; slot++) {
+	idx = ptr->index[slot] ;
+	if ( ptr->table[idx].hash.key == IDX_NIL) continue;
+	fprintf(stderr, "[WipeFree %u->%u]", slot, idx);
+	up = crosstab_hnd(ptr, ptr->table[idx].hash.key );
+	cross_wipe_num(ptr, idx);
+	*up = ptr->table[idx].hash.link;
+	fprintf(stderr, "[AddFree %u]", idx);
+	ptr->table[idx].hash.link = IDX_NIL;
 	*fp = idx;
 	fp = &ptr->table[idx].hash.link;
-	}
-*up = IDX_NIL;
-
-#if WANT_LRU
-	/* push into LRU list */
-for (idx = oldsize; idx < newsize; idx++) {
-	ptr->table[idx].lru.older = idx-1;
-	ptr->table[idx].lru.newer = idx+1;
-	}
-if (newsize > oldsize) {
-	ptr->table[newsize-1].lru.newer = ptr->lru.oldest;
-	ptr->lru.oldest = oldsize;
 	}
 #endif
 
@@ -364,10 +394,6 @@ unsigned int idx;
 for (idx=0; idx < cnt; idx++) {
 	tab[idx].hash.head = IDX_NIL;
 	tab[idx].hash.link = IDX_NIL;
-#if WANT_LRU
-	tab[idx].lru.older = IDX_NIL;
-	tab[idx].lru.newer = IDX_NIL;
-#endif
 	}
 }
 
@@ -379,6 +405,11 @@ unsigned int xslot,yslot,xxx,yyy,zzz;
 fprintf(fp, "\nSlot    " );
 for (xslot=0; xslot < ptr->msize; xslot++ ) {
 	fprintf(fp, "+--[%2u]--", xslot );
+	}
+fprintf(fp, "\nIndex   " );
+for (xslot=0; xslot < ptr->msize; xslot++ ) {
+	xxx = ptr->index[xslot];
+	fprintf(fp, "+--[%2u]--", xxx );
 	}
 fprintf(fp, "\nHead    " );
 for (xslot=0; xslot < ptr->msize; xslot++ ) {
@@ -392,20 +423,6 @@ for (xslot=0; xslot < ptr->msize; xslot++ ) {
 	if (ptr->table[xxx].hash.link == IDX_NIL) fprintf(fp, "+--[__]--" );
 	else fprintf(fp, "+--[%2u]--", ptr->table[xxx].hash.link );
 	}
-#if WANT_LRU
-fprintf(fp, "\nLru O=%02u", ptr->lru.oldest%100 );
-for (xslot=0; xslot < ptr->msize; xslot++ ) {
-	xxx = ptr->index[xslot];
-	if (ptr->table[xxx].lru.older == IDX_NIL) fprintf(fp, "+--[@@]--" );
-	else fprintf(fp, "+--[%2u]--", ptr->table[xxx].lru.older );
-	}
-fprintf(fp, "\nLru N=%02u", ptr->lru.newest%100 );
-for (xslot=0; xslot < ptr->msize; xslot++ ) {
-	xxx = ptr->index[xslot];
-	if (ptr->table[xxx].lru.newer == IDX_NIL) fprintf(fp, "+--[@@]--" );
-	else fprintf(fp, "+--[%2u]--", ptr->table[xxx].lru.newer );
-	}
-#endif
 fprintf(fp, "\nIndex   " );
 for (xslot=0; xslot < ptr->msize; xslot++ ) {
 	xxx = ptr->index[xslot];
@@ -433,14 +450,14 @@ for (xslot=0; xslot < ptr->msize; xslot++ ) {
 	}
 fprintf(fp, "|\n--------" ); for (xslot=0; xslot < ptr->msize; xslot++ ) { fprintf(fp, "+--------" ); } fprintf(fp, "+\n");
 
-fprintf(fp, "Cnt    " , ptr->total.sum );
+fprintf(fp, "Cnt    " );
 for (xslot=0; xslot < ptr->msize; xslot++ ) {
 	xxx = ptr->index[xslot];
 	fprintf(fp, " |%7u", ptr->table[xxx].stats.sum );
 	}
 fprintf(fp, " |%7u\n", ptr->total.sum );
 
-fprintf(fp, "Uniq   " , ptr->total.uniq );
+fprintf(fp, "Uniq   " );
 for (xslot=0; xslot < ptr->msize; xslot++ ) {
 	xxx = ptr->index[xslot];
 	fprintf(fp, " |%7u", ptr->table[xxx].stats.uniq );
@@ -476,16 +493,6 @@ fprintf(fp, "\n" );
 }
 #endif
 
-}
-
-static double calcterm(double total, double this)
-{
-double frac;
-
-if (this == 0.0) return 0.0;
-if (total+this == 0.0) return 0.0;
-frac = this / (total+this);
-return -frac /** 1/M_LN2 */ * log(frac);
 }
 
 double iterding(double *vec, unsigned int *mx, unsigned int cnt)
@@ -530,11 +537,9 @@ else return 0;
 
 static void index_doubles( unsigned *index, double *values, unsigned cnt)
 {
-unsigned idx;
+/* unsigned idx;
+for (idx = 0; idx < cnt; idx++) { index[idx] = idx; } */
 
-for (idx = 0; idx < cnt; idx++) {
-	index[idx] = idx;
-	}
 anchor_double= values;
 qsort (index, cnt, sizeof index[0], cmp_ranked_double);
 }
@@ -550,55 +555,85 @@ for (y_dst = 0; y_dst < cnt; y_dst++) {
 		y_src= index[y_dst];
 		z_dst = XY2ZZ(x_dst,y_dst);
 		z_src = XY2ZZ(x_src,y_src);
-		target [z_dst ] = z_src;
+		fprintf(stderr, "[dst=(%u,%u) src=(%u,%u), [%u] <<-- %u]\n"
+		, x_dst, y_dst, x_src, y_src
+		, z_dst, z_src);
+		target [z_dst] = z_src;
 		}
 	}
 }
 
+static unsigned permute_unsigned( unsigned *values, unsigned *index, unsigned cnt)
+{
+unsigned start, dst, src, count;
+unsigned save;
+
+for (count=start = 0 ; start < cnt; start++) {
+	if ( index[start] == start) { fprintf(stderr, "[Skip %u]", start); continue; }
+	save = values[start];
+	fprintf(stderr, "\n[UnsignedAnchor %u]", start);
+	for (dst = start;  ; dst = src) {
+		count++;
+		src = index[ dst ] ;
+		if (src == start) break;
+		if (src == dst) break; /* Huh ? */
+		fprintf(stderr, "%u <<-- %u\n", dst, src);
+		values[dst] = values[src] ;
+		index[dst] = dst;
+		}
+	fprintf(stderr, "## Final %u <<-- start=%u; src=%u\n", dst, start, src);
+	values [ dst ] = save;
+	index [ dst ] = dst;
+	}
+return count;
+}
+
 static unsigned permute_doubles( double *values, unsigned *index, unsigned cnt)
 {
-unsigned start, this, that, count;
+unsigned start, dst, src, count;
 double save;
 
 for (count=start = 0 ; start < cnt; start++) {
-	if ( index[start] == start) continue;
+	if ( index[start] == start) { fprintf(stderr, "[Skip %u]", start); continue; }
 	save = values[start];
-	for (this = start;  ; this = that) {
+	fprintf(stderr, "\n[DoubleAnchor %u]", start);
+	for (dst = start;  ; dst = src) {
 		count++;
-		that = index[ this ] ;
-		if (that == start) break;
-		if (that == this) break; /* Huh ? */
-		fprintf(stderr, "%u <<-- %u\n", this, that);
-		values[this] = values[that] ;
-		index[this] = this;
+		src = index[ dst ] ;
+		if (src == start) break;
+		if (src == dst) break; /* Huh ? */
+		fprintf(stderr, "%u <<-- %u\n", dst, src);
+		values[dst] = values[src] ;
+		index[dst] = dst;
 		}
-	fprintf(stderr, "## Final %u <<-- %u\n", this, start);
-	values [ this ] = save;
-	index [ this ] = this;
+	fprintf(stderr, "## Final %u <<-- start=%u; src=%u\n", dst, start, src);
+	values [ dst ] = save;
+	index [ dst ] = dst;
 	}
 return count;
 }
 
 static unsigned permute_rows( struct crossrow *rows, unsigned *index, unsigned cnt)
 {
-unsigned start, this, that, count;
+unsigned start, dst, src, count;
 struct crossrow save;
 
 for (start = 0 ; start < cnt; start++) {
 	if ( index[start] == start) continue;
 	save = rows[start];
-	for (this = start;  ; this = that) {
+	fprintf(stderr, "\n[RowAnchor %u]", start);
+	for (dst = start;  ; dst = src) {
 		count++;
-		that = index[ this ] ;
-		if (that == start) break;
-		if (that == this) break; /* Huh ? */
-		fprintf(stderr, "%u <<-- %u\n", this, that);
-		rows[this] = rows[that] ;
-		index[this] = this;
+		src = index[ dst ] ;
+		if (src == start) break;
+		if (src == dst) break; /* Huh ? */
+		fprintf(stderr, "%u <<-- %u\n", dst, src);
+		rows[dst] = rows[src] ;
+		index[dst] = dst;
 		}
-	fprintf(stderr, "## Final %u <<-- %u\n", this, start);
-	rows [ this ] = save;
-	index [ this ] = this;
+	fprintf(stderr, "## Final %u <<-- %u\n", dst, start);
+	rows [ dst ] = save;
+	index [ dst ] = dst;
 	}
 return count;
 }
@@ -621,7 +656,7 @@ fprintf(fp, "\n" );
 
 // xxx = permute_doubles(ptr->scores, index, ptr->msize );
 xxx = permute_rows(ptr->table, index, ptr->msize );
-if (xxx) crosstab_rehash(ptr, ptr->msize);
+if (xxx) crosstab_rebuild(ptr, ptr->msize);
 
 fprintf(fp, "Swap=%2u", xxx );
 for (xxx=0; xxx < ptr->msize; xxx++ ) {
@@ -666,3 +701,13 @@ free (index_2d);
 	
 	}
 #endif
+static double calcterm(double total, double this)
+{
+double frac;
+
+if (this == 0.0) return 0.0;
+if (total+this == 0.0) return 0.0;
+frac = this / (total+this);
+return -frac /** 1/M_LN2 */ * log(frac);
+}
+
