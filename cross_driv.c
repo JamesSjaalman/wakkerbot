@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -17,11 +16,15 @@ while (fgets(buff, sizeof buff, stdin)) {
 	cp = buff + strspn(buff, " \t\n");
 	switch (*cp) {
 	case 'i': 
-		cp += strspn(cp, " \t\n");
+		cp += strcspn(cp, " \t\n");
 		rc = sscanf( cp, "%u", &one);
 		if (rc != 1) continue;
-		crosstab_free( cdp);
 		crosstab_resize( cdp, one); continue;
+	case 'z': 
+		cp += strcspn(cp, " \t\n");
+		rc = sscanf( cp, "%u", &one);
+		if (rc != 1) continue;
+		crosstab_reduce( cdp, one); continue;
 	default:
 		cp += strspn(cp, " \t\n");
 		rc = sscanf( cp, "%u %u", &one, &two);
