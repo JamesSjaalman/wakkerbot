@@ -128,6 +128,7 @@
 #include "debug.h"
 #endif
 
+
 #define P_THINK 40
 #define D_KEY 100000
 #define V_KEY 50000
@@ -164,7 +165,7 @@
 	** 4:= weight details in evaluate_reply()
 	** 8:= prim/alt details 
 	** */
-#define WANT_DUMP_KEYWORD_WEIGHTS 3 
+#define WANT_DUMP_KEYWORD_WEIGHTS 0 
 
 #define WANT_DUMP_ALZHEIMER_PROGRESS 1 /* 0...4 */
 #define WANT_DUMP_ALL_REPLIES 1
@@ -179,10 +180,31 @@
 ** Real SWITCHES. Note: these are not independent. Some combinations might be impossible
 ** (cleanup needed)
 */
+	/* The crossdict is a cross-table containing a keyword-keyword adjacency matrix.
+	** this matrix is evaluated by a power-iteration algoritm, which basically
+	** yields the first eigenvector and -value.
+	** the matrix is fed with pairs of words. 
+	** Only words with "less than average" frequency of occurence are considered.
+	** Only pairs of words with a (distance < CROSS_DICT_WORD_DISTANCE) are entered.
+	** To avoid unbounded growth, random rows of the matrix have their values decremented
+	** randomly, on a periodic basis.
+	*/
+#define CROSS_DICT_SIZE 31
+#define CROSS_DICT_WORD_DISTANCE 10
+
 	/* Maintain and use weights on the keywords */
 #define WANT_KEYWORD_WEIGHTS 1
 
-	/* suppress whitespace; only store REAL words. */
+	/* suppress whitespace; only store REAL words. 
+	** NOTE: changing this setting will require a complete rebuild of megahal's brain.
+	** Without whitespace suppression, stretches of whitespace are just like ordinary
+	** symbols *and references to them are stored in the nodes*.
+	** With suppression of whitespace only "real tokens" (words and punctuation) are
+	** used and stored in the nodes. This allows us to actually create a 5th order
+	** MC (and not a word+white_word_white+word, which effectively is a 3d order).
+	** The downside of this is that we'll have to re-insert the whitespace when
+	** generating the output text.
+	*/
 #define WANT_SUPPRESS_WHITESPACE 1
 
 	/* Keep a timestamp in the nodes, to facilitate Alzheimer */
@@ -221,7 +243,7 @@
 	** YMMV
 	*/
 #define ALZHEIMER_NODE_COUNT ( 1600 * 1000 )
-#define ALZHEIMER_NODE_COUNT ( 34 * 1000 * 1000)
+#define ALZHEIMER_NODE_COUNT ( 35 * 1000 * 1000)
 #define ALZHEIMER_FACTOR 50
 #define ALZHEIMER_FACTOR 300
 
@@ -239,12 +261,15 @@
 #define DICT_SIZE_SHRINK 16
 #define NODE_SIZE_INITIAL 2
 #define NODE_SIZE_SHRINK 16
-	/* we don't want results smaller than this amount of tokens
-	** Note: words and puntuation count as tokens. whitespace doen not
+
+	/* we don't want results smaller than this amount of tokens.
+	** Note: words and puntuation count as tokens. whitespace does not
+	** (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
 #define MIN_REPLY_SIZE 14
+
 	/* Dont maintain a hashtable for the lineair dict used to store the reply */
-#define WANT_FLAT_NOFUSS 1
+#define WANT_FLAT_NOFUSS 0
 
 #ifdef __mac_os
 #define bool Boolean
@@ -393,9 +418,14 @@ static FILE *statusfp;
 
 static bool used_key;
 static DICT *glob_keys = NULL;
-static DICT *glob_words = NULL;
+static DICT *glob_input = NULL;
 static DICT *glob_greets = NULL;
 static MODEL *glob_model = NULL;
+#if 1||CROSS_DICT_SIZE
+#include "crosstab.h"
+struct crosstab *glob_crosstab = NULL;
+static DICT *glob_dict = NULL;
+#endif
 
 static DICT *glob_ban = NULL;
 static DICT *glob_aux = NULL;
@@ -445,6 +475,8 @@ STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICT *dict, STRING word);
 STATIC WordNum add_word_nofuss(DICT *dict, STRING word);
 STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words);
+STATIC size_t word_format(char *buff, STRING string);
+STATIC size_t symbol_format(char *buff, WordNum sym);
 
 #if WANT_NEW_TOKENIZER
 STATIC void make_words(char *, DICT *);
@@ -558,6 +590,8 @@ STATIC int word_is_usable(STRING word);
 STATIC int dont_need_white_l(STRING string);
 STATIC int dont_need_white_r(STRING string);
 STATIC int word_is_allcaps(STRING string);
+STATIC int word_has_highbit(STRING string);
+size_t hexdump_string(char *buff, STRING string);
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
 STATIC void del_word_dofree(DICT *dict, STRING word);
@@ -670,7 +704,7 @@ void megahal_initialize(void)
 		"+------------------------------------------------------------------------+\n"
 		);
 
-    glob_words = new_dict();
+    glob_input = new_dict();
     glob_greets = new_dict();
     change_personality(NULL, 0, &glob_model);
 }
@@ -692,10 +726,10 @@ char *megahal_do_reply(char *input, int log)
 
     /* upper(input);*/
 
-    make_words(input, glob_words);
+    make_words(input, glob_input);
 
-    learn_from_input(glob_model, glob_words);
-    output = generate_reply(glob_model, glob_words);
+    learn_from_input(glob_model, glob_input);
+    output = generate_reply(glob_model, glob_input);
     /* capitalize(output);*/
     return output;
 }
@@ -714,9 +748,9 @@ void megahal_learn_no_reply(char *input, int log)
 
     /* upper(input);*/
 
-    make_words(input, glob_words);
+    make_words(input, glob_input);
 
-    learn_from_input(glob_model, glob_words);
+    learn_from_input(glob_model, glob_input);
 }
 
 /*
@@ -780,8 +814,8 @@ int megahal_command(char *input)
     unsigned int position = 0;
     char *output;
 
-    make_words(input,glob_words);
-    switch(execute_command(glob_words, &position)) {
+    make_words(input,glob_input);
+    switch(execute_command(glob_input, &position)) {
     case EXIT:
 	exithal();
 	return 1;
@@ -809,10 +843,10 @@ int megahal_command(char *input)
 	listvoices();
 	return 1;
     case VOICE:
-	changevoice(glob_words, position);
+	changevoice(glob_input, position);
 	return 1;
     case BRAIN:
-	change_personality(glob_words, position, &glob_model);
+	change_personality(glob_input, position, &glob_model);
 	make_greeting(glob_greets);
 	output = generate_reply(glob_model, glob_greets);
 	log_output(output);
@@ -1332,7 +1366,7 @@ dict->entry[symbol].link = WORD_NIL;
 dict->entry[symbol].hash = hash_word(word);
 dict->entry[symbol].string = word;
 
-return symbol;
+return *np;
 
 }
 #endif /* WANT_FLAT_NOFUSS */
@@ -1430,7 +1464,7 @@ if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
 
 #if (WANT_DUMP_DELETE_DICT >= 2)
     status("dict(%llu:%llu/%llu) will be shrunk: %u/%u\n"
-	, dict->stats.whits, dict->stats.nhits, dict->stats.nonzero, dict->branch, dict->msize);
+ 	, dict->stats.whits, dict->stats.nhits, dict->stats.nonzero, dict->branch, dict->msize);
 #endif
     resize_dict(dict, dict->size);
     }
@@ -1583,9 +1617,8 @@ STATIC unsigned long set_dict_count(MODEL *model)
 unsigned ret=0;
 
 if (!model) return 0;
-	/* all words are born unrefd */
+       /* all words are born unrefd */
 if (model->dict) model->dict->stats.nonzero = 0;
-
 ret += dict_inc_ref_recurse(model->dict, model->forward);
 ret += dict_inc_ref_recurse(model->dict, model->backward);
 
@@ -1637,7 +1670,7 @@ STATIC unsigned long dict_dec_ref(DICT *dict, WordNum symbol, unsigned nhits, un
 if (!dict || symbol >= dict->size ) return 0;
 
 dict->entry[ symbol ].stats.nhits -= nhits;
-if (dict->entry[ symbol ].stats.nhits ==0 ) dict->stats.nonzero -= 1;
+if (dict->entry[ symbol ].stats.nhits == 0 ) dict->stats.nonzero -= 1;
 dict->stats.nhits -= nhits;
 dict->entry[ symbol ].stats.whits -= whits;
 dict->stats.whits -= whits;
@@ -1671,7 +1704,6 @@ STATIC DICT *new_dict(void)
     dict->msize = DICT_SIZE_INITIAL;
     format_dictslots(dict->entry, dict->msize);
     dict->size = 0;
-    dict->stats.nonzero = 0;
     dict->stats.nhits = 0;
     dict->stats.whits = 0;
 
@@ -1761,8 +1793,8 @@ STATIC void save_word(FILE *fp, STRING word)
  */
 STATIC void load_word(FILE *fp, DICT *dict)
 {
-    char zzz[256];
-    STRING word = {0,zzz};
+    static char zzz[256];
+    static STRING word = {0,zzz};
     size_t kuttje;
 
     kuttje = fread(&word.length, sizeof word.length, 1, fp);
@@ -2272,13 +2304,13 @@ else altsym = *np;
 
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 8)
 fprintf(stderr, "Symbol %u/%u:%u ('%*.*s') %u/%llu\n"
-	, symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
+        , symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
 	, (int)dict->entry[symbol].string.length, (int)dict->entry[symbol].string.length, (int)dict->entry[symbol].string.word
 	, (unsigned)dict->entry[symbol].stats.whits
 	, (unsigned long long)dict->stats.whits
 	);
 if (altsym != symbol) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
-	, symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
+        , symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
 	, (int)dict->entry[altsym].string.length, (int)dict->entry[altsym].string.length, (int)dict->entry[altsym].string.word
 	, (unsigned)dict->entry[altsym].stats.whits
 	, (unsigned long long)dict->stats.whits
@@ -2287,7 +2319,7 @@ if (altsym != symbol) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
 /*		, (double ) dict->entry[i].stats.nhits * dict->size / dict->stats.node */
 
 if (altsym==symbol) {
-	return ((double)dict->stats.whits / dict->stats.nonzero) /* used to be size */
+        return ((double)dict->stats.whits / dict->stats.nonzero) /* used to be size */
 		/ (0.5 + dict->entry[symbol].stats.whits)
 		;
 } else {
@@ -2438,6 +2470,8 @@ void show_dict(DICT *dict)
 {
     unsigned int iwrd;
     FILE *fp;
+    char hexdump[1024];
+    size_t hexlen;
 
     fp = fopen("megahal.dic", "w");
     if (!fp) {
@@ -2447,13 +2481,17 @@ void show_dict(DICT *dict)
 
 fprintf(fp, "# TotStats= %llu %llu Words= %lu/%lu Nonzero=%lu\n"
 	, (unsigned long long) dict->stats.nhits, (unsigned long long) dict->stats.whits
-	, (unsigned long) dict->size, (unsigned long) dict->msize , (unsigned long) dict->stats.nonzero );
+	, (unsigned long) dict->size, (unsigned long) dict->msize, (unsigned long) dict->stats.nonzero );
     for(iwrd = 0; iwrd < dict->size; iwrd++) {
-	    fprintf(fp, "%lu\t%lu\t(%6.4e / %6.4e)\t%*.*s\n"
+		if ( word_has_highbit(dict->entry[iwrd].string)) hexdump_string(hexdump, dict->entry[iwrd].string);
+		else hexdump[0] = 0;
+	    fprintf(fp, "%lu\t%lu\t(%6.4e / %6.4e)\t%*.*s%s\n"
 		, (unsigned long) dict->entry[iwrd].stats.nhits, (unsigned long) dict->entry[iwrd].stats.whits
-		, (double ) dict->entry[iwrd].stats.nhits * dict->stats.nonzero / dict->stats.nhits /* used to be size */
-		, (double ) dict->entry[iwrd].stats.whits * dict->stats.nonzero / dict->stats.whits /* used to be size */
-		, (int) dict->entry[iwrd].string.length, (int) dict->entry[iwrd].string.length, dict->entry[iwrd].string.word );
+		, (double ) dict->entry[iwrd].stats.nhits * dict->stats.nonzero / dict->stats.nhits
+		, (double ) dict->entry[iwrd].stats.whits * dict->stats.nonzero / dict->stats.whits
+		, (int) dict->entry[iwrd].string.length, (int) dict->entry[iwrd].string.length, dict->entry[iwrd].string.word 
+		, hexdump
+		);
     }
 
     fclose(fp);
@@ -3048,6 +3086,27 @@ for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
 return 0;
 }
 
+STATIC int word_has_highbit(STRING string)
+{
+unsigned idx;
+
+if (string.length < 1) return 0;
+
+for(idx = 0; idx < string.length; idx++) {
+	if ( string.word[idx] & 0x80) return 1;
+	}
+return 0;
+}
+
+size_t hexdump_string(char *buff, STRING string)
+{
+unsigned idx;
+for (idx = 0; idx <  string.length; idx++) {
+	sprintf(buff+3*idx, " %02x", 0xff & string.word[idx] );
+	}
+return 3*idx;
+}
+
 /*
 ** These functions should more or less match with the tokeniser.
 ** The most important shared logic is that - " ' 
@@ -3224,14 +3283,27 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
     unsigned int iwrd;
     WordNum symbol;
 
-    if (!glob_keys) glob_keys = new_dict();
+#if CROSS_DICT_SIZE
+    WordNum echobox[CROSS_DICT_WORD_DISTANCE];
+    unsigned rotor , echocount;
+
+    if (!glob_crosstab ) {
+	glob_crosstab = crosstab_init(CROSS_DICT_SIZE);
+	}
+    rotor = echocount = 0;
+#endif
+
+    if (!glob_keys) {
+	glob_keys = new_dict();
+	}
+
+
 #if (KEYWORD_DICT_SIZE)
 #else
     for(ikey = 0; ikey < glob_keys->size; ikey++) free(glob_keys->entry[ikey].string.word);
     /* glob_keys->size = 0;*/
     empty_dict(glob_keys);
 #endif
-
 
     for(iwrd = 0; iwrd < words->size; iwrd++) {
 	/*
@@ -3244,8 +3316,28 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 	/* if (word_is_allcaps(words->entry[iwrd].string)) continue;*/
         symbol = find_word(model->dict, words->entry[iwrd].string );
         if (symbol == WORD_NIL) continue;
+        if (symbol == WORD_ERR) continue;
+        if (symbol == WORD_FIN) continue;
+        if (symbol >= model->dict->size) continue;
+
 		/* we may or may not like frequent words */
-        if (model->dict->entry[symbol].stats.whits > model->dict->stats.whits / model->dict->size ) continue;
+        if (model->dict->entry[symbol].stats.whits > model->dict->stats.whits / model->dict->stats.nonzero ) continue;
+#if CROSS_DICT_SIZE
+	{
+	unsigned other;
+	for (other = 0; other < echocount; other++ ) {
+		if (symbol < 2 || symbol >= model->dict->size
+		|| echobox[other] < 2 || echobox[other] >= model->dict->size ) fprintf(stderr, "[? %u, %u[%u/%u]]\n"
+			, symbol,echobox[other], other, echocount);
+		else crosstab_add_pair( glob_crosstab, echobox[other] , symbol );
+		}
+	if (echocount < COUNTOF(echobox)) echocount++;
+	echobox[rotor++] = symbol;
+	if (rotor >= COUNTOF(echobox)) rotor =0;
+	/* fprintf(stderr, "[%u/%u %u]", rotor, echocount, other); */
+	}
+#endif
+
 #if DONT_WANT_THIS
     {
     unsigned int iswp, swapped = 0;
@@ -3285,6 +3377,9 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
     }
 #endif
 
+#if CROSS_DICT_SIZE
+	crosstab_show(stderr, glob_crosstab, symbol_format);
+#endif
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 2)
 fprintf(stderr, "Total %u W=%llu N=%llu\n"
 	, (unsigned) glob_keys->size
@@ -3292,14 +3387,16 @@ fprintf(stderr, "Total %u W=%llu N=%llu\n"
 	, (unsigned long long)glob_keys->stats.nhits
 	);
 for (ikey=0; ikey < glob_keys->size; ikey++) {
-	double gweight,kweight;
+	double gweight,kweight, eweight;
+	symbol = find_word(model->dict, glob_keys->entry[ikey].string );
 	gweight = word_weight (model->dict, glob_keys->entry[ikey].string);
 	kweight = word_weight (glob_keys, glob_keys->entry[ikey].string);
-	fprintf(stderr, "[%2u] w=%u n=%u := G=%6.4e K=%6.4e %c '%*.*s'\n"
+	eweight = crosstab_ask(glob_crosstab, symbol);
+	fprintf(stderr, "[%2u] w=%u n=%u := G=%6.4e K=%6.4e E=%6.4e %c '%*.*s'\n"
 	, ikey
 	, (unsigned)glob_keys->entry[ikey].stats.whits
 	, (unsigned)glob_keys->entry[ikey].stats.nhits
-	, gweight, kweight
+	, gweight, kweight, eweight
 	, (glob_keys->entry[ikey].stats.whits > glob_keys->size) ? '+' : '-'
 	, (int)glob_keys->entry[ikey].string.length, (int)glob_keys->entry[ikey].string.length, glob_keys->entry[ikey].string.word
 	);
@@ -3509,7 +3606,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 {
     unsigned int widx, iord;
     WordNum symbol, ksymbol;
-    double gfrac, kfrac,weight,probability, entropy = 0.0;
+    double gfrac, kfrac,efrac, weight,probability, entropy = 0.0;
     unsigned count, totcount = 0;
     TREE *node;
 
@@ -3537,7 +3634,9 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
         if (!count ) goto update1;
         gfrac = symbol_weight(model->dict, symbol);
         kfrac = symbol_weight(keywords, ksymbol);
-        weight = gfrac/kfrac;
+	efrac = crosstab_ask(glob_crosstab, symbol);
+        /* weight = gfrac/kfrac; */
+        weight = gfrac*efrac;
 
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 4)
         fprintf(stderr, "%*.*s: Keyw= %lu/%lu : %llu/%llu (%6.4e)  Glob=%u/%u (%6.4e)  Prob=%6.4e/Count=%u Weight=%6.4e Term=%6.4e %c\n"
@@ -3589,7 +3688,9 @@ update1:
         if ( !count ) goto update2;
         gfrac = symbol_weight(model->dict, symbol);
         kfrac = symbol_weight(keywords, ksymbol);
-        weight = gfrac/kfrac;
+	efrac = crosstab_ask(glob_crosstab, symbol);
+        /* weight = gfrac/kfrac; */
+        weight = gfrac*efrac;
 #if WANT_KEYWORD_WEIGHTS
         probability *= weight;
 #endif
@@ -3805,11 +3906,12 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
 	 *		auxilliary keyword if a normal keyword has already been used.
 	 */
 	symbol = node->children[cidx].ptr->symbol;
-
+#if DONT_WANT_THIS
 	if (find_word(keywords, model->dict->entry[symbol].string) == WORD_NIL ) goto next;
 	if (used_key == FALSE && find_word(glob_aux, model->dict->entry[symbol].string) != WORD_NIL) goto next;
 	if (word_exists(words, model->dict->entry[symbol].string) ) goto next;
 	used_key = TRUE;
+#endif
 next:
 	if (count > node->children[cidx].ptr->count) count -= node->children[cidx].ptr->count;
 	else break; /*count = 0;*/
@@ -3853,6 +3955,7 @@ STATIC WordNum seed(MODEL *model, DICT *keywords)
     /*
      *		Fix, thanks to Mark Tarrabain
      */
+#if 0
     if (model->context[0]->branch == 0) symbol = 0;
     else symbol = model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol;
 
@@ -3870,6 +3973,10 @@ STATIC WordNum seed(MODEL *model, DICT *keywords)
 	    symbol = xsymbol;
 	    }
 	}
+#else
+	symbol = crosstab_get(glob_crosstab, urnd( sqrt(CROSS_DICT_SIZE*CROSS_DICT_SIZE/2)) );
+	if (symbol > model->dict->size) symbol = 0;
+#endif
 
     return symbol;
 }
@@ -3978,8 +4085,8 @@ STATIC DICT *read_dict(char *filename)
 {
     DICT *this;
     FILE *fp = NULL;
-    char buffer[1024];
-    STRING word ={0,buffer};
+    static char buffer[1024];
+    static STRING word ={0,buffer};
 
     this = new_dict();
 
@@ -4809,16 +4916,13 @@ int rc;
 if (!model || ! maxnodecount) return 0;
 if (memstats.node_cnt <= ALZHEIMER_NODE_COUNT) return 0;
 
-	/* this is ugly: we set a global variable to allow the
-	** dec_ref() functions access to model->dict.
-	*/
 alz_dict = model->dict;
 
 
 alz_file = fopen ("alzheimer.dmp", "a" );
 
-	/* 'dens' is an estimate of the amount of nodes we expect to reap per timestamp,
-	** 'step' is our estimate for the number of steps we need to add to stamp_min to harvest
+	/* dens is an estimate of the amount of nodes we expect to reap per timestamp
+	** step is our estimate for the number of steps we need to add to stamp_min to harvest
 	** the intended amount of nodes. (= bring down memstats.node_cnt to maxnodecount)
 	*/
 if (dens == 0.0) {
@@ -4832,7 +4936,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
     step = (memstats.node_cnt - maxnodecount) / dens;
     if (!step) step = width / 100;
     while (step && step > width/10) step /= 2;
-    if (!step) step = 1;
+    if (!step) step = 2;
     limit = stamp_min + step;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
@@ -4875,7 +4979,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
 	** adjust running average of density.
 	**  If nothing is harvested, increase the stepsize by lowering the density estimate.
 	**  0.8 might overshoot.  maybe 0.9...0.95 is better, but that may take too many iterations.
-	** NOTE: we only compute the count for the backward tree, and assume the same yield from the
+	** NOTE: we only use the count for the backward tree, and assume the same yield from the
 	** forward tree.
 	*/
     if (count) { dens += 2.0* count / step; dens /= 2; }
@@ -4981,3 +5085,19 @@ fprintf(fp,"'%*.*s'"
 	,  (int) word.length,  (int) word.length,  word.word );
 }
 
+#if CROSS_DICT_SIZE
+STATIC size_t word_format(char *buff, STRING word)
+{
+
+return sprintf(buff,"'%*.*s'"
+	,  (int) word.length,  (int) word.length,  word.word );
+}
+
+STATIC size_t symbol_format(char *buff, WordNum sym)
+{
+if (! (glob_dict = glob_model->dict)) return sprintf(buff, "<NoDict>" );
+else if (sym >= glob_dict->size) return sprintf(buff, "<%u>", sym );
+else return word_format(buff, glob_dict->entry[sym].string );
+}
+#endif
+/* Eof */
