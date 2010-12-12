@@ -1,7 +1,6 @@
 
 #define IDX_NIL ((unsigned int)-1)
 #define WANT_LRU 0
-#define WANT_RESIZE 1
 
 struct rowstats {
 	unsigned int uniq;
@@ -22,7 +21,7 @@ struct crossrow {
 #if WANT_LRU
 	struct rowlru lru;
 #endif
-	struct rowstats stats;
+	struct rowstats payload;
 	};
 
 struct crosstab {
@@ -43,10 +42,15 @@ struct crosstab {
 	unsigned int *matrix;
 	};
 
-void crosstab_show(FILE *fp, struct crosstab *ptr );
 struct crosstab *crosstab_init(unsigned int newsize);
-void crosstab_resize(struct crosstab * ptr, unsigned int newsize);
-void crosstab_reduce(struct crosstab * ptr, unsigned int newsize);
+/* i */ void crosstab_resize(struct crosstab * ptr, unsigned int newsize);
+/* z */ void crosstab_reduce(struct crosstab * ptr, unsigned int newsize);
+/* s */ void crosstab_repack(struct crosstab * ptr);
 void crosstab_free(struct crosstab *ptr);
-void crosstab_add_pair(struct crosstab *ptr,  unsigned int one, unsigned int two);
-void crosstab_print(FILE *fp, struct crosstab *ptr );
+/* x y */ void crosstab_add_pair(struct crosstab *ptr,  unsigned int one, unsigned int two);
+/* p */ void crosstab_print(FILE *fp, struct crosstab *ptr );
+/* P */ void crosstab_pretty_print(FILE *fp, struct crosstab *ptr, size_t (*cnv)(char *buff, unsigned sym) );
+/* . */ void crosstab_show(FILE *fp, struct crosstab *ptr, size_t (*cnv)(char *buff, unsigned sym) );
+/* ? */ double crosstab_ask(struct crosstab * ptr, unsigned sym);
+/* g */ unsigned crosstab_get(struct crosstab * ptr, unsigned idx);
+
