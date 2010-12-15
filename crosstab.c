@@ -63,6 +63,7 @@ double crosstab_ask(struct crosstab *ptr,unsigned sym)
 double this;
 unsigned int *up;
 
+	/* search hashtable to find element */
 up = crosstab_hnd(ptr, sym);
 this = crosstab_value(ptr, *up);
 return this;
@@ -72,7 +73,6 @@ static double crosstab_value(struct crosstab *ptr,unsigned slot)
 {
 double this;
 
-	/* search hashtable to find element */
 if (slot >= ptr->msize ) this = ptr->total.sum ? 1.0/ptr->total.sum : 0.0;
 else this =  ptr->score * ptr->scores[slot] ;
 
@@ -80,6 +80,10 @@ else this =  ptr->score * ptr->scores[slot] ;
 return this;
 }
 
+	/* find the slot corresponding to num.
+	** if num is not found in the hashtable: allocate a new slot
+	** , initialise it, and put num into it.
+	*/
 static unsigned int cross_find_slot(struct crosstab *ptr,unsigned int num)
 {
 unsigned int slot, *up;
@@ -115,12 +119,12 @@ if (slot != IDX_NIL) {
 return slot;
 }
 
-/* remove one "slot" from the crosstable.
-** substract all it's values from the row/columns totals
-** from the grand total, 
-** set it's cell and row/column totals to zero.
-** Dont touch the key or linked list yet; only the payload!
-*/
+	/* remove one "slot" from the crosstable.
+	** substract all it's values from the row/columns totals
+	** from the grand total, 
+	** set it's cell and row/column totals to zero.
+	** Dont touch the key or linked list yet; only the payload!
+	*/
 static void cross_wipe_slot(struct crosstab *ptr,unsigned int slot)
 {
 unsigned int xy,zzz;
@@ -164,7 +168,11 @@ for (xy=0; xy < ptr->msize; xy++ ) {
 	if (ptr->table[xy].hash.key == IDX_NIL ) continue;
 	zzz = XY2ZZ(slot,xy);
 	if (ptr->matrix[zzz] > 0) {
-		pay = sqrt( ptr->matrix[zzz] );
+		// pay = 1+sqrt( ptr->matrix[zzz] );
+		pay = urnd( 1+ptr->matrix[zzz] );
+#if (SHOW_FUZZ > 1 )
+		fprintf(stderr, "[%u,%u] %u - %u\n", slot, xy, ptr->matrix[zzz], pay);
+#endif
 		if (!pay) continue;
 		ptr->total.sum -= pay;
 		ptr->table[xy].payload.sum -= pay;
@@ -215,7 +223,7 @@ struct crosstab *crosstab_init(unsigned int newsize)
 struct crosstab *ptr;
 
 #if SHOW_CALLS
-fprintf(stderr, "cronsstab_init(%u)\n", newsize);
+fprintf(stderr, "crosstab_init(%u)\n", newsize);
 #endif
 
 ptr = malloc (sizeof *ptr);
@@ -234,7 +242,6 @@ ptr->matrix = NULL;
 
 crosstab_resize (ptr, newsize);
 return ptr;
-
 }
 
 void crosstab_free(struct crosstab *ptr)
@@ -255,7 +262,7 @@ unsigned int *up;
 struct crossrow *oldrow;
 
 #if SHOW_CALLS
-fprintf(stderr, "cronsstab_init(%u) lusize=%u\n", newsize, LUSIZE(newsize));
+fprintf(stderr, "crosstab_init(%u) lusize=%u\n", newsize, LUSIZE(newsize));
 #endif
 
 oldsize = ptr->msize;
@@ -281,7 +288,7 @@ free (oldrow);
 
 	/* find end of freelist */
 for (up = &ptr->freelist; *up != IDX_NIL; up = &ptr->table[*up].hash.link) {;}
-	/* append to freelist */
+	/* append new slots to freelist */
 for (slot = oldsize; slot < newsize; slot++) {
 	*up = slot;
 	up = &ptr->table[slot].hash.link;
@@ -293,6 +300,7 @@ ptr->index = realloc (ptr->index, newsize * sizeof *ptr->index);
 ptr->scores = realloc (ptr->scores, newsize * sizeof *ptr->scores);
 ptr->matrix = realloc (ptr->matrix, LUSIZE(newsize) * sizeof *ptr->matrix);
 
+	/* initialise the new slots */
 for (slot=oldsize; slot < newsize; slot++ ) {
 	ptr->index[slot] = slot;
 	ptr->scores[slot] = 0.0;
@@ -305,6 +313,9 @@ for (slot=LUSIZE(oldsize); slot < LUSIZE(newsize); slot++ ) {
 return ;
 }
 
+	/* perform power-iteration and keep the result vector in ->scores.
+	** the eigenvalue is put in ptr->score.
+	 */
 static void crosstab_recalc(struct crosstab * ptr)
 {
 unsigned slot, idx,iter;
@@ -331,6 +342,7 @@ for (iter =0; iter < 100; iter++) {
 return;
 }
 
+	/* find the weakest elements and put them on the freelist */
 void crosstab_reduce(struct crosstab * ptr, unsigned int newsize)
 {
 unsigned slot, idx,iter;
@@ -338,13 +350,19 @@ double oldval,frac,limit;
 
 if (!ptr || newsize >= ptr->msize) return;
 
+	/* Pick a victim: a random slot from idx[0] ... idx[newsize] and eat some of it's meat.
+	** we don't bother about the elements at newsize and beyond, because they are allmost dead meat anyway.
+	 */
 idx = urnd(newsize);
 slot = ptr->index[idx] ;
 cross_fuzz_slot(ptr,slot);
 
+	/* recalculate the power-iteration */
 crosstab_recalc(ptr);
 
+	/* reshuffle the index, such that idx[0] ... idx[newsize] contain the best items */
 index_doubles(ptr->index, ptr->scores, ptr->msize);
+
 #if ( SHOW_ITER >= 2)
 fprintf(stderr, "NewIdx " );
 for (slot=0; slot < ptr->msize; slot++ ) {
@@ -358,10 +376,11 @@ for (slot=0; slot < ptr->msize; slot++ ) {
 fprintf(stderr, " | %6.4f\n", ptr->score);
 #endif
 
+	/* put everything from idx[newsize] and up on the freelist */
 crosstab_reclaim(ptr, newsize);
-
 }
 
+	/* reshuffle the matrix is such a way that the 'best' elements are at the lowest indexes */
 void crosstab_repack(struct crosstab * ptr)
 {
 unsigned slot, iter;
@@ -369,10 +388,10 @@ unsigned int *index_2d;
 double oldval,frac,limit;
 
 if (!ptr) return;
-
+	/* do poswer-iteration and reshuffle index */
 crosstab_recalc(ptr);
-
 index_doubles(ptr->index, ptr->scores, ptr->msize);
+
 #if (SHOW_ITER >= 2)
 fprintf(stderr, "NewIdx " );
 for (slot=0; slot < ptr->msize; slot++ ) {
@@ -386,6 +405,10 @@ for (slot=0; slot < ptr->msize; slot++ ) {
 fprintf(stderr, " | %6.4f\n", ptr->score);
 #endif
 
+	/* we need not only permute the 1d elements (ptr->scores, ptr->table)
+	** , but also the 2d matrix.
+	** The 2d permutation array can be constructed from the 1d version.
+	*/
 index_2d = malloc (LUSIZE(ptr->msize) * sizeof *index_2d);
 index2_2d( index_2d, ptr->index, ptr->msize);
 
@@ -396,9 +419,13 @@ for (slot=0; slot < LUSIZE(ptr->msize); slot++ ) {
 	}
 fprintf(stderr, "\n..\n" );
 #endif
+
 permute_unsigned(ptr->matrix, index_2d, LUSIZE(ptr->msize) );
 
-	/* reuse index2d as a copy of ptr->index */
+	/* Hack: reuse index2d as a copy of ptr->index.
+	** this is needed because permute_doubles() also alters the ptr->index array
+	** NOTE: this relies on (LUSIZE > size)
+	*/
 assert (LUSIZE(ptr->msize)  >= ptr->msize);
 memcpy (index_2d, ptr->index, ptr->msize * sizeof *index_2d);
 permute_doubles(ptr->scores, index_2d, ptr->msize );
@@ -625,12 +652,13 @@ double value;
 char buff [500];
 
 crosstab_recalc(ptr);
-fprintf(fp, "\n[ %2u ]:        |%6u/%3u| %6.3f | weight |\n", ptr->freelist, ptr->total.sum,ptr->total.uniq,  ptr->score );
+fprintf(fp, "\n[%4u]:        |%6u/%3u| %6.3f | weight |\n"
+	, ptr->freelist!=IDX_NIL? ptr->freelist:9999, ptr->total.sum,ptr->total.uniq,  ptr->score );
 fprintf(fp, "------|--------+----------+--------+--------+\n" );
 for (idx=0; idx < ptr->msize; idx++ ) {
 	slot = ptr->index[idx];
 	value = crosstab_value(ptr,slot);
-	fprintf(fp, "%2u  %2u:", idx, slot );
+	fprintf(fp, "%2u  %2u|", idx, slot );
 	if (ptr->table[slot].hash.key == IDX_NIL) fprintf(fp, " <free> |" );
 	else fprintf(fp, " %6u |", ptr->table[slot].hash.key );
 	fprintf(fp, "%6u/%2u | %6.4f | %6.4f |", ptr->table[slot].payload.sum, ptr->table[slot].payload.uniq, ptr->scores[slot], value );
@@ -810,101 +838,3 @@ for (start = 0 ; start < cnt; start++) {
 return count;
 }
 /* Eof */
-#if 0
-	{
-unsigned int *index;
-unsigned int *index_2d;
-index = malloc (ptr->msize * sizeof *index);
-index_2d = malloc (LUSIZE(ptr->msize) * sizeof *index);
-
-index2_2d( index_2d, index, ptr->msize);
-
-#if 1
-fprintf(fp, " Index " );
-for (xxx=0; xxx < ptr->msize; xxx++ ) {
-	fprintf(fp, " | %5u ", index[xxx] );
-	}
-fprintf(fp, "\n" );
-
-// xxx = permute_doubles(ptr->scores, index, ptr->msize );
-xxx = permute_rows(ptr->table, index, ptr->msize );
-if (xxx) crosstab_reclaim(ptr, ptr->msize);
-
-fprintf(fp, "Swap=%2u", xxx );
-for (xxx=0; xxx < ptr->msize; xxx++ ) {
-	fprintf(fp, " | %6.4f", ptr->scores[xxx] );
-	}
-fprintf(fp, "|%6.4f\n", ptr->score);
-
-fprintf(fp, " NewIdx" );
-for (xxx=0; xxx < ptr->msize; xxx++ ) {
-	fprintf(fp, " | %5u ", index[xxx] );
-	}
-fprintf(fp, "\n" );
-#endif
-
-#if 0
-permute_doubles(ptr->matrix, index_2d, LUSIZE(ptr->msize) );
-index_doubles(index, ptr->scores, ptr->msize);
-fprintf(fp, " Idx_2d" );
-permute_doubles(ptr->scores, index, ptr->msize);
-
-fprintf(fp, "Swapped" );
-	for (xxx=0; xxx < ptr->msize; xxx++ ) {
-		fprintf(fp, " | %6.4f", ptr->scores[xxx] );
-	}
-fprintf(fp, "|%6.4f\n", ptr->score);
-fprintf(fp, " Idx_2d" );
-for (xxx=0; xxx < LUSIZE(ptr->msize); xxx++ ) {
-	fprintf(fp, " | %5u ", index_2d[xxx] );
-	}
-fprintf(fp, "\n" );
-
-fprintf(fp, " Idx_2d" );
-for (xxx=0; xxx < LUSIZE(ptr->msize); xxx++ ) {
-	fprintf(fp, " | %5u ", index_2d[xxx] );
-	}
-fprintf(fp, "\n" );
-#endif
-
-
-free (index);
-free (index_2d);
-	
-	}
-static double calcterm(double total, double this);
-static double calcterm(double total, double this)
-{
-double frac;
-
-if (this == 0.0) return 0.0;
-if (total+this == 0.0) return 0.0;
-frac = this / (total+this);
-return -frac /** 1/M_LN2 */ * log(frac);
-}
-
-static unsigned int cross_find_victim(struct crosstab *ptr)
-{
-unsigned int victim,idx,slot,*up;
-double val = 1.;
-
-for (idx=victim=0; idx < ptr->msize; idx++ ) {
-	unsigned int zzz;
-	if (ptr->table[idx].hash.key == IDX_NIL ) { victim = idx; break; }
-	if (idx == victim) continue;
-		/* fixme: some health indicator needed here */
-	zzz = XY2ZZ(idx,idx);
-	if (ptr->total.sum == 0 || (double)ptr->table[idx].payload.sum / ptr->total.sum < val ) {
-		val = (ptr->total.sum == 0) ? 0 
-		: (double)ptr->table[idx].payload.sum / ptr->matrix[zzz] ;
-		victim = idx;
-		}
-	}
-if (ptr->table[victim].hash.key != IDX_NIL) cross_wipe_slot(ptr, victim);
-up = crosstab_hnd(ptr, ptr->table[victim].hash.key );
-*up = IDX_NIL;
-
-return victim;
-}
-
-#endif
