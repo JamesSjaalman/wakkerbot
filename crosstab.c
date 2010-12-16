@@ -318,7 +318,7 @@ return ;
 	 */
 static void crosstab_recalc(struct crosstab * ptr)
 {
-unsigned slot, idx,iter;
+unsigned slot,iter;
 double oldval,frac,limit;
 
 if (!ptr || !ptr->msize) return;
@@ -345,8 +345,7 @@ return;
 	/* find the weakest elements and put them on the freelist */
 void crosstab_reduce(struct crosstab * ptr, unsigned int newsize)
 {
-unsigned slot, idx,iter;
-double oldval,frac,limit;
+unsigned idx,slot;
 
 if (!ptr || newsize >= ptr->msize) return;
 
@@ -383,9 +382,7 @@ crosstab_reclaim(ptr, newsize);
 	/* reshuffle the matrix is such a way that the 'best' elements are at the lowest indexes */
 void crosstab_repack(struct crosstab * ptr)
 {
-unsigned slot, iter;
 unsigned int *index_2d;
-double oldval,frac,limit;
 
 if (!ptr) return;
 	/* do poswer-iteration and reshuffle index */
@@ -393,16 +390,18 @@ crosstab_recalc(ptr);
 index_doubles(ptr->index, ptr->scores, ptr->msize);
 
 #if (SHOW_ITER >= 2)
+{unsigned idx,slot;
 fprintf(stderr, "NewIdx " );
-for (slot=0; slot < ptr->msize; slot++ ) {
-	fprintf(stderr, " | %5u ", ptr->index[slot] );
+for (idx=0; idx < ptr->msize; idx++ ) {
+	fprintf(stderr, " | %5u ", ptr->index[idx] );
 	}
 fprintf(stderr, "\nTheVect" );
-for (slot=0; slot < ptr->msize; slot++ ) {
-	iter = ptr->index[slot];
-	fprintf(stderr, " | %6.4f", ptr->scores[iter] );
+for (idx=0; idx < ptr->msize; idx++ ) {
+	slot = ptr->index[idx];
+	fprintf(stderr, " | %6.4f", ptr->scores[slot] );
 	}
 fprintf(stderr, " | %6.4f\n", ptr->score);
+}
 #endif
 
 	/* we need not only permute the 1d elements (ptr->scores, ptr->table)
@@ -431,7 +430,7 @@ memcpy (index_2d, ptr->index, ptr->msize * sizeof *index_2d);
 permute_doubles(ptr->scores, index_2d, ptr->msize );
 
 free(index_2d);
-iter = permute_rows(ptr->table, ptr->index, ptr->msize );
+permute_rows(ptr->table, ptr->index, ptr->msize );
 
 crosstab_reorder(ptr);
 }
