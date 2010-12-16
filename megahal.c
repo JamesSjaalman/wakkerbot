@@ -1,4 +1,3 @@
-
 /*===========================================================================*/
 
 /*
@@ -98,6 +97,158 @@
 
 /*===========================================================================*/
 
+/*
+ *		$Log: megahal.c,v $
+ *		Revision 1.10  2004/02/23 11:12:29  lfousse
+ *		Changed default working directory and added options to change it.
+ *		
+ *		Revision 1.9  2004/01/13 10:59:20  lfousse
+ *		* Applied code cleaning already shipped with the debian package.
+ *		* Removed pure debian stuff.
+ *		* Added lacking setup.py file for python module.
+ *		
+ *		Revision 1.8  2003/08/26 12:49:16  lfousse
+ *		* Added the perl interface
+ *		* cleaned up the python interface a bit (but this
+ *		  still need some work by a python "expert")
+ *		* Added a learn_no_reply function.
+ *		
+ *		Revision 1.7  2003/08/18 21:45:23  lfousse
+ *		Added megahal_learn_no_reply function for quick learning, and
+ *		corresponding python interface.
+ *		
+ *		Revision 1.6  2002/10/16 04:32:53  davidw
+ *		* megahal.c (change_personality): [ 541667 ] Added patch from Andrew
+ *		  Burke to rework logic in change_personality.
+ *		
+ *		* megahal.c: Trailing white space cleanup.
+ *		
+ *		* python-interface.c: [ 546397 ] Change python include path to a more
+ *		  recent version.  This should really be fixed by using some of
+ *		  Python's build automation tools.
+ *		
+ *		Revision 1.5  2000/11/08 11:07:11  davidw
+ *		Moved README to docs directory.
+ *
+ *		Changes to debian files.
+ *
+ *		Revision 1.4  2000/09/07 21:51:12  davidw
+ *		Created some library functions that I think are workable, and moved
+ *		everything else into megahal.c as static variables/functions.
+ *
+ *		Revision 1.3  2000/09/07 11:43:43  davidw
+ *		Started hacking:
+ *
+ *		Reduced makefile targets, eliminating non-Linux OS's.  There should be
+ *		a cleaner way to do this.
+ *
+ *		Added Tcl and Python C level interfaces.
+ *
+ *		Revision 1.23  1998/05/19 03:02:02  hutch
+ *		Removed a small malloc() bug, and added a progress display for
+ *		generate_reply().
+ *
+ *		Revision 1.22  1998/04/24 03:47:03  hutch
+ *		Quick bug fix to get sunos version to work.
+ *
+ *		Revision 1.21  1998/04/24 03:39:51  hutch
+ *		Added the BRAIN command, to allow user to change MegaHAL personalities
+ *		on the fly.
+ *
+ *		Revision 1.20  1998/04/22 07:12:37  hutch
+ *		A few small changes to get the DOS version to compile.
+ *
+ *		Revision 1.19  1998/04/21 10:10:56  hutch
+ *		Fixed a few little errors.
+ *
+ *		Revision 1.18  1998/04/06 08:02:01  hutch
+ *		Added debugging stuff, courtesy of Paul Baxter.
+ *
+ *		Revision 1.17  1998/04/02 01:34:20  hutch
+ *		Added the help function and fixed a few errors.
+ *
+ *		Revision 1.16  1998/04/01 05:42:57  hutch
+ *		Incorporated Mac code, including speech synthesis, and attempted
+ *		to tidy up the code for multi-platform support.
+ *
+ *		Revision 1.15  1998/03/27 03:43:15  hutch
+ *		Added AMIGA specific changes, thanks to Dag Agren.
+ *
+ *		Revision 1.14  1998/02/20 06:40:13  hutch
+ *		Tidied up transcript file format.
+ *
+ *		Revision 1.13  1998/02/20 06:26:19  hutch
+ *		Fixed random number generator and Seed() function (thanks to Mark
+ *		Tarrabain), removed redundant code left over from the Loebner entry,
+ *		prettied things up a little and destroyed several causes of memory
+ *		leakage (although probably not all).
+ *
+ *		Revision 1.12  1998/02/04 02:55:11  hutch
+ *		Fixed up memory allocation error which caused SunOS versions to crash.
+ *
+ *		Revision 1.11  1998/01/22 03:16:30  hutch
+ *		Fixed several memory leaks, and the frustrating bug in the
+ *		Write_Input routine.
+ *
+ *		Revision 1.10  1998/01/19 06:44:36  hutch
+ *		Fixed MegaHAL to compile under Linux with a small patch credited
+ *		to Joey Hess (joey@kitenet.net).  MegaHAL may now be included as
+ *		part of the Debian Linux distribution.
+ *
+ *		Revision 1.9  1998/01/19 06:37:32  hutch
+ *		Fixed a minor bug with end-of-sentence punctuation.
+ *
+ *		Revision 1.8  1997/12/24 03:17:01  hutch
+ *		More bug fixes, and hopefully the final contest version!
+ *
+ *		Revision 1.7  1997/12/22  13:18:09  hutch
+ *		A few more bug fixes, and non-repeating implemented.
+ *
+ *		Revision 1.6  1997/12/22 04:27:04  hutch
+ *		A few minor bug fixes.
+ *
+ *		Revision 1.5  1997/12/15 04:35:59  hutch
+ *		Final Loebner version!
+ *
+ *		Revision 1.4  1997/12/11 05:45:29  hutch
+ *		The almost finished version.
+ *
+ *		Revision 1.3  1997/12/10 09:08:09  hutch
+ *		Now Loebner complient (tm).
+ *
+ *		Revision 1.2  1997/12/08 06:22:32  hutch
+ *		Tidied up.
+ *
+ *		Revision 1.1  1997/12/05  07:11:44  hutch
+ *		Initial revision (lots of files were merged into one, RCS re-started)
+ *
+ *		Revision 1.7  1997/12/04 07:07:13  hutch
+ *		Added load and save functions, and tidied up some code.
+ *
+ *		Revision 1.6  1997/12/02 08:34:47  hutch
+ *		Added the ban, aux and swp functions.
+ *
+ *		Revision 1.5  1997/12/02 06:03:04  hutch
+ *		Updated to use a special terminating symbol, and to store only
+ *		branches of maximum depth, as they are the only ones used in
+ *		the reply.
+ *
+ *		Revision 1.4  1997/10/28 09:23:12  hutch
+ *		MegaHAL is babbling nicely, but without keywords.
+ *
+ *		Revision 1.3  1997/10/15  09:04:03  hutch
+ *		MegaHAL can parrot back whatever the user says.
+ *
+ *		Revision 1.2  1997/07/21 04:03:28  hutch
+ *		Fully working.
+ *
+ *		Revision 1.1  1997/07/15 01:55:25  hutch
+ *		Initial revision.
+ */
+
+/*===========================================================================*/
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -146,14 +297,19 @@
 
 #define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
+
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
-	/* this is an ugly hack to cast a string str to an unsigned char
+
+	/* define to outcomment old stuff */
+#define DONT_WANT_THIS 0
+
+	/* this is an ugly hack to cast a string pointer named 'str' to an unsigned char
 	** This is absolutely necessary for the isXXXX() functions which
 	** expect an int in the range 0...255 OR -a (for EOF)
 	** Using a signed char would sign-extend the argument to -128...127,
 	** which causes the ctype[] array to be indexed out of bounds
 	*/
-#define UCP ((unsigned char *)str)
+#define UCPstr ((unsigned char *)str)
 
 	/* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
@@ -189,7 +345,7 @@
 	** To avoid unbounded growth, random rows of the matrix have their values decremented
 	** randomly, on a periodic basis.
 	*/
-#define CROSS_DICT_SIZE 31
+#define CROSS_DICT_SIZE 41
 #define CROSS_DICT_WORD_DISTANCE 10
 
 	/* Maintain and use weights on the keywords */
@@ -217,18 +373,21 @@
 	** The 'selection-pressure' depends on the number of (new) keywords that want
 	** to enter the keyword-dict per input-text.
 	** KEYWORD_DICT_SIZE should be approximately equal to the number of (unique) symbols in the input text.
+	** (or about twice the amount of *relevant* keywords)
 	** If the size of the input texts varies, the larger inputs will effectively flush the keyword-dict.
 	** for me, 20...30 is the best setting
 	** YMMV
 	*/
 #define KEYWORD_DICT_SIZE 23
 
-	/* Alternative tokeniser. Attempts to keep dotted acronyms and (floating point) numbers intact. */
+	/* Alternative tokeniser. Attempts to keep dotted acronyms and (floating point) numbers intact.
+	** (breaking tokens would cause the tree depth to become reached too early, and give simpler output)
+	*/
 #define WANT_NEW_TOKENIZER 1
 
 	/*
 	** ALZHEIMER_NODE_COUNT is the number of nodes we intend to maintain.
-	** if the actual number of nodes exceeds this limit, Alzheimer might be triggered,
+	** if the actual number of nodes exceeds this limit, the Alzheimer-functions might be triggered,
 	** and the oldest nodes will be pruned. The timestamp is used as a poor man's LRU.
 	** NOTE: this is the *intended* number. The actual number will fluctuate, and will
 	** sometimes exceed this limit.
@@ -242,10 +401,8 @@
 	** (with a glob_timeout=DEFAULT_TIMEOUT=10 this would result in avg (1000s/2) between sweeps)
 	** YMMV
 	*/
-#define ALZHEIMER_NODE_COUNT ( 1600 * 1000 )
 #define ALZHEIMER_NODE_COUNT ( 35 * 1000 * 1000)
 #define ALZHEIMER_FACTOR 50
-#define ALZHEIMER_FACTOR 300
 
 	/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
@@ -268,8 +425,13 @@
  	*/
 #define MIN_REPLY_SIZE 14
 
-	/* Dont maintain a hashtable for the lineair dict used to store the reply */
+	/* Don't maintain the hashtable for the sequential dict (misused as an array) to store the reply */
 #define WANT_FLAT_NOFUSS 0
+
+#define SCRUTINIZE_U2L 1
+#define SCRUTINIZE_L2U 2
+#define SCRUTINIZE_INPUT 0
+#define SCRUTINIZE_OUTPUT SCRUTINIZE_U2L
 
 #ifdef __mac_os
 #define bool Boolean
@@ -591,7 +753,6 @@ STATIC int dont_need_white_l(STRING string);
 STATIC int dont_need_white_r(STRING string);
 STATIC int word_is_allcaps(STRING string);
 STATIC int word_has_highbit(STRING string);
-size_t hexdump_string(char *buff, STRING string);
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
 STATIC void del_word_dofree(DICT *dict, STRING word);
@@ -614,6 +775,15 @@ double word_weight(DICT *dict, STRING word);
 double symbol_weight(DICT *dict, WordNum symbol);
 STATIC void dump_word(FILE *fp, STRING word);
 STATIC void schrink_keywords(DICT *words, unsigned newsize);
+STATIC char * scrutinize(char * src, int mode);
+STATIC char * utf2latin(char * src, size_t len);
+STATIC char * latin2utf(char * src, size_t len);
+STATIC size_t cp_utf2latin(char *dst, char * src, size_t len);
+
+STATIC int eat_utf8(unsigned char *str, unsigned len, unsigned *target);
+STATIC unsigned cha_latin2utf8(unsigned char *dst, unsigned val);
+STATIC size_t hexdump_string(char *buff, STRING string);
+STATIC size_t decode_word(char * buff, STRING src, int type );
 /* Function: setnoprompt
 
    Purpose: Set noprompt variable.
@@ -963,7 +1133,7 @@ STATIC void exithal(void)
 STATIC char *read_input(char *prompt)
 {
     static char *input = NULL;
-    static size_t size=0;
+    static size_t msize=0;
     bool seen_eol;
     size_t length;
     int c;
@@ -1020,9 +1190,10 @@ STATIC char *read_input(char *prompt)
 	 */
 	/* This will end execution on two consecutive empty lines*/
 	/* if (seen_eol && !length) return NULL;*/
-	if (length +2 >= size) {
-		input = realloc(input, size? 2*size: 16);
-		if (input) size = size ? 2 * size : 16;
+
+	if (length +2 >= msize) {
+		input = realloc(input, msize? 2*msize: 16);
+		if (input) msize = msize ? 2 * msize : 16;
 		}
 	if (!input) {
 	    error("read_input", "Unable to re-allocate the input string");
@@ -1042,6 +1213,8 @@ STATIC char *read_input(char *prompt)
     /*
      *		We have finished, so return the input string.
      */
+	/* scrutinize may or may not reallocate the output string, but we don't care */
+    input = scrutinize (input, SCRUTINIZE_INPUT);
     return input;
 }
 
@@ -1226,12 +1399,12 @@ STATIC void capitalize(char *str)
 
     len = strlen(str);
     for(idx = 0; idx < len; idx++) {
-	if (myisalpha(UCP[idx])) {
-	    if (start == TRUE) UCP[idx] = toupper(UCP[idx]);
-	    else UCP[idx] = tolower(UCP[idx]);
+	if (myisalpha(UCPstr[idx])) {
+	    if (start == TRUE) UCPstr[idx] = toupper(UCPstr[idx]);
+	    else UCPstr[idx] = tolower(UCPstr[idx]);
 	    start = FALSE;
 	}
-	if (idx > 2 && strchr("!.?", UCP[idx-1]) != NULL && isspace(UCP[idx]))
+	if (idx > 2 && strchr("!.?", UCPstr[idx-1]) != NULL && isspace(UCPstr[idx]))
 	    start = TRUE;
     }
 }
@@ -1249,7 +1422,7 @@ STATIC void upper(char *str)
     /* unsigned char *ucp = (unsigned char *) str;*/
 
     len = strlen(str);
-    for(idx = 0; idx < len; idx++) UCP[idx] = toupper(UCP[idx]);
+    for(idx = 0; idx < len; idx++) UCPstr[idx] = toupper(UCPstr[idx]);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1401,8 +1574,8 @@ return *np;
 }
 
 /* FIXME: this is (semantically) wrong:
-** if we shift down the words, their symbols
-** will be altered (decremented) as well.
+** if we shift down the words, their symbols (indexes)
+** will change (decremented) as well.
 ** Which is ok if we use the dict ONLY for
 ** EXISTS() testing, but we should not assume
 ** the symbols to be stable after a deletion.
@@ -2470,8 +2643,9 @@ void show_dict(DICT *dict)
 {
     unsigned int iwrd;
     FILE *fp;
-    char hexdump[1024];
     size_t hexlen;
+    char hexdump[1024];
+    char formatted[512];
 
     fp = fopen("megahal.dic", "w");
     if (!fp) {
@@ -2483,14 +2657,20 @@ fprintf(fp, "# TotStats= %llu %llu Words= %lu/%lu Nonzero=%lu\n"
 	, (unsigned long long) dict->stats.nhits, (unsigned long long) dict->stats.whits
 	, (unsigned long) dict->size, (unsigned long) dict->msize, (unsigned long) dict->stats.nonzero );
     for(iwrd = 0; iwrd < dict->size; iwrd++) {
-		if ( word_has_highbit(dict->entry[iwrd].string)) hexdump_string(hexdump, dict->entry[iwrd].string);
-		else hexdump[0] = 0;
-	    fprintf(fp, "%lu\t%lu\t(%6.4e / %6.4e)\t%*.*s%s\n"
+	    fprintf(fp, "%lu\t%lu\t(%6.4e / %6.4e)\t'%*.*s'"
 		, (unsigned long) dict->entry[iwrd].stats.nhits, (unsigned long) dict->entry[iwrd].stats.whits
 		, (double ) dict->entry[iwrd].stats.nhits * dict->stats.nonzero / dict->stats.nhits
 		, (double ) dict->entry[iwrd].stats.whits * dict->stats.nonzero / dict->stats.whits
 		, (int) dict->entry[iwrd].string.length, (int) dict->entry[iwrd].string.length, dict->entry[iwrd].string.word 
-		, hexdump
+		);
+        if ( word_has_highbit(dict->entry[iwrd].string)) {
+		hexlen = hexdump_string(hexdump, dict->entry[iwrd].string);
+                decode_word(formatted, dict->entry[iwrd].string, (int) hexdump[hexlen+2] - '0');
+		}
+        else formatted[0] = hexdump[hexlen=0] = 0;
+        fprintf(fp, " '%s' %s\n"
+            , formatted
+            , hexdump
 		);
     }
 
@@ -2808,11 +2988,11 @@ STATIC size_t tokenize(char *str, int *sp)
     switch(*sp) {
     case T_INIT: /* initial */
 #if 0
-	/* if (UCP[pos] == '\'' ) { *sp |= 16; return pos; }*/
-	/* if (UCP[posi] == '"' ) { *sp |= 32; return pos; }*/
+	/* if (UCPstr[pos] == '\'' ) { *sp |= 16; return pos; }*/
+	/* if (UCPstr[posi] == '"' ) { *sp |= 32; return pos; }*/
 #endif
-    	if (myisalpha(UCP[pos])) {*sp = T_WORD; pos++; continue; }
-    	if (myisalnum(UCP[pos])) {*sp = T_NUM; pos++; continue; }
+    	if (myisalpha(UCPstr[pos])) {*sp = T_WORD; pos++; continue; }
+    	if (myisalnum(UCPstr[pos])) {*sp = T_NUM; pos++; continue; }
 	/* if (strspn(str+pos, "-+")) { *sp = T_NUM; pos++; continue; }*/
 	*sp = T_ANY; continue;
 	break;
@@ -2822,50 +3002,50 @@ STATIC size_t tokenize(char *str, int *sp)
         *sp = T_MEUK; continue;
         break;
     case T_WORD: /* inside word */
-	while ( myisalnum(UCP[pos]) ) pos++;
-    	if (UCP[pos] == '\0' ) { *sp = T_INIT;return pos; }
-	if (UCP[pos] == '.' ) { *sp = T_WORDDOT; pos++; continue; }
+	while ( myisalnum(UCPstr[pos]) ) pos++;
+    	if (UCPstr[pos] == '\0' ) { *sp = T_INIT;return pos; }
+	if (UCPstr[pos] == '.' ) { *sp = T_WORDDOT; pos++; continue; }
 	*sp = T_INIT; return pos;
         break;
     case T_WORDDOT: /* word. */
-	if (myisalpha(UCP[pos]) ) { *sp = T_WORDDOTLET; pos++; continue; }
+	if (myisalpha(UCPstr[pos]) ) { *sp = T_WORDDOTLET; pos++; continue; }
 	*sp = T_INIT; return pos-1;
         break;
     case T_WORDDOTLET: /* word.A */
-	if (UCP[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
-	if (myisalpha(UCP[pos]) ) { *sp = T_INIT; return pos-2; }
-	if (myisalnum(UCP[pos]) ) { *sp = T_NUM; continue; }
+	if (UCPstr[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
+	if (myisalpha(UCPstr[pos]) ) { *sp = T_INIT; return pos-2; }
+	if (myisalnum(UCPstr[pos]) ) { *sp = T_NUM; continue; }
 	*sp = T_INIT; return pos-2;
         break;
     case T_AFKODOT: /* A.B. */
-        if (myisalpha(UCP[pos]) ) { *sp = T_AFKO; pos++; continue; }
+        if (myisalpha(UCPstr[pos]) ) { *sp = T_AFKO; pos++; continue; }
         *sp = T_INIT; return pos >=3? pos: pos -2;
         break;
     case T_AFKO: /* word.A.B */
-	if (UCP[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
-	/* if (myisalpha(UCP[pos]) ) { pos++; continue; }*/
-	if (myisalpha(UCP[pos]) ) { *sp = T_INIT; return pos - 2; }
+	if (UCPstr[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
+	/* if (myisalpha(UCPstr[pos]) ) { pos++; continue; }*/
+	if (myisalpha(UCPstr[pos]) ) { *sp = T_INIT; return pos - 2; }
 	*sp = T_INIT; return pos-1;
         break;
     case T_NUM: /* number */
-	if ( myisalnum(UCP[pos]) ) pos++;
+	if ( myisalnum(UCPstr[pos]) ) pos++;
 	if (strspn(str+pos, ".,")) { *sp = T_NUMDOT; pos++; continue; }
 	*sp = T_INIT; return pos;
         break;
     case T_NUMDOT: /* number[.,] */
-	if (myisalpha(UCP[pos])) { *sp = T_NUMDOTLET; pos++; continue; }
-	if (myisalnum(UCP[pos])) { *sp = T_NUM; pos++; continue; }
+	if (myisalpha(UCPstr[pos])) { *sp = T_NUMDOTLET; pos++; continue; }
+	if (myisalnum(UCPstr[pos])) { *sp = T_NUM; pos++; continue; }
 	if (strspn(str+pos, "-+")) { *sp = T_NUM; pos++; continue; }
 	*sp = T_INIT; return pos-1;
         break;
     case T_NUMDOTLET: /* number[.,][a-z] */
-	if (myisalpha(UCP[pos])) { *sp = T_INIT; return pos-2; }
-	if (myisalnum(UCP[pos])) { *sp = T_NUM; pos++; continue; }
+	if (myisalpha(UCPstr[pos])) { *sp = T_INIT; return pos-2; }
+	if (myisalnum(UCPstr[pos])) { *sp = T_NUM; pos++; continue; }
 	*sp = T_INIT; return pos-2;
         break;
     case T_MEUK: /* inside meuk */
-	if (myisalnum(UCP[pos])) {*sp = T_INIT; return pos; }
-	if (myiswhite(UCP[pos])) {*sp = T_INIT; return pos; }
+	if (myisalnum(UCPstr[pos])) {*sp = T_INIT; return pos; }
+	if (myiswhite(UCPstr[pos])) {*sp = T_INIT; return pos; }
 	if (strspn(str+pos, ".,?!" )) { if (!pos) *sp = T_PUNCT; else { *sp = T_INIT; return pos; }}
 	if (strspn(str+pos, "@'\"" )) { *sp = T_INIT; return pos ? pos : 1; }
 	if (strspn(str+pos, ":;" )) { *sp = T_INIT; return pos ? pos : 1; }
@@ -2979,36 +3159,36 @@ STATIC bool boundary(char *str, size_t position)
     /* unsigned char *ucp = (unsigned char *) string;*/
     if (position == 0) return FALSE;
 
-    if (UCP[position] == '\0' ) return TRUE;
+    if (UCPstr[position] == '\0' ) return TRUE;
 
     if (
-	UCP[position] == '\''
-	&& myisalpha(UCP[position-1])
-	&& myisalpha(UCP[position+1])
+	UCPstr[position] == '\''
+	&& myisalpha(UCPstr[position-1])
+	&& myisalpha(UCPstr[position+1])
 	)
 	return FALSE;
 
     if (
 	position > 1
-	&& UCP[position-1] == '\''
-	&& myisalpha(UCP[position-2])
-	&& myisalpha(UCP[position]) 
+	&& UCPstr[position-1] == '\''
+	&& myisalpha(UCPstr[position-2])
+	&& myisalpha(UCPstr[position]) 
 	)
 	return FALSE;
 
     if (
-	myisalpha(UCP[position])
-	&& !myisalpha(UCP[position-1])
+	myisalpha(UCPstr[position])
+	&& !myisalpha(UCPstr[position-1])
 	)
 	return TRUE;
 
     if (
-	!myisalpha(UCP[position])
-	&& myisalpha(UCP[position-1])
+	!myisalpha(UCPstr[position])
+	&& myisalpha(UCPstr[position-1])
 	)
 	return TRUE;
 
-    if (isdigit(UCP[position]) != isdigit(UCP[position-1]))
+    if (isdigit(UCPstr[position]) != isdigit(UCPstr[position-1]))
 	return TRUE;
 
     return FALSE;
@@ -3096,15 +3276,6 @@ for(idx = 0; idx < string.length; idx++) {
 	if ( string.word[idx] & 0x80) return 1;
 	}
 return 0;
-}
-
-size_t hexdump_string(char *buff, STRING string)
-{
-unsigned idx;
-for (idx = 0; idx <  string.length; idx++) {
-	sprintf(buff+3*idx, " %02x", 0xff & string.word[idx] );
-	}
-return 3*idx;
 }
 
 /*
@@ -3278,8 +3449,6 @@ STATIC bool dissimilar(DICT *dic1, DICT *dic2)
  */
 STATIC DICT *make_keywords(MODEL *model, DICT *words)
 {
-    /* static DICT *keys = NULL; */
-    unsigned int ikey;
     unsigned int iwrd;
     WordNum symbol;
 
@@ -3291,6 +3460,8 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 	glob_crosstab = crosstab_init(CROSS_DICT_SIZE);
 	}
     rotor = echocount = 0;
+#else
+    unsigned int ikey;
 #endif
 
     if (!glob_keys) {
@@ -3746,7 +3917,6 @@ STATIC char *make_output(DICT *words)
 #else
     for(widx = 0; widx < words->size; widx++) length += words->entry[widx].string.length;
 #endif
-
     output = realloc(output, length);
     if (!output) {
 	error("make_output", "Unable to reallocate output.");
@@ -3861,7 +4031,8 @@ STATIC char *make_output(DICT *words)
 #undef IS_DOUBLE
 #undef IS_HYPHEN
 #endif
-
+	/* scrutinize may or may not reallocate the output string, but we don't care */
+    output = scrutinize (output, SCRUTINIZE_OUTPUT);
     return output;
 }
 
@@ -3911,8 +4082,8 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
 	if (used_key == FALSE && find_word(glob_aux, model->dict->entry[symbol].string) != WORD_NIL) goto next;
 	if (word_exists(words, model->dict->entry[symbol].string) ) goto next;
 	used_key = TRUE;
-#endif
 next:
+#endif
 	if (count > node->children[cidx].ptr->count) count -= node->children[cidx].ptr->count;
 	else break; /*count = 0;*/
 	cidx = (cidx+1) % node->branch;
@@ -3948,14 +4119,14 @@ STATIC bool word_exists(DICT *dict, STRING word)
  */
 STATIC WordNum seed(MODEL *model, DICT *keywords)
 {
-    unsigned int kidx;
-    WordNum symbol, xsymbol;
-    double weight,bestweight = 0.0;
 
     /*
      *		Fix, thanks to Mark Tarrabain
      */
 #if 0
+    unsigned int kidx;
+    WordNum symbol, xsymbol;
+    double weight,bestweight = 0.0;
     if (model->context[0]->branch == 0) symbol = 0;
     else symbol = model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol;
 
@@ -3974,6 +4145,8 @@ STATIC WordNum seed(MODEL *model, DICT *keywords)
 	    }
 	}
 #else
+    WordNum symbol;
+	// symbol = crosstab_get(glob_crosstab, urnd (CROSS_DICT_SIZE/2) );
 	symbol = crosstab_get(glob_crosstab, urnd( sqrt(CROSS_DICT_SIZE*CROSS_DICT_SIZE/2)) );
 	if (symbol > model->dict->size) symbol = 0;
 #endif
@@ -4654,159 +4827,6 @@ STATIC void free_string(STRING word)
     word.length = 0;
 }
 
-/*===========================================================================*/
-
-/*
- *		$Log: megahal.c,v $
- *		Revision 1.10  2004/02/23 11:12:29  lfousse
- *		Changed default working directory and added options to change it.
- *		
- *		Revision 1.9  2004/01/13 10:59:20  lfousse
- *		* Applied code cleaning already shipped with the debian package.
- *		* Removed pure debian stuff.
- *		* Added lacking setup.py file for python module.
- *		
- *		Revision 1.8  2003/08/26 12:49:16  lfousse
- *		* Added the perl interface
- *		* cleaned up the python interface a bit (but this
- *		  still need some work by a python "expert")
- *		* Added a learn_no_reply function.
- *		
- *		Revision 1.7  2003/08/18 21:45:23  lfousse
- *		Added megahal_learn_no_reply function for quick learning, and
- *		corresponding python interface.
- *		
- *		Revision 1.6  2002/10/16 04:32:53  davidw
- *		* megahal.c (change_personality): [ 541667 ] Added patch from Andrew
- *		  Burke to rework logic in change_personality.
- *		
- *		* megahal.c: Trailing white space cleanup.
- *		
- *		* python-interface.c: [ 546397 ] Change python include path to a more
- *		  recent version.  This should really be fixed by using some of
- *		  Python's build automation tools.
- *		
- *		Revision 1.5  2000/11/08 11:07:11  davidw
- *		Moved README to docs directory.
- *
- *		Changes to debian files.
- *
- *		Revision 1.4  2000/09/07 21:51:12  davidw
- *		Created some library functions that I think are workable, and moved
- *		everything else into megahal.c as static variables/functions.
- *
- *		Revision 1.3  2000/09/07 11:43:43  davidw
- *		Started hacking:
- *
- *		Reduced makefile targets, eliminating non-Linux OS's.  There should be
- *		a cleaner way to do this.
- *
- *		Added Tcl and Python C level interfaces.
- *
- *		Revision 1.23  1998/05/19 03:02:02  hutch
- *		Removed a small malloc() bug, and added a progress display for
- *		generate_reply().
- *
- *		Revision 1.22  1998/04/24 03:47:03  hutch
- *		Quick bug fix to get sunos version to work.
- *
- *		Revision 1.21  1998/04/24 03:39:51  hutch
- *		Added the BRAIN command, to allow user to change MegaHAL personalities
- *		on the fly.
- *
- *		Revision 1.20  1998/04/22 07:12:37  hutch
- *		A few small changes to get the DOS version to compile.
- *
- *		Revision 1.19  1998/04/21 10:10:56  hutch
- *		Fixed a few little errors.
- *
- *		Revision 1.18  1998/04/06 08:02:01  hutch
- *		Added debugging stuff, courtesy of Paul Baxter.
- *
- *		Revision 1.17  1998/04/02 01:34:20  hutch
- *		Added the help function and fixed a few errors.
- *
- *		Revision 1.16  1998/04/01 05:42:57  hutch
- *		Incorporated Mac code, including speech synthesis, and attempted
- *		to tidy up the code for multi-platform support.
- *
- *		Revision 1.15  1998/03/27 03:43:15  hutch
- *		Added AMIGA specific changes, thanks to Dag Agren.
- *
- *		Revision 1.14  1998/02/20 06:40:13  hutch
- *		Tidied up transcript file format.
- *
- *		Revision 1.13  1998/02/20 06:26:19  hutch
- *		Fixed random number generator and Seed() function (thanks to Mark
- *		Tarrabain), removed redundant code left over from the Loebner entry,
- *		prettied things up a little and destroyed several causes of memory
- *		leakage (although probably not all).
- *
- *		Revision 1.12  1998/02/04 02:55:11  hutch
- *		Fixed up memory allocation error which caused SunOS versions to crash.
- *
- *		Revision 1.11  1998/01/22 03:16:30  hutch
- *		Fixed several memory leaks, and the frustrating bug in the
- *		Write_Input routine.
- *
- *		Revision 1.10  1998/01/19 06:44:36  hutch
- *		Fixed MegaHAL to compile under Linux with a small patch credited
- *		to Joey Hess (joey@kitenet.net).  MegaHAL may now be included as
- *		part of the Debian Linux distribution.
- *
- *		Revision 1.9  1998/01/19 06:37:32  hutch
- *		Fixed a minor bug with end-of-sentence punctuation.
- *
- *		Revision 1.8  1997/12/24 03:17:01  hutch
- *		More bug fixes, and hopefully the final contest version!
- *
- *		Revision 1.7  1997/12/22  13:18:09  hutch
- *		A few more bug fixes, and non-repeating implemented.
- *
- *		Revision 1.6  1997/12/22 04:27:04  hutch
- *		A few minor bug fixes.
- *
- *		Revision 1.5  1997/12/15 04:35:59  hutch
- *		Final Loebner version!
- *
- *		Revision 1.4  1997/12/11 05:45:29  hutch
- *		The almost finished version.
- *
- *		Revision 1.3  1997/12/10 09:08:09  hutch
- *		Now Loebner complient (tm).
- *
- *		Revision 1.2  1997/12/08 06:22:32  hutch
- *		Tidied up.
- *
- *		Revision 1.1  1997/12/05  07:11:44  hutch
- *		Initial revision (lots of files were merged into one, RCS re-started)
- *
- *		Revision 1.7  1997/12/04 07:07:13  hutch
- *		Added load and save functions, and tidied up some code.
- *
- *		Revision 1.6  1997/12/02 08:34:47  hutch
- *		Added the ban, aux and swp functions.
- *
- *		Revision 1.5  1997/12/02 06:03:04  hutch
- *		Updated to use a special terminating symbol, and to store only
- *		branches of maximum depth, as they are the only ones used in
- *		the reply.
- *
- *		Revision 1.4  1997/10/28 09:23:12  hutch
- *		MegaHAL is babbling nicely, but without keywords.
- *
- *		Revision 1.3  1997/10/15  09:04:03  hutch
- *		MegaHAL can parrot back whatever the user says.
- *
- *		Revision 1.2  1997/07/21 04:03:28  hutch
- *		Fully working.
- *
- *		Revision 1.1  1997/07/15 01:55:25  hutch
- *		Initial revision.
- */
-
-/*===========================================================================*/
-
 
 
 STATIC HashVal hash_word(STRING string)
@@ -5100,4 +5120,174 @@ else if (sym >= glob_dict->size) return sprintf(buff, "<%u>", sym );
 else return word_format(buff, glob_dict->entry[sym].string );
 }
 #endif
+/* Eof */
+
+STATIC char * scrutinize(char * src, int mode)
+{
+switch (mode) {
+case SCRUTINIZE_U2L : return utf2latin(src, 0);
+case SCRUTINIZE_L2U : return latin2utf(src, 0);
+default:
+case 0: return src;
+	}
+}
+
+STATIC char * utf2latin(char * str, size_t len)
+{
+unsigned idx,pos;
+int ret;
+unsigned val;
+
+if (!len) len = strlen (str);
+
+	/* the string can only shrink, so we can perform this in place */
+for (idx=pos=0; idx < len ; idx += ret) {
+	ret = eat_utf8 ((unsigned char*) str+idx, len-pos, &val);
+	if (ret == 0) break;
+	else if (ret < 0) { ret=1; str[pos++] = str[idx]; } /* does not fit, this should never happen */
+	/* else if (ret==1)  { str[pos++] = val; } normal character */
+	else	{ str[pos++] = val; } /* we consumed ret characters, but only produced one */
+	}
+str[pos] = 0;
+return str;
+}
+
+STATIC size_t cp_utf2latin(char *dst, char * src, size_t len)
+{
+unsigned idx,pos;
+int ret;
+unsigned val;
+
+if (!len) len = strlen (src);
+
+	/* the string can only shrink, so we can perform this in place */
+for (idx=pos=0; idx < len ; idx += ret) {
+	ret = eat_utf8 ((unsigned char*) src+idx, len-pos, &val);
+	if (ret == 0) break;
+	else if (ret < 0) { ret=1; dst[pos++] = src[idx]; } /* does not fit, this should never happen */
+	/* else if (ret==1)  { dst[pos++] = val; } normal character */
+	else	{ dst[pos++] = val; } /* we consumed ret characters, but only produced one */
+	}
+dst[pos] = 0;
+return pos;
+}
+
+STATIC char * latin2utf(char * src, size_t len)
+{
+unsigned idx,pos;
+
+int ret;
+unsigned char *dst;
+
+if (!len) len = strlen (src);
+dst = malloc (2*len+1);
+
+for (idx=pos=0; src[idx] ;idx++ ) {
+	ret = cha_latin2utf8(dst+pos, ((unsigned char*)src)[idx] );
+	pos += ret;
+	}
+dst[pos] = 0;
+free (src);
+return (char*) dst;
+}
+
+STATIC unsigned cha_latin2utf8(unsigned char *dst, unsigned val)
+{
+if (val <  0x80)  { *dst = val; return 1; }
+else	{
+	/* all 11 bit codepoints (0x0 -- 0x7ff)
+  	** fit within a 2byte utf8 char
+  	** firstbyte = 110 +xxxxx := 0xc0 + (char>>6) MSB
+  	** second    = 10 +xxxxxx := 0x80 + (char& 63) LSB
+  	*/
+	*dst++ = 0xc0 | ((val >>6) & 0x1f); /* 3+5 bits */
+	*dst++ = 0x80 | ((val) & 0x3f); /* 2+6 bits */
+	}
+return 2;
+}
+
+STATIC int eat_utf8(unsigned char *str, unsigned len, unsigned *target)
+{
+unsigned val = 0;
+unsigned todo;
+
+if (!len) return 0;
+
+val = str[0];
+if ((val & 0x80) == 0x00) { *target = val; return 1; }
+else if ((val & 0xe0) == 0xc0) { val &= 0x1f; todo = 1; }
+else if ((val & 0xf0) == 0xe0) { val &= 0x0f; todo = 2; }
+else if ((val & 0xf8) == 0xf0) { val &= 0x07; todo = 3; }
+else if ((val & 0xfc) == 0xf8) { val &= 0x03; todo = 4; }
+else if ((val & 0xfe) == 0xfc) { val &= 0x01; todo = 5; }
+else {*target = val; return 1; } /* Default (Not in the spec) */
+
+/* fprintf(stderr, "[val=%x, todo=%d]", val, todo); */
+
+len--;str++;
+if (todo > len) { return -todo; }
+
+for(len=todo;todo--;) {
+	val <<= 6;
+	val |= *str++ & 0x3f;
+	}
+
+*target = val;
+return  1+ len;
+}
+
+STATIC size_t hexdump_string(char *buff, STRING string)
+{
+unsigned idx;
+int type = 0;
+int state = 0;
+for (idx = 0; idx <  string.length; idx++) {
+	unsigned val, cha;
+	cha = 0xff & string.word[idx] ;
+	sprintf(buff+3*idx, " %02x", 0xff & cha );
+	switch(state) {
+	case 0: 
+		if (!(cha & 0x80)) continue;
+		else if ((cha & 0xe0) == 0xc0) { state = 1; val = cha & 0x1f ; continue; }
+		else if ((cha & 0xf0) == 0xe0) { state = 2; val = cha & 0x0f ; continue; }
+		else if ((cha & 0xf8) == 0xf0) { state = 3; val = cha & 0x07 ; continue; }
+		else if ((cha & 0xfc) == 0xf8) { state = 4; val = cha & 0x13 ; continue; }
+		else if ((cha & 0xfe) == 0xfc) { state = 5; val = cha & 0x11 ; continue; }
+		else { type |= 1; continue; }
+	case 1: 
+		if (((cha & 0xc0) != 0x80) ) type |= 1;
+		else {
+			type |= 2;
+			val <<= 6; val |= cha&0x3f; state--;
+			if (val >=256) type |= 1;
+			}
+		break;
+	case 2: 
+	case 3: 
+	case 4: 
+	case 5: 
+		if (((cha & 0xc0) != 0x80) ) type |= 1;
+		val <<= 6; val |= cha&0x3f; state--;
+		break;
+		}
+
+	}
+sprintf (buff+3*idx, " =%d", type);
+return 3*idx;
+}
+
+STATIC size_t decode_word(char * buff, STRING str, int type )
+{
+size_t ret;
+
+switch (type) {
+case 0: memcpy( buff, str.word, ret = str.length); break;
+case 1: memcpy( buff, str.word, ret = str.length);break;
+case 2: ret = cp_utf2latin(buff, str.word, str.length); break;
+case 3: memcpy( buff, str.word, ret = str.length); break;
+default: ret = sprintf( buff, "SomType=%d", type); break;
+	}
+buff[ ret] = 0;
+return ret;
+}
 /* Eof */
