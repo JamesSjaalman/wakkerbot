@@ -295,8 +295,8 @@
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
+#define STATIC static
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 
@@ -427,7 +427,6 @@
 
 	/* Don't maintain the hashtable for the sequential dict (misused as an array) to store the reply */
 #define WANT_FLAT_NOFUSS 0
-
 #define SCRUTINIZE_U2L 1
 #define SCRUTINIZE_L2U 2
 #define SCRUTINIZE_INPUT 0
@@ -727,7 +726,7 @@ STATIC void update_model(MODEL *model, WordNum symbol);
 STATIC bool warn(char *, char *, ...);
 STATIC int wordcmp(STRING one, STRING two);
 STATIC bool word_exists(DICT *, STRING);
-STATIC unsigned int urnd(unsigned int range);
+unsigned int urnd(unsigned int range);
 
 STATIC HashVal hash_mem(void *dat, size_t len);
 STATIC WordNum * dict_hnd(DICT *dict, STRING word);
@@ -775,7 +774,7 @@ double word_weight(DICT *dict, STRING word);
 double symbol_weight(DICT *dict, WordNum symbol);
 STATIC void dump_word(FILE *fp, STRING word);
 STATIC void schrink_keywords(DICT *words, unsigned newsize);
-STATIC char * scrutinize(char * src, int mode);
+STATIC char * scrutinize_string(char * src, int mode);
 STATIC char * utf2latin(char * src, size_t len);
 STATIC char * latin2utf(char * src, size_t len);
 STATIC size_t cp_utf2latin(char *dst, char * src, size_t len);
@@ -1213,8 +1212,8 @@ STATIC char *read_input(char *prompt)
     /*
      *		We have finished, so return the input string.
      */
-	/* scrutinize may or may not reallocate the output string, but we don't care */
-    input = scrutinize (input, SCRUTINIZE_INPUT);
+	/* scrutinize_string may or may not reallocate the output string, but we don't care */
+    input = scrutinize_string (input, SCRUTINIZE_INPUT);
     return input;
 }
 
@@ -2557,6 +2556,10 @@ STATIC void learn_from_input(MODEL *model, DICT *words)
 	 */
 	symbol = add_word_dodup(model->dict, words->entry[widx].string );
 	update_model(model, symbol);
+#if WANT_TIMESTAMPED_NODES
+        /* if (symbol <= 1 || !myisalnum(words->entry[widx].string.word[0])) stamp_max++; */
+        if (widx % 100 == 99)  stamp_max++;
+#endif
     }
     /*
      *		Add the sentence-terminating symbol.
@@ -3401,6 +3404,22 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
     do {
 	replywords = one_reply(model, keywords);
 	if (replywords->size < MIN_REPLY_SIZE) continue;
+#if 1
+{ unsigned widx;
+
+    widx = replywords->size;
+    if (widx) {
+        WordNum symbol;
+        TREE *node;
+	symbol = find_word(model->dict, replywords->entry[0].string);
+        node = find_symbol(model->forward, symbol);
+        if (!node) continue;
+	symbol = find_word(model->dict, replywords->entry[widx-1].string);
+        node = find_symbol(model->backward, symbol);
+        if (!node) continue;
+	}
+}
+#endif
 	surprise = evaluate_reply(model, keywords, replywords);
 	count++;
 	if (surprise > max_surprise && dissimilar(words, replywords) ) {
@@ -3492,7 +3511,8 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
         if (symbol >= model->dict->size) continue;
 
 		/* we may or may not like frequent words */
-        if (model->dict->entry[symbol].stats.whits > model->dict->stats.whits / model->dict->stats.nonzero ) continue;
+        // if (model->dict->entry[symbol].stats.whits > model->dict->stats.whits / model->dict->stats.nonzero ) continue;
+	if (symbol_weight(model->dict, symbol) < 1.0) continue;
 #if CROSS_DICT_SIZE
 	{
 	unsigned other;
@@ -3875,11 +3895,26 @@ update2:
     if (totcount >= 3) entropy /= sqrt(totcount-1); 
     if (totcount >= 7) entropy /= totcount;
 
-	/* extra penalty for sentences that don't start with a capitalized letter */
+	/* extra penalty for sentences that don't start at <END> or don't stop at <END> */
     widx = sentence->size;
-    if (widx && sentence->entry[0].string.length 
-	&& ( myislower( sentence->entry[0].string.word[ 0 ] )
-	 || ! myisalnum( sentence->entry[0].string.word[ 0 ] )) ) entropy /= 2;
+#if 0
+    if (widx) {
+	symbol = find_word(model->dict, sentence->entry[0].string);
+        node = find_symbol(model->forward, symbol);
+        if (!node) entropy /= 2;
+	symbol = find_word(model->dict, sentence->entry[widx-1].string);
+        node = find_symbol(model->backward, symbol);
+        if (!node) entropy /= 2;
+	}
+#endif
+	/* extra penalty for sentences that don't start with a capitalized letter */
+    if (widx 
+	&& sentence->entry[0].string.length && ( myislower( sentence->entry[0].string.word[ 0 ] ) || ! myisalnum( sentence->entry[0].string.word[ 0 ] ))
+        ) entropy /= 2;
+	/* Avoid ALLCAPS for the first word */
+    if (widx 
+	&& sentence->entry[0].string.length> 1 && ( myisupper( sentence->entry[0].string.word[ 1 ] ) || ! myisalnum( sentence->entry[0].string.word[ 1 ] ))
+        ) entropy /= 2;
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
     if (widx-- && sentence->entry[widx].string.length 
@@ -4031,8 +4066,8 @@ STATIC char *make_output(DICT *words)
 #undef IS_DOUBLE
 #undef IS_HYPHEN
 #endif
-	/* scrutinize may or may not reallocate the output string, but we don't care */
-    output = scrutinize (output, SCRUTINIZE_OUTPUT);
+	/* scrutinize_string may or may not reallocate the output string, but we don't care */
+    output = scrutinize_string (output, SCRUTINIZE_OUTPUT);
     return output;
 }
 
@@ -4383,7 +4418,7 @@ void die(int sig)
  *
  *		Purpose:		Return a random integer between 0 and range-1.
  */
-STATIC unsigned int urnd(unsigned int range)
+unsigned int urnd(unsigned int range)
 {
     static bool flag = FALSE;
 
@@ -5120,9 +5155,8 @@ else if (sym >= glob_dict->size) return sprintf(buff, "<%u>", sym );
 else return word_format(buff, glob_dict->entry[sym].string );
 }
 #endif
-/* Eof */
 
-STATIC char * scrutinize(char * src, int mode)
+STATIC char * scrutinize_string(char * src, int mode)
 {
 switch (mode) {
 case SCRUTINIZE_U2L : return utf2latin(src, 0);
@@ -5160,7 +5194,6 @@ unsigned val;
 
 if (!len) len = strlen (src);
 
-	/* the string can only shrink, so we can perform this in place */
 for (idx=pos=0; idx < len ; idx += ret) {
 	ret = eat_utf8 ((unsigned char*) src+idx, len-pos, &val);
 	if (ret == 0) break;
@@ -5180,6 +5213,7 @@ int ret;
 unsigned char *dst;
 
 if (!len) len = strlen (src);
+	/* the string can expand; we are pessimistic and allocate twice the original size */
 dst = malloc (2*len+1);
 
 for (idx=pos=0; src[idx] ;idx++ ) {
@@ -5285,7 +5319,7 @@ case 0: memcpy( buff, str.word, ret = str.length); break;
 case 1: memcpy( buff, str.word, ret = str.length);break;
 case 2: ret = cp_utf2latin(buff, str.word, str.length); break;
 case 3: memcpy( buff, str.word, ret = str.length); break;
-default: ret = sprintf( buff, "SomType=%d", type); break;
+default: ret = sprintf( buff, "SomeType=%d", type); break;
 	}
 buff[ ret] = 0;
 return ret;
