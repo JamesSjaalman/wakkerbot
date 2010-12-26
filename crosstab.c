@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <math.h>
+
 #undef NDEBUG
 #include <assert.h>
 
@@ -25,6 +26,7 @@ static unsigned int cross_find_slot(struct crosstab *ptr,unsigned int num);
 static unsigned int cross_alloc_slot(struct crosstab *ptr);
 static unsigned int *crosstab_hnd(struct crosstab *ptr, unsigned int key);
 static double crosstab_value(struct crosstab *ptr,unsigned slot);
+static void crosstab_bin_dump(struct crosstab *ptr);
 
 static void row_format_slots(struct crossrow *tab, unsigned int cnt);
 static void crosstab_reclaim(struct crosstab * ptr, unsigned int newsize);
@@ -188,12 +190,12 @@ for (xy=0; xy < ptr->msize; xy++ ) {
 return ;
 }
 
-void crosstab_add_pair(struct crosstab *ptr,unsigned int one, unsigned int two)
+void crosstab_add_pair(struct crosstab *ptr,unsigned int one, unsigned int two, unsigned int val)
 {
 unsigned int zzz,xxx,yyy;
 
 #if SHOW_CALLS
-fprintf(stderr, "add_pair(%p,%u,%u)\n", (void*) ptr, one, two );
+fprintf(stderr, "add_pair(%p,%u,%u,%u)\n", (void*) ptr, one, two, val );
 #endif
 xxx = cross_find_slot(ptr,one); 
 yyy = cross_find_slot(ptr,two); 
@@ -210,10 +212,10 @@ if (ptr->matrix[zzz] == 0) {
 	if (xxx != yyy) ptr->table[yyy].payload.uniq += 1;
 	}
 
-ptr->matrix[zzz] += 1;
-ptr->table[xxx].payload.sum += 1;
-ptr->total.sum += 1;
-if (yyy != xxx) { ptr->table[yyy].payload.sum += 1; }
+ptr->matrix[zzz] += val;
+ptr->table[xxx].payload.sum += val;
+ptr->total.sum += val;
+if (yyy != xxx) { ptr->table[yyy].payload.sum += val; }
 
 return;
 }
@@ -650,7 +652,10 @@ unsigned int slot,idx;
 double value;
 char buff [500];
 
+	/* do poswer-iteration and reshuffle index */
 crosstab_recalc(ptr);
+index_doubles(ptr->index, ptr->scores, ptr->msize);
+
 fprintf(fp, "\n[%4u]:        |%6u/%3u| %6.3f | weight |\n"
 	, ptr->freelist!=IDX_NIL? ptr->freelist:9999, ptr->total.sum,ptr->total.uniq,  ptr->score );
 fprintf(fp, "------|--------+----------+--------+--------+\n" );
@@ -666,6 +671,7 @@ for (idx=0; idx < ptr->msize; idx++ ) {
 	else buff[0] = 0;
 	fprintf(fp, "%s\n", buff );
 	}
+crosstab_bin_dump(ptr);
 }
 
 double iterding(double *vec, unsigned int *mx, unsigned int cnt)
@@ -836,4 +842,78 @@ for (start = 0 ; start < cnt; start++) {
 	}
 return count;
 }
+
+static void crosstab_bin_dump(struct crosstab *ptr)
+{
+FILE *fp;
+unsigned int idx0,idx1,zzz,cnt;
+struct dmprec {
+	unsigned key0;
+	unsigned key1;
+	unsigned uniq;
+	unsigned sum;
+	} record;
+
+fp = fopen("crosstab.dmp", "a+" );
+/* crosstab_recalc(ptr); */
+record.key0= IDX_NIL;
+record.key1= IDX_NIL;
+record.uniq = ptr->total.uniq;
+record.sum = ptr->total.sum;
+fwrite(&record, sizeof record, 1, fp);
+
+for (idx0=0; idx0 < ptr->msize; idx0++ ) {
+	if (ptr->table[idx0].hash.key == IDX_NIL) continue;
+	record.key0 = ptr->table[idx0].hash.key;
+	record.key1 = IDX_NIL;
+	record.uniq = ptr->table[idx0].payload.uniq ;
+	record.sum = ptr->table[idx0].payload.sum ;
+	fwrite(&record, sizeof record, 1, fp);
+	for (cnt=0,idx1=idx0; idx1 < ptr->msize; idx1++ ) {
+		if (ptr->table[idx1].hash.key == IDX_NIL) continue;
+		record.key1 = ptr->table[idx1].hash.key;
+		zzz = XY2ZZ(idx0,idx1);
+		if (ptr->matrix[zzz] ==0) continue;
+		record.sum = ptr->matrix[zzz];
+		record.uniq = cnt++;
+		fwrite(&record, sizeof record, 1, fp);
+		}
+	}
+fclose (fp);
+}
+
+unsigned crosstab_bin_load(struct crosstab *ptr, char *name)
+{
+FILE *fp;
+unsigned int cnt,sum;
+struct dmprec {
+	unsigned key0;
+	unsigned key1;
+	unsigned uniq;
+	unsigned sum;
+	} master,detail;
+
+fp = fopen(name, "rb" );
+/* crosstab_recalc(ptr); */
+fprintf(stderr,"Load(%s) :=%p\n", name, (void*) fp);
+
+fread(&master, sizeof master, 1, fp);
+
+for (sum=cnt=0; ;  ) {
+	fread(&detail, sizeof detail, 1, fp);
+	if (fread(&detail, sizeof detail, 1, fp) <1) break;
+	if (detail.key0 == IDX_NIL) continue;
+	if (detail.key1 == IDX_NIL) continue;
+	if (detail.sum == 0) continue;
+	/* if (cnt >= ptr->msize-2) crosstab_resize (ptr, ptr->msize? 2*ptr->msize: 16 ); */
+	crosstab_add_pair(ptr, detail.key0,  detail.key1, detail.sum);
+	sum += detail.sum;
+	cnt += 1;
+	}
+fclose (fp);
+fprintf(stderr,"Master=%u/%u; Sum=%u Cnt=%u\n"
+	, master.sum, master.uniq, sum, cnt);
+return cnt;
+}
+
 /* Eof */
