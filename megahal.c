@@ -345,7 +345,7 @@
 	** To avoid unbounded growth, random rows of the matrix have their values decremented
 	** randomly, on a periodic basis.
 	*/
-#define CROSS_DICT_SIZE 41
+#define CROSS_DICT_SIZE 31
 #define CROSS_DICT_WORD_DISTANCE 10
 
 	/* Maintain and use weights on the keywords */
@@ -712,7 +712,7 @@ STATIC bool print_header(FILE *);
 bool progress(char *message, unsigned long done, unsigned long todo);
 STATIC DICT *one_reply(MODEL *, DICT *);
 STATIC void save_dict(FILE *, DICT *);
-STATIC void save_tree(FILE *, TREE *);
+STATIC unsigned save_tree(FILE *, TREE *);
 STATIC void save_word(FILE *, STRING);
 STATIC WordNum seed(MODEL *, DICT *);
 
@@ -2558,7 +2558,7 @@ STATIC void learn_from_input(MODEL *model, DICT *words)
 	update_model(model, symbol);
 #if WANT_TIMESTAMPED_NODES
         /* if (symbol <= 1 || !myisalnum(words->entry[widx].string.word[0])) stamp_max++; */
-        if (widx % 100 == 99)  stamp_max++;
+        if (widx % 256 == 255)  stamp_max++;
 #endif
     }
     /*
@@ -2725,6 +2725,7 @@ STATIC void save_model(char *modelname, MODEL *model)
 {
     FILE *fp;
     static char *filename = NULL;
+    unsigned forw,back;
 
     filename = realloc(filename, strlen(glob_directory)+strlen(SEP)+12);
     if (!filename) error("save_model","Unable to allocate filename");
@@ -2742,11 +2743,12 @@ STATIC void save_model(char *modelname, MODEL *model)
     memstats.word_cnt = 0;
     fwrite(COOKIE, sizeof(char), strlen(COOKIE), fp);
     fwrite(&model->order, sizeof model->order, 1, fp);
-    save_tree(fp, model->forward);
-    save_tree(fp, model->backward);
+    forw = save_tree(fp, model->forward);
+    back = save_tree(fp, model->backward);
     save_dict(fp, model->dict);
-    status("Saved %lu nodes, %u words.\n", memstats.node_cnt,memstats.word_cnt);
-
+    status("Saved %lu(%lu+%lu) nodes, %u words.\n"
+	, memstats.node_cnt, forw, back
+	,memstats.word_cnt);
     fclose(fp);
 }
 
@@ -2757,10 +2759,11 @@ STATIC void save_model(char *modelname, MODEL *model)
  *
  *		Purpose:		Save a tree structure to the specified file.
  */
-STATIC void save_tree(FILE *fp, TREE *node)
+STATIC unsigned save_tree(FILE *fp, TREE *node)
 {
     static int level = 0;
     unsigned int ikid;
+    unsigned count = 1;
 
     fwrite(&node->symbol, sizeof node->symbol, 1, fp);
     fwrite(&node->usage, sizeof node->usage, 1, fp);
@@ -2773,11 +2776,12 @@ STATIC void save_tree(FILE *fp, TREE *node)
     if (level == 0) progress("Saving tree", 0, 1);
     for(ikid = 0; ikid < node->branch; ikid++) {
 	level++;
-	save_tree(fp, node->children[ikid].ptr );
+	count += save_tree(fp, node->children[ikid].ptr );
 	level--;
 	if (level == 0) progress(NULL, ikid, node->branch);
     }
     if (level == 0) progress(NULL, 1, 1);
+    return count;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3404,7 +3408,7 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
     do {
 	replywords = one_reply(model, keywords);
 	if (replywords->size < MIN_REPLY_SIZE) continue;
-#if 1
+#if 0
 { unsigned widx;
 
     widx = replywords->size;
@@ -3520,7 +3524,7 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 		if (symbol < 2 || symbol >= model->dict->size
 		|| echobox[other] < 2 || echobox[other] >= model->dict->size ) fprintf(stderr, "[? %u, %u[%u/%u]]\n"
 			, symbol,echobox[other], other, echocount);
-		else crosstab_add_pair( glob_crosstab, echobox[other] , symbol );
+		else crosstab_add_pair( glob_crosstab, echobox[other] , symbol, 1 );
 		}
 	if (echocount < COUNTOF(echobox)) echocount++;
 	echobox[rotor++] = symbol;
@@ -3918,7 +3922,8 @@ update2:
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
     if (widx-- && sentence->entry[widx].string.length 
-	&& !strchr(".!?", sentence->entry[widx].string.word[ sentence->entry[widx].string.length-1] )) entropy /= 2;
+	&& !strchr(".!?", sentence->entry[widx].string.word[ sentence->entry[widx].string.length-1] )
+	) entropy /= 2;
     return entropy;
 }
 
@@ -4965,7 +4970,8 @@ STATIC unsigned model_alzheimer(MODEL * model, unsigned maxnodecount)
 Stamp limit;
 unsigned step, width;
 unsigned count, totcount;
-static double dens = 0.0;
+static double density = 0.0;
+static unsigned direction = 0;
 int rc;
 
 if (!model || ! maxnodecount) return 0;
@@ -4976,81 +4982,92 @@ alz_dict = model->dict;
 
 alz_file = fopen ("alzheimer.dmp", "a" );
 
-	/* dens is an estimate of the amount of nodes we expect to reap per timestamp
+if (!direction) direction = urnd(stamp_max);
+
+	/* density is an estimate of the amount of nodes we expect to reap per timestamp
 	** step is our estimate for the number of steps we need to add to stamp_min to harvest
 	** the intended amount of nodes. (= bring down memstats.node_cnt to maxnodecount)
 	*/
-if (dens == 0.0) {
+if (density == 0.0) {
 	width = (unsigned)(stamp_max-stamp_min);
 	if (width < 2) return 0;
-	dens = (double)memstats.node_cnt / width ;
+	density = (double)memstats.node_cnt / width ;
 	}
 
 for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
     width = stamp_max-stamp_min;
-    step = (memstats.node_cnt - maxnodecount) / dens;
+    step = (memstats.node_cnt - maxnodecount) / density;
     if (!step) step = width / 100;
     while (step && step > width/10) step /= 2;
-    if (!step) step = 2;
+    if (!step) step = 1;
     limit = stamp_min + step;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-    fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f Step=%u Limit=%u\n"
+    fprintf(stderr, "Model_alzheimer(%u:%s) NodeCount=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f Step=%u Limit=%u\n"
+	, direction, (direction%2) ? "Backward" : "Forward"
 	    , (unsigned)memstats.node_cnt, (unsigned)maxnodecount
 	    , (unsigned)stamp_min, (unsigned)stamp_max
-            , (unsigned)width, dens, step, (unsigned)limit);
+            , (unsigned)width, density, step, (unsigned)limit);
 #endif
 
-    fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f Step=%u Limit=%u\n"
+    fprintf(alz_file, "Model_alzheimer(%u:%s) NodeCount=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f Step=%u Limit=%u\n"
+	, direction, (direction%2) ? "Backward" : "Forward"
 	    , (unsigned)memstats.node_cnt, (unsigned)maxnodecount
 	    , (unsigned)stamp_min, (unsigned)stamp_max
-            , (unsigned)width, dens, step, (unsigned)limit);
+            , (unsigned)width, density, step, (unsigned)limit);
 
     rc = check_interval(stamp_min, stamp_max, limit);
     if (rc) { /* outside interval */
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-	    fprintf(stderr, "Model_alzheimer() outside interval Rc=%d Ajuus!\n", rc);
+	    fprintf(stderr, "Model_alzheimer(%u:%s) outside interval Rc=%d Ajuus!\n"
+		, direction, (direction%2) ? "Backward" : "Forward", rc);
 #endif
-	    fprintf(alz_file, "Model_alzheimer() outside interval Rc=%d Ajuus!\n", rc);
+	    fprintf(alz_file, "Model_alzheimer(%u:%s) outside interval Rc=%d Ajuus!\n"
+		, direction, (direction%2) ? "Backward" : "Forward", rc);
+            direction++;
 	    if (width < 2) goto ajuus;
-	    dens = (double)memstats.node_cnt / width;
+	    density = (double)memstats.node_cnt / width;
             continue;
 	    }
 
-    count = symbol_alzheimer_recurse(model->forward, 0, limit);
+    switch(direction % 2) {
+    case 0:
+        count = symbol_alzheimer_recurse(model->forward, 0, limit);
+        break;
+    case 1:
+        count = symbol_alzheimer_recurse(model->backward, 0, limit);
+        break;
+	}
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-    fprintf(stderr, "symbol_alzheimer_recursed(forward) := %u\n", count);
+    fprintf(stderr, "symbol_alzheimer_after(%u:%s) := %u\n"
+	, direction, (direction%2) ? "Backward" : "Forward" , count);
 #endif
     totcount += count;
 
-    count = symbol_alzheimer_recurse(model->backward, 0, limit);
-#if WANT_DUMP_ALZHEIMER_PROGRESS
-    fprintf(stderr, "symbol_alzheimer_recursed(backward) := %u\n", count);
-#endif
-    totcount += count;
-
-    stamp_min = limit;
 	/*
 	** adjust running average of density.
 	**  If nothing is harvested, increase the stepsize by lowering the density estimate.
 	**  0.8 might overshoot.  maybe 0.9...0.95 is better, but that may take too many iterations.
-	** NOTE: we only use the count for the backward tree, and assume the same yield from the
-	** forward tree.
 	*/
-    if (count) { dens += 2.0* count / step; dens /= 2; }
-    else dens *= 0.8;
+    if (count) { density *= 2; density += 1.0 * count / step; density /= 3; }
+    else density *= 0.8;
+
+    stamp_min = limit;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-    fprintf(stderr, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f\n"
+    fprintf(stderr, "Model_alzheimer(%u:%s) (after) Count=%u/%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f\n"
+	, direction, (direction%2) ? "Backward" : "Forward" , count
 	    , (unsigned)memstats.node_cnt, (unsigned)maxnodecount
-	    , (unsigned)stamp_min, (unsigned)stamp_max,(unsigned)(stamp_max-stamp_min), dens);
+	    , (unsigned)stamp_min, (unsigned)stamp_max,(unsigned)(stamp_max-stamp_min), density);
 #endif
 
-    fprintf(alz_file, "Model_alzheimer() Count=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f\n"
+    fprintf(alz_file, "Model_alzheimer(%u:%s) (after) Count=%u/%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f\n"
+	, direction, (direction%2) ? "Backward" : "Forward" , count
 	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODE_COUNT
-	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)(stamp_max-stamp_min), dens);
-	/* Avoid the next iteration to overshoot (we expect to harvest 2*count) */
-    if (memstats.node_cnt <= maxnodecount+count) break;
+	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)(stamp_max-stamp_min), density);
+	/* Avoid the next iteration to overshoot (we expect to harvest count) */
+    direction++;
+    if (memstats.node_cnt <= maxnodecount+count/2) break;
     }
 
 ajuus:
