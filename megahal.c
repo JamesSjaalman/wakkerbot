@@ -293,6 +293,7 @@
 #define DEFAULT_TIMEOUT 10
 #define DEFAULT_DIR "."
 #define MY_NAME "MegaHAL"
+#define MY_NAME "FaberV2.0"
 #define MY_NAME "PlasBot"
 
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
@@ -563,7 +564,7 @@ typedef struct {
 
 static char *errorfilename = "megahal.log";
 static char *statusfilename = "megahal.txt";
-static int glob_width = 75;
+static int glob_width = 45;
 static int glob_order = 5;
 static int glob_timeout = DEFAULT_TIMEOUT;
 
@@ -2558,7 +2559,7 @@ STATIC void learn_from_input(MODEL *model, DICT *words)
 	update_model(model, symbol);
 #if WANT_TIMESTAMPED_NODES
         /* if (symbol <= 1 || !myisalnum(words->entry[widx].string.word[0])) stamp_max++; */
-        if (widx % 256 == 255)  stamp_max++;
+        if (widx % 64 == 63)  stamp_max++;
 #endif
     }
     /*
@@ -5049,7 +5050,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
 	**  If nothing is harvested, increase the stepsize by lowering the density estimate.
 	**  0.8 might overshoot.  maybe 0.9...0.95 is better, but that may take too many iterations.
 	*/
-    if (count) { density *= 2; density += 1.0 * count / step; density /= 3; }
+    if (count) { density = (1* density + (1.0 * count / step)) / 2; }
     else density *= 0.8;
 
     stamp_min = limit;
