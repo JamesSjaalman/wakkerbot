@@ -465,6 +465,7 @@ typedef enum { FALSE, TRUE } bool;
 #endif
 
 typedef unsigned char StrLen;
+typedef unsigned char StrType;
 typedef unsigned int WordNum;
 typedef unsigned int ChildIndex;
 typedef unsigned int DictSize;
@@ -483,6 +484,7 @@ BigThing rdtsc_rand(void);
 
 typedef struct {
     StrLen length;
+    StrType type;
     char *word;
 } STRING;
 
@@ -602,20 +604,20 @@ static Stamp stamp_min = 0xffffffff, stamp_max=0;
 #endif
 
 static COMMAND commands[] = {
-    { { 4, "QUIT" }, "quits the program and saves MegaHAL's brain", QUIT },
-    { { 4, "EXIT" }, "exits the program *without* saving MegaHAL's brain", EXIT },
-    { { 4, "SAVE" }, "saves the current MegaHAL brain", SAVE },
-    { { 5, "DELAY" }, "toggles MegaHAL's typing delay (off by default)", DELAY },
-    { { 6, "SPEECH" }, "toggles MegaHAL's speech (off by default)", SPEECH },
-    { { 6, "VOICES" }, "list available voices for speech", VOICELIST },
-    { { 5, "VOICE" }, "switches to voice specified", VOICE },
-    { { 5, "BRAIN" }, "change to another MegaHAL personality", BRAIN },
-    { { 4, "HELP" }, "displays this message", HELP },
-    { { 5, "QUIET" }, "toggles MegaHAL's responses (on by default)",QUIET},
+    { { 4,0, "QUIT" }, "quits the program and saves MegaHAL's brain", QUIT },
+    { { 4,0, "EXIT" }, "exits the program *without* saving MegaHAL's brain", EXIT },
+    { { 4,0, "SAVE" }, "saves the current MegaHAL brain", SAVE },
+    { { 5,0, "DELAY" }, "toggles MegaHAL's typing delay (off by default)", DELAY },
+    { { 6,0, "SPEECH" }, "toggles MegaHAL's speech (off by default)", SPEECH },
+    { { 6,0, "VOICES" }, "list available voices for speech", VOICELIST },
+    { { 5,0, "VOICE" }, "switches to voice specified", VOICE },
+    { { 5,0, "BRAIN" }, "change to another MegaHAL personality", BRAIN },
+    { { 4,0, "HELP" }, "displays this message", HELP },
+    { { 5,0, "QUIET" }, "toggles MegaHAL's responses (on by default)",QUIET},
     /*
-      { { 5, "STATS" }, "Display stats", STATS},
-      { { 5, "STATS-SESSION" }, "Display stats for this session only",STATS_SESSION},
-      { { 5, "STATS-ALL" },"Display stats for the whole lifetime",STATS-ALL},
+      { { 5,0, "STATS" }, "Display stats", STATS},
+      { { 5,0, "STATS-SESSION" }, "Display stats for this session only",STATS_SESSION},
+      { { 5,0, "STATS-ALL" },"Display stats for the whole lifetime",STATS-ALL},
 	*/
 };
 
@@ -753,6 +755,15 @@ STATIC int dont_need_white_l(STRING string);
 STATIC int dont_need_white_r(STRING string);
 STATIC int word_is_allcaps(STRING string);
 STATIC int word_has_highbit(STRING string);
+STATIC int word_classify(STRING org);
+#define WORD_LOWER 1
+#define WORD_UPPER 2
+#define WORD_INITCAPS 3
+#define WORD_MIXED 4
+#define WORD_AFKO 5
+#define WORD_NUMBER 6
+#define WORD_PUNCT 7
+#define WORD_MISC 8
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
 STATIC void del_word_dofree(DICT *dict, STRING word);
@@ -773,6 +784,12 @@ STATIC void show_memstat(char *msg);
 STATIC STRING word_dup_othercase(STRING org);
 double word_weight(DICT *dict, STRING word);
 double symbol_weight(DICT *dict, WordNum symbol);
+double init_val_fwd= 1.0;
+double init_val_rev= 1.0;
+int init_typ_fwd= 0.0;
+double start_penalty(MODEL *model, STRING word);
+double end_penalty(MODEL *model, STRING word);
+
 STATIC void dump_word(FILE *fp, STRING word);
 STATIC void schrink_keywords(DICT *words, unsigned newsize);
 STATIC char * scrutinize_string(char * src, int mode);
@@ -1370,10 +1387,10 @@ STATIC void log_output(char *output)
     /* capitalize(output);*/
     speak(output);
 
-    glob_width = 75;
-    formatted = format_output(output);
-    delay(formatted);
-    glob_width = 64;
+    // glob_width = 75;
+    // formatted = format_output(output);
+    // delay(formatted);
+    // glob_width = 64;
     formatted = format_output(output);
 
     bit = strtok(formatted, "\n");
@@ -1566,6 +1583,7 @@ if (*np == WORD_NIL) {
 	STRING this;
 	*np = dict->size++;
 	this = new_string(word.word, word.length);
+	this.type = word_classify(this);
 	dict->entry[*np].string = this;
 	dict->entry[*np].hash = hash_word(this);
 	}
@@ -1673,10 +1691,12 @@ if (str) {
      if (len) { this.word = malloc(len); memcpy(this.word, str, len); }
      else { this.word = malloc(1); memset(this.word, 0, 1); }
      this.length = len;
+     this.type = 0;
      }
 else	{
      this.word = NULL;
      this.length = 0;
+     this.type = 0;
      }
 return this;
 }
@@ -1775,8 +1795,8 @@ STATIC void initialize_dict(DICT *dict)
 /* NOTE: The constants 0 AND 1 refering to thes two array elements
 ** are hardcoded at a few places in the source..
 */
-    static STRING word = {7, "<ERROR>" };
-    static STRING end = {5, "<FIN>" };
+    static STRING word = {7,0, "<ERROR>" };
+    static STRING end = {5,0, "<FIN>" };
 
     dict->stats.whits = 0;
     dict->stats.nhits = 0;
@@ -1967,7 +1987,7 @@ STATIC void save_word(FILE *fp, STRING word)
 STATIC void load_word(FILE *fp, DICT *dict)
 {
     static char zzz[256];
-    static STRING word = {0,zzz};
+    static STRING word = {0,0,zzz};
     size_t kuttje;
 
     kuttje = fread(&word.length, sizeof word.length, 1, fp);
@@ -2162,7 +2182,7 @@ STATIC void dump_model_recursive(FILE *fp, TREE *tree, DICT *dict, int indent)
 {
 unsigned slot;
 WordNum sym;
-static STRING null = {0,""};
+static STRING null = {0,0,""};
 unsigned nhits=0,whits=0;
 STRING str;
 if (!tree) return;
@@ -2468,7 +2488,7 @@ double symbol_weight(DICT *dict, WordNum symbol)
 STRING alt;
 WordNum *np, altsym;
 
-if (!dict || !dict->size) return 0.0;
+if (!dict || symbol >= dict->size) return 0.0;
 
 alt = word_dup_othercase(dict->entry[symbol].string);
 np = dict_hnd(dict, alt);
@@ -2492,11 +2512,11 @@ if (altsym != symbol) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
 /*		, (double ) dict->entry[i].stats.nhits * dict->size / dict->stats.node */
 
 if (altsym==symbol) {
-        return ((double)dict->stats.whits / dict->stats.nonzero) /* used to be size */
+        return ((double)dict->stats.whits / dict->stats.nonzero)
 		/ (0.5 + dict->entry[symbol].stats.whits)
 		;
 } else {
-	return ((double)dict->stats.whits * 2 / dict->stats.nonzero) /* used to be size */
+	return ((double)dict->stats.whits * 2 / dict->stats.nonzero)
 		/ (0.5 + dict->entry[symbol].stats.whits + dict->entry[altsym].stats.whits)
 		;
 	}
@@ -2505,7 +2525,7 @@ if (altsym==symbol) {
 STATIC STRING word_dup_othercase(STRING org)
 {
 static char zzz[256];
-STRING new = {0,zzz};
+STRING new = {0,0,zzz};
 unsigned ii,chg;
 
 new.length = org.length;
@@ -2524,6 +2544,28 @@ if (!chg) for (chg=ii = 0; ii < org.length; ii++) { /* attempt all UPPERCASE */
 	else new.word[ii] = org.word[ii] ;
 	}
 return new;
+}
+
+STATIC int word_classify(STRING org)
+{
+unsigned ii;
+unsigned upper=0, lower=0,number=0,high=0,other=0, initcaps=0;
+
+for (ii = 0; ii < org.length; ii++) {
+	if (org.word[ii] >= 'A' && org.word[ii] <= 'Z' ) { upper++; if (!ii) initcaps++; }
+	else if (org.word[ii] >= 'a' && org.word[ii] <= 'z' ) lower++;
+	else if (org.word[ii] >= '0' && org.word[ii] <= '9' ) number++;
+	else if (org.word[ii] >= 0x80 ) high++;
+	else other++;
+	}
+if (lower == ii) return WORD_LOWER; /* pvda */
+if (lower+initcaps == ii) return WORD_INITCAPS; /* Pvda */
+if (upper == ii) return WORD_UPPER; /* PVDA */
+if (lower+upper == ii) return WORD_MIXED; /* PvdA */
+if (lower+upper+other == ii) return WORD_AFKO; /* P.v.d.A */
+if (other == ii) return WORD_PUNCT; /* ... */
+if (lower+upper+other+number == ii) return WORD_NUMBER; /* P.v.d.6 */
+return WORD_MISC;
 }
 
 /*
@@ -2918,7 +2960,7 @@ STATIC void make_words(char *input, DICT *words)
 {
     size_t len, pos, chunk;
     STRING word ; 
-    static STRING period = {1, "." }  ; 
+    static STRING period = {1,0, "." }  ; 
     int state = 0; /* FIXME: this could be made static to allow for multi-line strings */
 
     empty_dict(words);
@@ -3092,7 +3134,7 @@ STATIC void make_words(char *input, DICT *words)
     size_t offset = 0;
     size_t len = strlen(input);
     STRING word ; 
-    static STRING period = {1, "." }  ; 
+    static STRING period = {1,0, "." }  ; 
 
     /*
      *		Clear the entries in the dictionary
@@ -3402,7 +3444,7 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
      *		Loop for the specified waiting period, generating and evaluating
      *		replies
      */
-    max_surprise = -1.0;
+    max_surprise = -100.0;
     count = 0;
     basetime = time(NULL);
     progress("Generating reply", 0, 1); 
@@ -3430,7 +3472,7 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
 	if (surprise > max_surprise && dissimilar(words, replywords) ) {
 	    output = make_output(replywords);
 #if WANT_DUMP_ALL_REPLIES
-		fprintf(stderr, "\n%u %lf/%lf:\n\t%s\n", count, surprise, max_surprise, output);
+		fprintf(stderr, "\n%u %lf (Typ=%d Fwd=%lf Rev=%lf):\n\t%s\n", count, surprise, init_typ_fwd, init_val_fwd, init_val_rev, output);
 #endif
 	    max_surprise = surprise;
 	}
@@ -3806,14 +3848,16 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
     unsigned count, totcount = 0;
     TREE *node;
 
-    if (sentence->size == 0) return 0.0;
+    if (sentence->size == 0) return -100000.0;
+
     initialize_context(model);
     model->context[0] = model->forward;
+
     for (widx = 0; widx < sentence->size; widx++) {
 	symbol = find_word(model->dict, sentence->entry[widx].string );
-	ksymbol = find_word(keywords, sentence->entry[widx].string );
+	// ksymbol = find_word(keywords, sentence->entry[widx].string );
 
-	if (ksymbol == WORD_NIL) goto update1;
+	/* if (ksymbol == WORD_NIL) goto update1; */
 	probability = 0.0;
         count = 0;
         totcount++;
@@ -3829,7 +3873,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 
         if (!count ) goto update1;
         gfrac = symbol_weight(model->dict, symbol);
-        kfrac = symbol_weight(keywords, ksymbol);
+        // kfrac = symbol_weight(keywords, ksymbol);
 	efrac = crosstab_ask(glob_crosstab, symbol);
         /* weight = gfrac/kfrac; */
         weight = gfrac*efrac;
@@ -3863,11 +3907,12 @@ update1:
 
     initialize_context(model);
     model->context[0] = model->backward;
+
     for(widx = sentence->size; widx-- > 0; ) {
 	symbol = find_word(model->dict, sentence->entry[widx].string );
 
-	ksymbol = find_word(keywords, sentence->entry[widx].string );
-	if ( ksymbol == WORD_NIL) goto update2;
+	// ksymbol = find_word(keywords, sentence->entry[widx].string );
+	/* if ( ksymbol == WORD_NIL) goto update2; */
         probability = 0.0;
         count = 0;
         totcount++;
@@ -3883,7 +3928,7 @@ update1:
 
         if ( !count ) goto update2;
         gfrac = symbol_weight(model->dict, symbol);
-        kfrac = symbol_weight(keywords, ksymbol);
+        // kfrac = symbol_weight(keywords, ksymbol);
 	efrac = crosstab_ask(glob_crosstab, symbol);
         /* weight = gfrac/kfrac; */
         weight = gfrac*efrac;
@@ -3902,17 +3947,17 @@ update2:
 
 	/* extra penalty for sentences that don't start at <END> or don't stop at <END> */
     widx = sentence->size;
-#if 0
+#if 1
     if (widx) {
-	symbol = find_word(model->dict, sentence->entry[0].string);
-        node = find_symbol(model->forward, symbol);
-        if (!node) entropy /= 2;
-	symbol = find_word(model->dict, sentence->entry[widx-1].string);
-        node = find_symbol(model->backward, symbol);
-        if (!node) entropy /= 2;
+	init_val_fwd = start_penalty(model, sentence->entry[0].string);
+	init_val_rev = end_penalty(model, sentence->entry[widx-1].string );
+        if ( init_val_fwd != 0.0) entropy -= init_val_fwd;
+        if ( init_val_rev != 0.0) entropy -= init_val_rev;
 	}
 #endif
+
 	/* extra penalty for sentences that don't start with a capitalized letter */
+#if 0
     if (widx 
 	&& sentence->entry[0].string.length && ( myislower( sentence->entry[0].string.word[ 0 ] ) || ! myisalnum( sentence->entry[0].string.word[ 0 ] ))
         ) entropy /= 2;
@@ -3920,11 +3965,15 @@ update2:
     if (widx 
 	&& sentence->entry[0].string.length> 1 && ( myisupper( sentence->entry[0].string.word[ 1 ] ) || ! myisalnum( sentence->entry[0].string.word[ 1 ] ))
         ) entropy /= 2;
+#endif
+
+#if 0
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
     if (widx-- && sentence->entry[widx].string.length 
 	&& !strchr(".!?", sentence->entry[widx].string.word[ sentence->entry[widx].string.length-1] )
 	) entropy /= 2;
+#endif
     return entropy;
 }
 
@@ -4196,6 +4245,99 @@ STATIC WordNum seed(MODEL *model, DICT *keywords)
 }
 
 /*---------------------------------------------------------------------------*/
+double start_penalty(MODEL *model, STRING word)
+{
+WordNum symbol, altsym;
+STRING other;
+TREE *node=NULL, *onode=NULL;
+double penalty =999;
+
+if (!model || !model->forward || !model->dict) return -11.11;
+
+symbol = find_word(model->dict, word);
+init_typ_fwd = word.type;
+if (symbol <= WORD_ERR || symbol == WORD_NIL) {;}
+else	{
+	node = find_symbol(model->forward, symbol);
+	init_typ_fwd = model->dict->entry[symbol].string.type;
+	}
+altsym = find_word(model->dict, other);
+if (/* altsym <= WORD_ERR || */ altsym == WORD_NIL) {;}
+else	{
+	onode = find_symbol(model->forward, altsym);
+	}
+
+switch (init_typ_fwd) {
+case WORD_INITCAPS:
+	if (symbol == WORD_NIL) penalty = 100;
+	else if (!node) penalty = 10.0;
+	else if (altsym == WORD_NIL ) penalty = 5.0; /* there is no other: This might be a capitalised Name */
+	else if (!onode) penalty = 1.0; /* there is no other: This might be a capitalised Name */
+	else if (node && onode) penalty = ((1.0+onode->usage) / (1.0+node->usage+onode->usage));
+	else if (symbol != WORD_NIL && altsym != WORD_NIL) penalty = ((1.0 + model->dict->entry[altsym].stats.whits) 
+							/ ( 1.0+model->dict->entry[symbol].stats.whits) );
+	else penalty = 200.0;
+	break;
+case WORD_LOWER:
+case WORD_UPPER:
+case WORD_MISC:	/* Anything, including high ascii */
+case WORD_MIXED: /* mostly typos */
+	if (symbol == WORD_NIL) penalty = 100;
+	else if (!node) penalty = 10.0;
+	else if (altsym == WORD_NIL || !onode) penalty = 5.0; /* there is no other: still deprecated */
+	else if (node && onode) penalty = 4*((1.0+onode->usage) / (1.0+node->usage+onode->usage));
+	else if (symbol != WORD_NIL && altsym != WORD_NIL) penalty = ((1.0 + model->dict->entry[altsym].stats.whits) 
+							/ ( 1.0+model->dict->entry[symbol].stats.whits) );
+	else penalty = 1000.0;
+	break;
+case WORD_PUNCT:
+	penalty = 30; break;
+case WORD_AFKO:
+case WORD_NUMBER:
+default:
+	if (symbol == WORD_NIL) penalty = 200;
+	else if (!node) penalty = 20.0;
+	penalty = 5.0; break;
+	}
+return log(penalty);
+}
+/*---------------------------------------------------------------------------*/
+
+double end_penalty(MODEL *model, STRING word)
+{
+WordNum symbol;
+TREE *node=NULL;
+int type =0;
+double penalty =999;
+
+if (!model || !model->backward || !model->dict) return -11.11;
+
+/* type = word_classify(word); */
+symbol = find_word(model->dict, word);
+if (/* symbol <= WORD_ERR || */ symbol == WORD_NIL) {;}
+else	{
+	node = find_symbol(model->backward, symbol);
+	type = model->dict->entry[symbol].string.type;
+	}
+
+switch (type) {
+case WORD_INITCAPS:
+case WORD_LOWER:
+case WORD_UPPER:
+case WORD_MISC:	/* Anything, including high ascii */
+case WORD_MIXED: /* mostly typos */
+case WORD_AFKO:
+case WORD_NUMBER:
+default:
+	penalty = 30; break;
+case WORD_PUNCT:
+	if (symbol == WORD_NIL) penalty = 20;
+	else if (!node) penalty = 20.0;
+	penalty = 1.0; break;
+	}
+return log(penalty);
+}
+/*---------------------------------------------------------------------------*/
 
 /*
  *		Function:	New_Swap
@@ -4300,7 +4442,7 @@ STATIC DICT *read_dict(char *filename)
     DICT *this;
     FILE *fp = NULL;
     static char buffer[1024];
-    static STRING word ={0,buffer};
+    static STRING word ={0,0,buffer};
 
     this = new_dict();
 
