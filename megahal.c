@@ -381,7 +381,7 @@
 	** for me, 20...30 is the best setting
 	** YMMV
 	*/
-#define KEYWORD_DICT_SIZE 23
+#define KEYWORD_DICT_SIZE 31
 
 	/* Alternative tokeniser. Attempts to keep dotted acronyms and (floating point) numbers intact.
 	** (breaking tokens would cause the tree depth to become reached too early, and give simpler output)
@@ -426,7 +426,7 @@
 	** Note: words and puntuation count as tokens. whitespace does not
 	** (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
-#define MIN_REPLY_SIZE 14
+#define MIN_REPLY_SIZE 19
 
 	/* Don't maintain the hashtable for the sequential dict (misused as an array) to store the reply */
 #define WANT_FLAT_NOFUSS 0
@@ -593,7 +593,7 @@ static MODEL *glob_model = NULL;
 #include "crosstab.h"
 struct crosstab *glob_crosstab = NULL;
 static DICT *glob_dict = NULL;
-unsigned distance_weight [ CROSS_DICT_WORD_DISTANCE] ={ 1,7,6,5,4,3,2,2,2,2,1,1,1,1,1,1};
+unsigned distance_weight [ CROSS_DICT_WORD_DISTANCE] ={ 1,5,4,3,3,2,2,2,1,1,1,1,1,1};
 #endif
 
 static DICT *glob_ban = NULL;
@@ -2161,6 +2161,9 @@ STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
      *		Increment the symbol counts
      *		Stop incrementing when wraparound detected.
      */
+    /* fprintf(stderr, "Add_symbol(%u: Parent=%u->%u Child=%u->%u)\n"
+	, symbol, tree->symbol, tree->childsum, node->symbol, node->thevalue);
+	 */
     node->thevalue += 1; tree->childsum += 1;
 #if WANT_TIMESTAMPED_NODES
     node->stamp = stamp_max; tree->stamp = stamp_max;
@@ -2541,7 +2544,7 @@ if (altsym != WORD_NIL) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
 
 if (altsym==WORD_NIL) {
 	/* this is to catch typos, which have an initial score of 2*(1+order) */
-	if (dict->entry[symbol].stats.valuesum < 10) return 0.00099;
+	// if (dict->entry[symbol].stats.valuesum < 10) return 0.00099;
         return ((double)dict->stats.valuesum / dict->stats.nonzero)
 		/ (0.5 + dict->entry[symbol].stats.valuesum)
 		;
@@ -2912,6 +2915,7 @@ STATIC TREE * load_tree(FILE *fp)
     static int level = 0;
     unsigned int cidx;
     unsigned int symbol;
+    unsigned long long int childsum;
     ChildIndex *ip;
     size_t kuttje;
     TREE this, *ptr;
@@ -2941,6 +2945,7 @@ STATIC TREE * load_tree(FILE *fp)
     /* ptr->children  and ptr->msize are set by node_new() */
 
     if (level == 0) progress("Loading tree", 0, 1);
+    childsum = 0;
     for(cidx = 0; cidx < ptr->branch; cidx++) {
 	// node->children[cidx].ptr = node_new(0);
 	level++;
@@ -2948,11 +2953,16 @@ STATIC TREE * load_tree(FILE *fp)
 	ptr->children[cidx].ptr = load_tree(fp);
 	level--;
 
+	if (ptr->children[cidx].ptr ) childsum += ptr->children[cidx].ptr->thevalue;
 	symbol = ptr->children[cidx].ptr ? ptr->children[cidx].ptr->symbol: cidx;
 	ip = node_hnd(ptr, symbol );
 	if (ip) *ip = cidx;
 	if (level == 0) progress(NULL, cidx, ptr->branch);
     }
+    if (childsum != ptr->childsum) {
+		fprintf(stderr, "Oldvalue = %u <- Newvalue= %u\n", ptr->childsum , childsum);
+		ptr->childsum = childsum;
+		}
     if (level == 0) progress(NULL, 1, 1);
 return ptr;
 }
@@ -3534,7 +3544,7 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
     do {
 	zeresult = one_reply(model, keywords);
 	if (zeresult->size < MIN_REPLY_SIZE) continue;
-#if 0
+#if DONT_WANT_THIS
 { unsigned widx;
 
     widx = zeresult->size;
@@ -3655,7 +3665,7 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 		/* we may or may not like frequent words */
         // if (model->dict->entry[symbol].stats.nnode > model->dict->stats.nnode / model->dict->stats.nonzero ) continue;
         // if (model->dict->entry[symbol].stats.valuesum > model->dict->stats.valuesum / model->dict->stats.nonzero ) continue;
-	if (symbol_weight(model->dict, canonsym, 1) < 1.0) continue;
+	if (symbol_weight(model->dict, symbol, 1) < 1.0) continue;
 #if CROSS_DICT_SIZE
 	{
 	unsigned other;
@@ -3980,11 +3990,12 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
         gfrac = symbol_weight(model->dict, symbol, 0);
         // kfrac = symbol_weight(keywords, ksymbol, 1);
         /* weight = gfrac/kfrac; */
-        weight = 0.3+log(1+gfrac*efrac);
-#if WANT_KEYWORD_WEIGHTS
-        term = (double) probability *weight / count;
-#else
+        weight = 1.0+0.8*log(1.0+gfrac*efrac);
         term = (double) probability / count;
+#if WANT_KEYWORD_WEIGHTS
+        entropy -= weight * log(term);
+#else
+        entropy -= log(term);
 #endif
 
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 4)
@@ -4006,7 +4017,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
         , weight > 1.0 ? '*' : ' '
         );
 #elif (WANT_DUMP_KEYWORD_WEIGHTS & 8)
-        fprintf(stderr, "V=%9lu/%9llu N=%9lu/%9llu: Gf=%6.4e Ef=%6.4e P=%6.4e/Cnt=%u W=%6.4e T=%6.4e=lg(%6.4e) %c '%*.*s'\n"
+        fprintf(stderr, "V=%9lu/%9llu N=%9lu/%9llu: Gf=%6.4e Ef=%6.4e P=%6.4e/Cnt=%u W=%6.4e T=%6.4e=lg(%6.4e) %6.4e '%*.*s'\n"
         , (unsigned long) model->dict->entry[symbol].stats.valuesum
         , (unsigned long long) model->dict->stats.valuesum
         , (unsigned long) model->dict->entry[symbol].stats.nnode
@@ -4016,7 +4027,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
         , weight
         , (double) log( term )
         , (double) term
-        , weight > 1.0 ? '*' : '.'
+        , (double) weight * log( term )
         , (int) sentence->entry[widx].string.length
         , (int) sentence->entry[widx].string.length
         , sentence->entry[widx].string.word
@@ -4057,13 +4068,13 @@ update1:
         // kfrac = symbol_weight(keywords, ksymbol, 1);
         /* weight = gfrac/kfrac; */
         // weight = gfrac*efrac;
-        weight = 0.3+log(1+gfrac*efrac);
-#if WANT_KEYWORD_WEIGHTS
-        term = (double) probability *weight / count;
-#else
+        weight = 1.0+0.8*log(1.0+gfrac*efrac);
         term = (double) probability / count;
-#endif
+#if WANT_KEYWORD_WEIGHTS
+        entropy -= weight * log(term);
+#else
         entropy -= log(term);
+#endif
 update2:
         update_context(model, symbol);
     }
@@ -4267,9 +4278,10 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
 	node = model->context[oidx];
 	}
 
-    if (!node ) return WORD_ERR;
-    if (node->branch == 0) return WORD_ERR;
+    if (!node ) goto done;
+    // if (node->branch == 0) goto done;
 
+    // symbol = WORD_FIN;
     /*
      *		Choose a symbol at random from this context.
      */
@@ -4292,7 +4304,8 @@ next:
         count -= node->children[cidx].ptr->thevalue;
 	cidx = (cidx+1) % node->branch;
     }
-
+done:
+    // fprintf(stderr, "{+%u}", symbol );
     return symbol;
 }
 
@@ -4358,15 +4371,15 @@ STATIC WordNum seed(MODEL *model, DICT *keywords)
 	if (symbol >= model->dict->size) symbol
 		 = (model->context[0]->branch) 
 		? model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol
-		: WORD_ERR;
-	if (symbol >= model->dict->size) symbol = WORD_ERR;
+		: WORD_NIL;
+	if (symbol >= model->dict->size) symbol = urnd(model->dict->size);
 	else {
 		altword = word_dup_initcaps (model->dict->entry[symbol].string);
 		altsym = find_word(model->dict, altword);
 		if (altsym != WORD_NIL) symbol = altsym;
 		}
 #endif
-
+    // fprintf(stderr, "{*%u}", symbol );
     return symbol;
 }
 
@@ -4421,6 +4434,7 @@ case TOKEN_LOWER:
 	else penalty = (1.0+altnode->thevalue) / (1.0+node->thevalue) ;
 	break;
 case TOKEN_UPPER: /* SHOUTING! */
+case TOKEN_AFKO:
 	penalty = 3;
 	other = word_dup_initcaps(model->dict->entry[symbol].string);
 	goto misc;
@@ -4429,7 +4443,7 @@ case TOKEN_CAMEL: /* mostly typos */
 	other = word_dup_initcaps(model->dict->entry[symbol].string);
 	goto misc;
 case TOKEN_MISC:	/* Anything, including high ascii */
-	penalty = 5;
+	penalty = 3;
 	other = word_dup_initcaps(model->dict->entry[symbol].string);
 misc:	/* The altsym refers tot the Initcaps version 
 	** which should always be better than symbol */
@@ -4440,12 +4454,11 @@ misc:	/* The altsym refers tot the Initcaps version
 	// if (altnode) penalty = ((1.0+altnode->thevalue) / (1.0+node->thevalue));
 	break;
 case TOKEN_PUNCT:
-	penalty = 2.0;
+	penalty = 3.0;
 	break;
-case TOKEN_AFKO:
 case TOKEN_NUMBER:
 default:
-	penalty = 3.0; break;
+	penalty = 2.0; break;
 	}
 return (penalty);
 }
@@ -4473,7 +4486,7 @@ case TOKEN_UPPER:
 case TOKEN_MISC:	/* Anything, including high ascii */
 case TOKEN_CAMEL: /* mostly typos */
 default:
-	penalty = 2;
+	penalty = 4;
 	break;
 case TOKEN_AFKO:
 case TOKEN_NUMBER:
