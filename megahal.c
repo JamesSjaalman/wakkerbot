@@ -342,14 +342,14 @@
 	/* The crossdict is a cross-table containing a keyword-keyword adjacency matrix.
 	** this matrix is evaluated by a power-iteration algoritm, which basically
 	** yields the first eigenvector and -value.
-	** the matrix is fed with pairs of words.
+	** the matrix is fed with pairs of words plus a distance.
 	** Only words with "less than average" frequency of occurence are considered.
 	** Only pairs of words with a (distance < CROSS_DICT_WORD_DISTANCE) are entered.
 	** To avoid unbounded growth, random rows of the matrix have their values decremented
 	** randomly, on a periodic basis.
 	*/
-#define CROSS_DICT_SIZE 41
-#define CROSS_DICT_WORD_DISTANCE 5
+#define CROSS_DICT_SIZE 31
+#define CROSS_DICT_WORD_DISTANCE 3
 
 	/* Maintain and use weights on the keywords */
 #define WANT_KEYWORD_WEIGHTS 1
@@ -395,7 +395,7 @@
 	** NOTE: this is the *intended* number. The actual number will fluctuate, and will
 	** sometimes exceed this limit.
 	**
-	** (1/ALZHEIMER_FACTOR) is the chance of Alzheimer hitting the tree, once per reply.
+	** (1/ALZHEIMER_FACTOR) is the chance of Alzheimer hitting the tree, once per reply or lerning step.
 	** Zero to disable.
 	** Alzheimer periodically does a complete treewalk (twice) to find and eliminate nodes
 	** it considers too old.  This is expensive.
@@ -426,7 +426,7 @@
 	** Note: words and puntuation count as tokens. whitespace does not
 	** (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
-#define MIN_REPLY_SIZE 19
+#define MIN_REPLY_SIZE 14
 
 	/* Don't maintain the hashtable for the sequential dict (misused as an array) to store the reply */
 #define WANT_FLAT_NOFUSS 0
@@ -593,7 +593,13 @@ static MODEL *glob_model = NULL;
 #include "crosstab.h"
 struct crosstab *glob_crosstab = NULL;
 static DICT *glob_dict = NULL;
-unsigned distance_weight [ CROSS_DICT_WORD_DISTANCE] ={ 1,5,4,3,3,2,2,2,1,1,1,1,1,1};
+#if (CROSS_DICT_WORD_DISTANCE <= 5)
+unsigned distance_weight [ CROSS_DICT_WORD_DISTANCE] ={ 1,3,2,2,1,4,3,3,3,2,2,1,1,1,1};
+#elif (CROSS_DICT_WORD_DISTANCE <= 10)
+unsigned distance_weight [ CROSS_DICT_WORD_DISTANCE] ={ 1,9,7,6,5,4,3,3,3,2,2,1,1,1,1};
+#else
+unsigned distance_weight [ CROSS_DICT_WORD_DISTANCE] ={ 1,9,8,7,6,5,5,4,4,4,3,3,3,2,2,2,1,1,1,1,1,1};
+#endif
 #endif
 
 static DICT *glob_ban = NULL;
@@ -786,9 +792,9 @@ STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol);
 STATIC void format_treeslots(struct treeslot *slots , unsigned size);
 STATIC void show_memstat(char *msg);
 
-STATIC STRING word_dup_othercase(STRING org);
 STATIC STRING word_dup_lowercase(STRING org);
 STATIC STRING word_dup_initcaps(STRING org);
+STATIC STRING word_dup_othercase(STRING org);
 	/* The weight we want we want to associate with a word.
 	** if want_other is nonzero, we are also interested in
 	** other capitulisations of the word.
@@ -929,12 +935,12 @@ char *megahal_do_reply(char *input, int log)
     /* upper(input);*/
 
     make_words(input, glob_input);
-#if 1
+#if 0
     learn_from_input(glob_model, glob_input);
     output = generate_reply(glob_model, glob_input);
 #else
     if (!glob_timeout) learn_from_input(glob_model, glob_input);
-    else output = generate_reply(glob_model, glob_input);
+    output = generate_reply(glob_model, glob_input);
 #endif
     /* capitalize(output);*/
     return output;
@@ -2375,10 +2381,16 @@ ChildIndex *ip;
 
 ip = node_hnd(node, symbol);
 
-if (!ip) return NULL;
-if (*ip == CHILD_NIL) { /* not found: create one */
+/* if (!ip) return NULL; */
+if (!ip || *ip == CHILD_NIL) { /* not found: create one */
     if (node->branch >= node->msize) {
-        if (resize_tree(node, node->branch+sqrt(1+node->branch))) return NULL;
+        unsigned newsize ;
+        newsize = node->branch+sqrt(1+node->branch);
+        if (resize_tree(node, newsize)) {
+                warn("Find_symbol_add", "resize failed; old=%u new=%u symbol=%u"
+		, node->msize, newsize, symbol );
+		return NULL;
+		}
         /* after realloc ip might be stale: need to obtain a new one */
         ip = node_hnd(node, symbol);
         if (!ip) {
@@ -2661,6 +2673,15 @@ STATIC void learn_from_input(MODEL *model, DICT *words)
     stamp_max++;
 #endif
 
+#if ALZHEIMER_FACTOR
+    { unsigned count;
+    count = urnd(ALZHEIMER_FACTOR);
+    if (count == ALZHEIMER_FACTOR/2) {
+        initialize_context(model);
+        model_alzheimer(model, ALZHEIMER_NODE_COUNT);
+	}
+    }
+#endif
     /*
      *		Train the model in the forwards direction.  Start by initializing
      *		the context of the model.
@@ -3512,26 +3533,16 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
         initialize_context(model);
         model_alzheimer(model, ALZHEIMER_NODE_COUNT);
 	}
-#else
-    initialize_context(model);
 #endif
+    initialize_context(model);
     /*
      *		Create an array of keywords from the words in the user's input
      */
     keywords = make_keywords(model, words);
     output = output_none;
 
-#if 0
-    {
-    static DICT *dummy = NULL;
-    if (!dummy) dummy = new_dict();
-    zeresult = one_reply(model, dummy);
-    if (dissimilar(words, zeresult)) output = make_output(zeresult);
-    }
-#else
     zeresult = one_reply(model, keywords);
     /* output = make_output(zeresult); */
-#endif
 
     /*
      *		Loop for the specified waiting period, generating and evaluating
@@ -3658,14 +3669,14 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
         // if (symbol == WORD_FIN) continue;
         if (symbol >= model->dict->size) continue;
 
+		/* we may or may not like frequent words */
+        // if (model->dict->entry[symbol].stats.nnode > model->dict->stats.nnode / model->dict->stats.nonzero ) continue;
+        // if (model->dict->entry[symbol].stats.valuesum > model->dict->stats.valuesum / model->dict->stats.nonzero ) continue;
+	if (symbol_weight(model->dict, symbol, 0) < 1.0) continue;
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 
-		/* we may or may not like frequent words */
-        // if (model->dict->entry[symbol].stats.nnode > model->dict->stats.nnode / model->dict->stats.nonzero ) continue;
-        // if (model->dict->entry[symbol].stats.valuesum > model->dict->stats.valuesum / model->dict->stats.nonzero ) continue;
-	if (symbol_weight(model->dict, symbol, 1) < 1.0) continue;
 #if CROSS_DICT_SIZE
 	{
 	unsigned other;
@@ -3950,7 +3961,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
     unsigned int widx, iord;
     WordNum symbol, ksymbol, canonsym;
     double gfrac, kfrac,efrac, weight,term,probability, entropy;
-    unsigned count, totcount ;
+    unsigned count, totcount;
     TREE *node;
     STRING canonword;
 
@@ -3972,7 +3983,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	efrac = crosstab_ask(glob_crosstab, canonsym);
-	if (efrac <= 1.0 / CROSS_DICT_SIZE ) goto update1;
+	// if (efrac <= 1.0 / CROSS_DICT_SIZE /* && urnd(64) > 0 */ ) goto update1;
 	probability = 0.0;
         count = 0;
         totcount++;
@@ -3990,7 +4001,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
         gfrac = symbol_weight(model->dict, symbol, 0);
         // kfrac = symbol_weight(keywords, ksymbol, 1);
         /* weight = gfrac/kfrac; */
-        weight = 1.0+0.8*log(1.0+gfrac*efrac);
+        weight = 1.0*log(1.0+gfrac*efrac);
         term = (double) probability / count;
 #if WANT_KEYWORD_WEIGHTS
         entropy -= weight * log(term);
@@ -4050,7 +4061,7 @@ update1:
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	efrac = crosstab_ask(glob_crosstab, canonsym);
-	if (efrac <= 1.0 / CROSS_DICT_SIZE ) goto update2;
+	// if (efrac <= 1.0 / CROSS_DICT_SIZE /* && urnd(64) > 0 */ ) goto update2;
         probability = 0.0;
         count = 0;
         totcount++;
@@ -4068,7 +4079,7 @@ update1:
         // kfrac = symbol_weight(keywords, ksymbol, 1);
         /* weight = gfrac/kfrac; */
         // weight = gfrac*efrac;
-        weight = 1.0+0.8*log(1.0+gfrac*efrac);
+        weight = 1.0*log(1.0+gfrac*efrac);
         term = (double) probability / count;
 #if WANT_KEYWORD_WEIGHTS
         entropy -= weight * log(term);
@@ -4081,17 +4092,18 @@ update2:
 
     /* if (totcount >= 8) entropy /= sqrt(totcount-1); */
     /* if (totcount >= 16) entropy /= totcount;*/
-    // if (totcount >= 3) entropy /= sqrt(totcount-1);
-    // if (totcount >= 7) entropy /= totcount;
+    if (totcount >= 3) entropy /= sqrt(totcount);
+    if (totcount >= 7) entropy /= totcount;
 
-    if (totcount >= 2) entropy /= sqrt(totcount);
-    if (totcount >= 2) entropy /= totcount;
+    // if (totcount >= 2) entropy /= sqrt(totcount);
+    // if (totcount >= 2) entropy /= totcount;
 
 	/* extra penalty for sentences that don't start at <END> or don't stop at <END> */
 	/* extra penalty for sentences that don't start with a capitalized letter */
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
     if (widx) {
+	if (widx > MIN_REPLY_SIZE) entropy /= sqrt (1.0* widx / MIN_REPLY_SIZE);
 	init_val_fwd = start_penalty(model, sentence->entry[0].string);
 	init_val_rev = end_penalty(model, sentence->entry[widx-1].string );
         if ( init_val_fwd != 0.0) entropy -= init_val_fwd;
@@ -4279,7 +4291,7 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
 	}
 
     if (!node ) goto done;
-    // if (node->branch == 0) goto done;
+    if (node->branch == 0) goto done;
 
     // symbol = WORD_FIN;
     /*
@@ -4287,7 +4299,7 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
      */
     cidx = urnd(node->branch);
     count = urnd( (1+node->childsum)/2);
-    while(count > 0) {
+    while(1) {
 	/*
 	 *		If the symbol occurs as a keyword, then use it.  Only use an
 	 *		auxilliary keyword if a normal keyword has already been used.
@@ -4301,7 +4313,8 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
 next:
 #endif
 	if (count < node->children[cidx].ptr->thevalue) break;
-        count -= node->children[cidx].ptr->thevalue;
+        if (node->children[cidx].ptr->thevalue == 0) count--;
+	else count -= node->children[cidx].ptr->thevalue;
 	cidx = (cidx+1) % node->branch;
     }
 done:
@@ -4364,10 +4377,12 @@ STATIC WordNum seed(MODEL *model, DICT *keywords)
 #else
     WordNum symbol, altsym;
     STRING altword;
-	// symbol = crosstab_get(glob_crosstab, urnd (CROSS_DICT_SIZE/2) );
-	symbol = crosstab_get(glob_crosstab, urnd( sqrt(CROSS_DICT_SIZE*CROSS_DICT_SIZE/2)) );
+	// symbol = crosstab_get(glob_crosstab, urnd( sqrt(CROSS_DICT_SIZE*CROSS_DICT_SIZE/2)) );
+	symbol = crosstab_get(glob_crosstab, urnd (CROSS_DICT_SIZE) );
 	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/2)) );
 	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/4)) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/8)) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/16)) );
 	if (symbol >= model->dict->size) symbol
 		 = (model->context[0]->branch) 
 		? model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol
@@ -4494,8 +4509,8 @@ case TOKEN_NUMBER:
 	break;
 case TOKEN_PUNCT:
 	if ( strchr(".!?", word.word[ word.length-1] )) penalty = 0.0;
-	else if (node) penalty = 1.0;
-	else penalty = 1.3;
+	else if (node) penalty = 2.0;
+	else penalty = 2.3;
 	break;
 	}
 return (penalty);
