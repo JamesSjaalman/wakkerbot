@@ -383,11 +383,6 @@
 	*/
 #define KEYWORD_DICT_SIZE 31
 
-	/* Alternative tokeniser. Attempts to keep dotted acronyms and (floating point) numbers intact.
-	** (breaking tokens would cause the tree depth to become reached too early, and give simpler output)
-	*/
-#define WANT_NEW_TOKENIZER 1
-
 	/*
 	** ALZHEIMER_NODE_COUNT is the number of nodes we intend to maintain.
 	** if the actual number of nodes exceeds this limit, the Alzheimer-functions might be triggered,
@@ -428,8 +423,6 @@
  	*/
 #define MIN_REPLY_SIZE 14
 
-	/* Don't maintain the hashtable for the sequential dict (misused as an array) to store the reply */
-#define WANT_FLAT_NOFUSS 0
 #define SCRUTINIZE_U2L 1
 #define SCRUTINIZE_L2U 2
 #define SCRUTINIZE_INPUT 0
@@ -586,8 +579,6 @@ static FILE *statusfp;
 static bool used_key;
 #endif
 static DICT *glob_keys = NULL;
-static DICT *glob_input = NULL;
-static DICT *glob_greets = NULL;
 static MODEL *glob_model = NULL;
 #if 1||CROSS_DICT_SIZE
 #include "crosstab.h"
@@ -648,18 +639,11 @@ STATIC int resize_tree(TREE *tree, unsigned newsize);
 STATIC void add_swap(SWAP *list, char *from, char *to);
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICT *dict, STRING word);
-STATIC WordNum add_word_nofuss(DICT *dict, STRING word);
 STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words);
 STATIC size_t word_format(char *buff, STRING string);
 STATIC size_t symbol_format(char *buff, WordNum sym);
 
-#if WANT_NEW_TOKENIZER
-STATIC void make_words(char *, DICT *);
 STATIC size_t tokenize(char *string, int *sp);
-#else /* WANT_NEW_TOKENIZER */
-STATIC void make_words(char *, DICT *);
-STATIC size_t boundary(char *string, int *state);
-#endif
 
 STATIC void capitalize(char *);
 STATIC void changevoice(DICT *, unsigned int);
@@ -675,7 +659,6 @@ STATIC TREE *find_symbol(TREE *node, WordNum symbol);
 STATIC TREE *find_symbol_add(TREE *, WordNum);
 
 STATIC WordNum find_word(DICT *, STRING);
-STATIC char *generate_reply(MODEL *, DICT *);
 STATIC void help(void);
 STATIC void ignore(int);
 STATIC bool initialize_error(char *);
@@ -683,9 +666,7 @@ STATIC bool initialize_error(char *);
 STATIC bool initialize_speech(void);
 #endif
 STATIC bool initialize_status(char *);
-STATIC void learn_from_input(MODEL *, DICT *);
 STATIC void listvoices(void);
-STATIC void make_greeting(DICT *);
 STATIC DICT *new_dict(void);
 
 STATIC char *read_input(char * prompt);
@@ -724,7 +705,6 @@ STATIC SWAP *new_swap(void);
 STATIC STRING new_string(char *str, size_t len);
 STATIC bool print_header(FILE *);
 bool progress(char *message, unsigned long done, unsigned long todo);
-STATIC DICT *one_reply(MODEL *, DICT *);
 STATIC void save_dict(FILE *, DICT *);
 STATIC unsigned save_tree(FILE *, TREE *);
 STATIC void save_word(FILE *, STRING);
@@ -791,6 +771,8 @@ STATIC void dump_model_recursive(FILE *fp, TREE *tree, DICT *dict, int indent);
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol);
 STATIC void format_treeslots(struct treeslot *slots , unsigned size);
 STATIC void show_memstat(char *msg);
+STATIC int treeslots_cmp(const void *vl, const void *vr);
+STATIC void treeslots_sort(struct treeslot  *slots , unsigned count);
 
 STATIC STRING word_dup_lowercase(STRING org);
 STATIC STRING word_dup_initcaps(STRING org);
@@ -822,11 +804,42 @@ STATIC int eat_utf8(unsigned char *str, unsigned len, unsigned *target);
 STATIC unsigned cha_latin2utf8(unsigned char *dst, unsigned val);
 STATIC size_t hexdump_string(char *buff, STRING string);
 STATIC size_t decode_word(char * buff, STRING src, int type );
-/* Function: setnoprompt
 
-   Purpose: Set noprompt variable.
+#if WANT_SENTENCE
+struct sentence {
+	unsigned size;
+	unsigned msize;
+	struct	{
+		STRING word;
+		} *entry;
+	} ;
+struct sentence glob_input = {0,0,NULL};
+struct sentence glob_greets = {0,0,NULL};
+STATIC void make_words(char * str, struct sentence * dst);
+STATIC void add_word_nofuss(struct sentence *dst, STRING word);
+STATIC void learn_from_input(MODEL * mp, struct sentence *src);
+STATIC char *generate_reply(MODEL *mp, struct sentence *src);
+STATIC void make_greeting(struct sentence *dst);
+STATIC DICT *one_reply(MODEL *, DICT *);
+/* functions to fix::
+train(MODEL *model, char *filename);
+generate_reply(glob_model, glob_input);
+one_reply(model, keywords);
+STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence);
+STATIC char *make_output(DICT *words);
+STATIC bool dissimilar(DICT *dic1, DICT *dic2);
+*/
+#else
+static DICT *glob_input = NULL;
+static DICT *glob_greets = NULL;
+STATIC void make_words(char *, DICT *);
+STATIC WordNum add_word_nofuss(DICT *dict, STRING word);
+STATIC void learn_from_input(MODEL *mp, DICT * src);
+STATIC char *generate_reply(MODEL *mp, DICT *src);
+STATIC void make_greeting(DICT *dst);
+STATIC struct sentence *one_reply(MODEL *, DICT *);
+#endif
 
- */
 void megahal_setquiet(void)
 {
     quiet = TRUE;
@@ -912,8 +925,11 @@ void megahal_initialize(void)
 		"+------------------------------------------------------------------------+\n"
 		);
 
+#if WANT_SENTENCE
+#else
     glob_input = new_dict();
     glob_greets = new_dict();
+#endif
     change_personality(NULL, 0, &glob_model);
 }
 
@@ -940,7 +956,7 @@ char *megahal_do_reply(char *input, int log)
     output = generate_reply(glob_model, glob_input);
 #else
     if (!glob_timeout) learn_from_input(glob_model, glob_input);
-    output = generate_reply(glob_model, glob_input);
+    else output = generate_reply(glob_model, glob_input);
 #endif
     /* capitalize(output);*/
     return output;
@@ -1542,28 +1558,18 @@ STATIC char *format_output(char *output)
  *		Purpose:		Append a word to a dictionary, and return the identifier assigned to the word.
  *						The index is not searched or updated, and the new word is not dupped, only referenced.
  */
-#if WANT_FLAT_NOFUSS
-STATIC WordNum add_word_nofuss(DICT *dict, STRING word)
+#if WANT_SENTENCE
+STATIC void add_word_nofuss(struct sentence *dst, STRING word)
 {
-WordNum *np;
 
-if (!dict) return 0; /* WP: should be WORD_NIL */
-/* WP20101022: allow empty token at the end of a sentence*/
-/* if (!word.length) return 0; // sentinel should be WORD_NIL */
+if (!dst) return ;
 
-if (dict->size >= dict->msize && grow_dict(dict)) return WORD_NIL;
-np = &dict->entry[ dict->size].tabl ;
+if (dst->size >= dst->msize && grow_sentence(dst)) return ;
 
-*np = dict->size++;
-dict->entry[*np].link = WORD_NIL;
-dict->entry[*np].string = word;
-/* fake the hash value.
- * setting it to the identity transform will cause X to be put into slot X.
- * Degenerate chains, but consistent, even on doubling.
- */
-dict->entry[*np].hash = *np;
 
-return *np;
+dst->entry[dst->size++].string = word;
+
+return ;
 
 }
 #else
@@ -1584,7 +1590,7 @@ dict->entry[symbol].string = word;
 return *np;
 
 }
-#endif /* WANT_FLAT_NOFUSS */
+#endif /* WANT_FLAT_NOFUSS WANT_SENTENCE */
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -2233,8 +2239,9 @@ for (slot = 0; slot < indent; slot++) {
 	fputc(' ', fp);
 	}
 
-fprintf(fp, "Us=%u Cnt=%u Stmp=%u Br=%u/%u Sym=%u [%u,%u] '%*.*s'\n"
-	, tree->childsum, tree->thevalue
+fprintf(fp, "Va=%u Su=%u St=%u Br=%u/%u Sym=%u [%u,%u] '%*.*s'\n"
+	, tree->thevalue
+	, tree->childsum
 #if WANT_TIMESTAMPED_NODES
 	, tree->stamp
 #else
@@ -2321,8 +2328,12 @@ kill:
     memstats.treedel += 1;
     /* fprintf(stderr, "Freed_tree() node_count now=%u treedel = %u\n",  memstats.node_cnt, memstats.treedel ); */
     /* if (!tree->branch || tree->branch <= tree->msize - NODE_SIZE_SHRINK) {*/
+#if 0
     if (!tree->branch || tree->branch <= tree->msize / 2
 	|| (NODE_SIZE_SHRINK && tree->branch <= tree->msize - NODE_SIZE_SHRINK) ) {
+#else
+    if (!tree->branch || tree->msize - tree->branch >= sqrt( tree->branch)) {
+#endif
 #if (WANT_DUMP_ALZHEIMER_PROGRESS >= 2)
 	status("Tree(%u/%u) will be shrunk: %u/%u\n"
 		, tree->thevalue, tree->childsum, tree->branch, tree->msize);
@@ -2413,45 +2424,62 @@ if (!ip || *ip == CHILD_NIL) { /* not found: create one */
 STATIC int resize_tree(TREE *tree, unsigned newsize)
 {
     ChildIndex item,slot;
+    unsigned oldsize;
     struct treeslot *old;
 
     if (!tree) return -1;
 /* fprintf(stderr, "resize_tree(%u/%u) %u\n", tree->branch,  tree->msize, newsize);*/
     old = tree->children;
-    /* if (!newsize) newsize = NODE_SIZE_INITIAL;*/
-    /* while (newsize < tree->branch) newsize += 2; */
 
     if (newsize) {
         tree->children = malloc(newsize * sizeof *tree->children );
         if (!tree->children) {
-	    error("resize_tree", "Unable to reallocate subtree.");
+	    error("Resize_tree", "Unable to reallocate subtree.");
             tree->children = old;
 	    return -1;
         }
     }
     else tree->children = NULL; /* old is freed anyway */
+    oldsize = tree->msize ;
     tree->msize = newsize;
     if (tree->children && tree->msize) format_treeslots(tree->children, tree->msize);
 
 #if WANT_DUMP_REHASH_TREE
-	fprintf(stderr, "Old=%p New=%p Tree_resize(%u/%u) %u\n", (void*) old, (void*) tree->children, tree->branch,  tree->msize, newsize);
+	fprintf(stderr, "Old=%p:%u New=%p:%u Tree_resize(%u/%u) %u\n"
+	, (void*) old, (void*) tree->children, newsize, tree->branch,  tree->msize);
 #endif /* WANT_DUMP_REHASH_TREE */
 
 /* Now rebuild the hash table.
  * The hash-chain pointers have already been initialized to NIL,
  * we only have to copy the children's "payload" verbatim,
  * find the place where to append it in the hash-chain, and put it there.
+ *
+ * Since we need to rebuild the hachchains anyway, this is a good place to
+ * sort the items (in descending order) to make life easier for babble() .
+ * (NOTE: quicksort is abad choice here, since the childnodes are "almost ordered",
+ * but the sorting does not cost enough CPU to justify a merge- or insertion sort variant.
  */
-    if (old) for (item =0 ; item < tree->branch; item++) {
+    if (old) {
+	    if (newsize > oldsize && tree->branch > 1) {
+#if ( WANT_DUMP_ALZHEIMER_PROGRESS >= 2 || WANT_DUMP_REHASH_TREE)
+		fprintf(stderr, "Resize:sort(Symbol=%u Cnt=%u) Old=%u New=%u Value=%u Childsum=%u\n"
+		, tree->symbol, tree->branch
+		, oldsize, newsize
+		, tree->thevalue, tree->childsum);
+#endif
+        	treeslots_sort(old, tree->branch );
+		}
+
+        for (item =0 ; item < tree->branch; item++) {
 	ChildIndex *ip;
 	slot = old[item].ptr->symbol % tree->msize;
 	for( ip = &tree->children[slot].tabl; *ip != CHILD_NIL; ip = &tree->children[*ip].link ) {
 
-#if WANT_DUMP_REHASH_TREE
+#if (WANT_DUMP_REHASH_TREE >= 2)
 		fprintf(stderr, "%u,", (unsigned) *ip);
 #endif
 		}
-#if WANT_DUMP_REHASH_TREE
+#if (WANT_DUMP_REHASH_TREE >= 2)
 		fprintf(stderr, "Placing Item=%u Hash=%5u(%8x) Slot=%4u TargetSlot=%u (previous %u)\n"
 		, (unsigned) item , (unsigned) old[item].ptr->symbol, (unsigned) old[item].ptr->symbol, (unsigned) slot
 		, (unsigned) ((char*) ip - (char*) &tree->children[0].tabl) / sizeof tree->children[0]
@@ -2461,6 +2489,7 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
 	tree->children[item].ptr = old[item].ptr;
 	}
     free (old);
+    }
     return 0; /* success */
 }
 
@@ -2473,6 +2502,29 @@ STATIC void format_treeslots(struct treeslot  *slots , unsigned size)
 	slots[idx].link = CHILD_NIL;
 	slots[idx].ptr = NULL;
 	}
+}
+
+STATIC int treeslots_cmp(const void *vl, const void *vr)
+{
+const struct treeslot  *sl=vl;
+const struct treeslot  *sr=vr;
+
+if (!sl->ptr && ! sr->ptr) return 0;
+if (!sl->ptr ) return 1;
+if (!sr->ptr ) return -1;
+
+if (sl->ptr->thevalue < sr->ptr->thevalue ) return 1;
+if (sl->ptr->thevalue > sr->ptr->thevalue ) return -1;
+
+if (sl->ptr->symbol < sr->ptr->symbol ) return -1;
+if (sl->ptr->symbol > sr->ptr->symbol ) return 1;
+return 0;
+
+}
+
+STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
+{
+qsort(slots, count, sizeof *slots, treeslots_cmp);
 }
 
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol)
@@ -2660,7 +2712,11 @@ return TOKEN_MISC;
  *
  *		Purpose:		Learn from the user's input.
  */
+#if WANT_SENTENCE
 STATIC void learn_from_input(MODEL *model, DICT *words)
+#else
+STATIC void learn_from_input(MODEL *model, struct sentence *words)
+#endif
 {
     unsigned widx;
     WordNum symbol;
@@ -2674,9 +2730,9 @@ STATIC void learn_from_input(MODEL *model, DICT *words)
 #endif
 
 #if ALZHEIMER_FACTOR
-    { unsigned count;
-    count = urnd(ALZHEIMER_FACTOR);
-    if (count == ALZHEIMER_FACTOR/2) {
+    { unsigned val;
+    val = urnd(10*ALZHEIMER_FACTOR);
+    if (val == ALZHEIMER_FACTOR/2) {
         initialize_context(model);
         model_alzheimer(model, ALZHEIMER_NODE_COUNT);
 	}
@@ -2737,7 +2793,11 @@ STATIC void learn_from_input(MODEL *model, DICT *words)
 STATIC void train(MODEL *model, char *filename)
 {
     FILE *fp;
+#if WANT_SENTENCE
+    struct sentence *words = NULL;
+#else
     DICT *words = NULL;
+#endif
     int length;
     char buffer[4*1024];
 
@@ -3070,15 +3130,22 @@ fail:
  *	and put them into a dict, sequentially.
  *	NOTE No memory for the STRINGS is allocated: the DICT points to the input string.
  */
-#if WANT_NEW_TOKENIZER
-STATIC void make_words(char *input, DICT *words)
+#if WANT_SENTENCE
+STATIC void make_words(char * str, struct sentence * target)
+#else
+STATIC void make_words(char *input, DICT *target)
+#endif /* WANT_SENTENCE */
 {
     size_t len, pos, chunk;
     STRING word ;
     static STRING period = {1,0, "." }  ;
     int state = 0; /* FIXME: this could be made static to allow for multi-line strings */
 
-    empty_dict(words);
+#if WANT_SENTENCE
+    target->used = 0;
+#else
+    empty_dict(target);
+#endif
 
     len = strlen(input);
     if (!len) return;
@@ -3094,9 +3161,9 @@ STATIC void make_words(char *input, DICT *words)
         word.length = chunk;
         word.word = input+pos;
 #if WANT_SUPPRESS_WHITESPACE
-        if (word_is_usable(word)) add_word_nofuss(words, word);
+        if (word_is_usable(word)) add_word_nofuss(target, word);
 #else
-        add_word_nofuss(words, word);
+        add_word_nofuss(target, word);
 #endif
 
         if (pos+chunk >= len) break;
@@ -3107,18 +3174,17 @@ STATIC void make_words(char *input, DICT *words)
      *		If the last word isn't punctuation, then replace it with a
      *		full-stop character.
      */
-    if (words->size && myisalnum(words->entry[words->size-1].string.word[0])) {
-		add_word_nofuss(words, period);
+    if (target->size && myisalnum(target->entry[target->size-1].string.word[0])) {
+		add_word_nofuss(target, period);
     }
-    else if (words->size
-		&& words->entry[words->size-1].string.length
-		 && !strchr(".!?", words->entry[words->size-1].string.word[ words->entry[words->size-1].string.length-1] )) {
-	words->entry[words->size-1].string = period;
+    else if (target->size
+		&& target->entry[target->size-1].string.length
+		 && !strchr(".!?", target->entry[target->size-1].string.word[ target->entry[target->size-1].string.length-1] )) {
+	target->entry[target->size-1].string = period;
     }
 
     return;
 }
-
 /*---------------------------------------------------------------------------*/
 /*
  *		Function:	Tokenize
@@ -3242,124 +3308,6 @@ STATIC size_t tokenize(char *str, int *sp)
     }
     *sp = T_INIT; return pos;
 }
-
-#else /*  WANT_NEW_TOKENIZER */
-STATIC void make_words(char *input, DICT *words)
-{
-    size_t offset = 0;
-    size_t len = strlen(input);
-    STRING word ;
-    static STRING period = {1,0, "." }  ;
-
-    /*
-     *		Clear the entries in the dictionary
-     */
-    empty_dict(words);
-
-    /*
-     *		If the string is empty then do nothing, for it contains no words.
-     */
-    if (len == 0) return;
-
-    /*
-     *		Loop forever.
-     */
-    while(1) {
-
-	/*
-	 *		If the current character is of the same type as the previous
-	 *		character, then include it in the word.  Otherwise, terminate
-	 *		the current word.
-	 */
-	if (boundary(input, offset)) {
-		if (offset > 255) {
-			warn( "Make_words", "String too long (%u) at %s\n", (unsigned) offset, input);
-			offset = 255;
-			}
-		word.length = offset;
-		word.word = input;
-	    /*
-	     *		Add the word to the dictionary
-	     */
-#if WANT_SUPPRESS_WHITESPACE
-        if (word_is_usable(word)) add_word_nofuss(words, word);
-#else
-	add_word_nofuss(words, word);
-#endif
-
-	    if (offset == len) break;
-	    input += offset;
-	    len -= offset;
-	    offset = 0;
-	} else {
-	    offset++;
-	}
-    }
-
-    /*
-     *		If the last word isn't punctuation, then replace it with a
-     *		full-stop character.
-     */
-    if (words->size && myisalnum(words->entry[words->size-1].string.word[0])) {
-		add_word_nofuss(words, period);
-    }
-    else if (words->size
-		&& words->entry[words->size-1].string.length
-		 && !strchr(".!?", words->entry[words->size-1].string.word[ words->entry[words->size-1].string.length-1] )) {
-	words->entry[words->size-1].string = period;
-    }
-
-    return;
-}
-
-/*---------------------------------------------------------------------------*/
-/*
- *		Function:	Boundary
- *
- *		Purpose:		Return whether or not a word boundary exists in a string
- *						at the specified location.
- */
-STATIC bool boundary(char *str, size_t position)
-{
-    /* unsigned char *ucp = (unsigned char *) string;*/
-    if (position == 0) return FALSE;
-
-    if (UCPstr[position] == '\0' ) return TRUE;
-
-    if (
-	UCPstr[position] == '\''
-	&& myisalpha(UCPstr[position-1])
-	&& myisalpha(UCPstr[position+1])
-	)
-	return FALSE;
-
-    if (
-	position > 1
-	&& UCPstr[position-1] == '\''
-	&& myisalpha(UCPstr[position-2])
-	&& myisalpha(UCPstr[position])
-	)
-	return FALSE;
-
-    if (
-	myisalpha(UCPstr[position])
-	&& !myisalpha(UCPstr[position-1])
-	)
-	return TRUE;
-
-    if (
-	!myisalpha(UCPstr[position])
-	&& myisalpha(UCPstr[position-1])
-	)
-	return TRUE;
-
-    if (isdigit(UCPstr[position]) != isdigit(UCPstr[position-1]))
-	return TRUE;
-
-    return FALSE;
-}
-
-#endif /* WANT_NEW_TOKENIZER */
 
 STATIC int myisupper(int ch)
 {
@@ -3499,13 +3447,17 @@ return 0;
  *		Purpose:		Put some special words into the dictionary so that the
  *						program will respond as if to a new judge.
  */
-STATIC void make_greeting(DICT *words)
+#if WANT_SENTENCE
+STATIC void make_greeting(struct sentence *target)
+#else
+STATIC void make_greeting(DICT *target)
+#endif
 {
     unsigned int iwrd;
 
-    for(iwrd = 0; iwrd < words->size; iwrd++) free(words->entry[iwrd].string.word);
-    empty_dict(words);
-    if (glob_grt->size > 0) add_word_dodup(words, glob_grt->entry[ urnd(glob_grt->size) ].string );
+    for(iwrd = 0; iwrd < target->size; iwrd++) free(target->entry[iwrd].string.word);
+    empty_dict(target);
+    if (glob_grt->size > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->size) ].string );
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3516,11 +3468,19 @@ STATIC void make_greeting(DICT *words)
  *                which may vaguely be construed as containing a reply to
  *                whatever is in the input string.
  */
-STATIC char *generate_reply(MODEL *model, DICT *words)
+#if WANT_SENTENCE
+STATIC char *generate_reply(MODEL *model, struct sentence *src)
+#else
+STATIC char *generate_reply(MODEL *model, DICT *src)
+#endif
 {
     static char *output_none = "Geert! doe er wat aan!" ;
 	/* "I don't know enough to answer you yet!"; */
+#if WANT_SENTENCE
+    struct sentence *zeresult;
+#else
     DICT *zeresult;
+#endif
     DICT *keywords;
     double surprise, max_surprise;
     char *output;
@@ -3538,11 +3498,20 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
     /*
      *		Create an array of keywords from the words in the user's input
      */
-    keywords = make_keywords(model, words);
+    keywords = make_keywords(model, src);
     output = output_none;
 
+#if 0
+    {
+    static DICT *dummy = NULL;
+    if (!dummy) dummy = new_dict();
+    zeresult = one_reply(model, dummy);
+    if (dissimilar(src, zeresult)) output = make_output(zeresult);
+    }
+#else
     zeresult = one_reply(model, keywords);
     /* output = make_output(zeresult); */
+#endif
 
     /*
      *		Loop for the specified waiting period, generating and evaluating
@@ -3573,7 +3542,7 @@ STATIC char *generate_reply(MODEL *model, DICT *words)
 #endif
 	surprise = evaluate_reply(model, keywords, zeresult);
 	count++;
-	if (surprise > max_surprise && dissimilar(words, zeresult) ) {
+	if (surprise > max_surprise && dissimilar(src, zeresult) ) {
 	    output = make_output(zeresult);
 #if WANT_DUMP_ALL_REPLIES
 		fprintf(stderr, "\n%u %lf N=%u (Typ=%d Fwd=%lf Rev=%lf):\n\t%s\n"
@@ -3861,15 +3830,21 @@ STATIC void add_aux(MODEL *model, DICT *keywords, STRING word)
  *		Purpose:		Generate a dictionary of reply words appropriate to the
  *						given dictionary of keywords.
  */
+#if WANT_SENTENCE
+STATIC struct sentence *one_reply(MODEL *model, DICT *keywords)
+{
+    static struct sentence *zereply = NULL;
+#else
 STATIC DICT *one_reply(MODEL *model, DICT *keywords)
 {
-    static DICT *replies = NULL;
+    static DICT *zereply = NULL;
+#endif
     unsigned int widx;
     WordNum symbol;
     // bool start = TRUE;
 
-    if (!replies) replies = new_dict();
-    else empty_dict(replies);
+    if (!zereply) zereply = new_dict();
+    else empty_dict(zereply);
 
     /*
      *		Start off by making sure that the model's context is empty.
@@ -3883,11 +3858,11 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
     /*
      *		Generate the reply in the forward direction.
      */
-    for (symbol = seed(model, keywords); symbol > WORD_FIN ; symbol = babble(model, keywords, replies) ) {
+    for (symbol = seed(model, keywords); symbol > WORD_FIN ; symbol = babble(model, keywords, zereply) ) {
 	/*
 	 *		Append the symbol to the reply dictionary.
 	 */
-	add_word_nofuss(replies, model->dict->entry[symbol].string );
+	add_word_nofuss(zereply, model->dict->entry[symbol].string );
 	/*
 	 *		Extend the current context of the model with the current symbol.
 	 */
@@ -3905,8 +3880,8 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
      *		dictionary so that we can generate backwards to reach the
      *		beginning of the string.
      */
-    for(widx = MIN(replies->size, 1+model->order); widx-- > 0; ) {
-	symbol = find_word(model->dict, replies->entry[ widx ].string );
+    for(widx = MIN(zereply->size, 1+model->order); widx-- > 0; ) {
+	symbol = find_word(model->dict, zereply->entry[ widx ].string );
 	update_context(model, symbol);
     }
 
@@ -3917,14 +3892,14 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
 	/*
 	 *		Get a random symbol from the current context.
 	 */
-	symbol = babble(model, keywords, replies);
+	symbol = babble(model, keywords, zereply);
 	if (symbol <= WORD_FIN) break;
 
 	/*
 	 *		Prepend the symbol to the reply dictionary.
 	 */
-	replies->entry = realloc(replies->entry, (replies->size+1)*sizeof *replies->entry);
-	if (!replies->entry) {
+	zereply->entry = realloc(zereply->entry, (zereply->size+1)*sizeof *zereply->entry);
+	if (!zereply->entry) {
 	    error("One_reply", "Unable to reallocate dictionary");
 	    return NULL;
 	}
@@ -3932,12 +3907,12 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
 	/*
 	 *		Shuffle everything up for the prepend.
 	 */
-	for(widx = replies->size; widx > 0; widx--) {
-	    replies->entry[widx].string = replies->entry[widx-1].string;
+	for(widx = zereply->size; widx > 0; widx--) {
+	    zereply->entry[widx].string = zereply->entry[widx-1].string;
 	}
-	replies->size += 1;
+	zereply->size += 1;
 
-	replies->entry[0].string = model->dict->entry[symbol].string;
+	zereply->entry[0].string = model->dict->entry[symbol].string;
 
 	/*
 	 *		Extend the current context of the model with the current symbol.
@@ -3945,7 +3920,7 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
 	update_context(model, symbol);
     }
 
-    return replies;
+    return zereply;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3961,7 +3936,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
     unsigned int widx, iord;
     WordNum symbol, ksymbol, canonsym;
     double gfrac, kfrac,efrac, weight,term,probability, entropy;
-    unsigned count, totcount;
+    unsigned count, totcount ;
     TREE *node;
     STRING canonword;
 
@@ -3983,7 +3958,7 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	efrac = crosstab_ask(glob_crosstab, canonsym);
-	// if (efrac <= 1.0 / CROSS_DICT_SIZE /* && urnd(64) > 0 */ ) goto update1;
+	if (efrac <= 1.0 / CROSS_DICT_SIZE /* && urnd(64) > 0 */ ) goto update1;
 	probability = 0.0;
         count = 0;
         totcount++;
@@ -4001,7 +3976,8 @@ STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
         gfrac = symbol_weight(model->dict, symbol, 0);
         // kfrac = symbol_weight(keywords, ksymbol, 1);
         /* weight = gfrac/kfrac; */
-        weight = 1.0*log(1.0+gfrac*efrac);
+        // weight = 1.0*log(1.0+gfrac*efrac);
+        weight = efrac * log(1.0+gfrac);
         term = (double) probability / count;
 #if WANT_KEYWORD_WEIGHTS
         entropy -= weight * log(term);
@@ -4061,7 +4037,7 @@ update1:
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	efrac = crosstab_ask(glob_crosstab, canonsym);
-	// if (efrac <= 1.0 / CROSS_DICT_SIZE /* && urnd(64) > 0 */ ) goto update2;
+	if (efrac <= 1.0 / CROSS_DICT_SIZE /* && urnd(64) > 0 */ ) goto update2;
         probability = 0.0;
         count = 0;
         totcount++;
@@ -4079,7 +4055,8 @@ update1:
         // kfrac = symbol_weight(keywords, ksymbol, 1);
         /* weight = gfrac/kfrac; */
         // weight = gfrac*efrac;
-        weight = 1.0*log(1.0+gfrac*efrac);
+        // weight = 1.0*log(1.0+gfrac*efrac);
+        weight = efrac * log(1.0+gfrac);
         term = (double) probability / count;
 #if WANT_KEYWORD_WEIGHTS
         entropy -= weight * log(term);
@@ -4297,8 +4274,10 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
     /*
      *		Choose a symbol at random from this context.
      */
-    cidx = urnd(node->branch);
-    count = urnd( (1+node->childsum)/2);
+    // cidx = urnd(node->branch);
+    // count = urnd( (1+node->childsum)/2);
+    cidx = 0;
+    count = urnd( (node->childsum));
     while(1) {
 	/*
 	 *		If the symbol occurs as a keyword, then use it.  Only use an
@@ -4378,11 +4357,10 @@ STATIC WordNum seed(MODEL *model, DICT *keywords)
     WordNum symbol, altsym;
     STRING altword;
 	// symbol = crosstab_get(glob_crosstab, urnd( sqrt(CROSS_DICT_SIZE*CROSS_DICT_SIZE/2)) );
-	symbol = crosstab_get(glob_crosstab, urnd (CROSS_DICT_SIZE) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/2)) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/4)) );
+	// symbol = crosstab_get(glob_crosstab, urnd (CROSS_DICT_SIZE) );
+	// if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/2)) );
+	/* if (symbol >= model->dict->size) */ symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/4)) );
 	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/8)) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/16)) );
 	if (symbol >= model->dict->size) symbol
 		 = (model->context[0]->branch) 
 		? model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol
@@ -5269,6 +5247,30 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
     return 0; /* success */
 }
 
+STATIC int grow_sentence(struct sentence *ptr)
+{
+    unsigned newsize;
+
+    newsize = ptr->size ? ptr->size + ptr->size/2 : 64;
+    return resize_sentence(ptr, newsize);
+}
+
+
+STATIC int resize_sentence(struct sentence *ptr, unsigned newsize)
+{
+    void * old;
+    old = ptr->entry ;
+    ptr->entry = realloc (ptr->entry, newsize * sizeof *ptr->entry);
+    if (!ptr->entry) {
+	error("resize_sentence", "Unable to allocate dict->slots.");
+    	ptr->entry = old;
+	return -1;
+	}
+    ptr->msize = newsize;
+
+    return 0; /* success */
+}
+
 /*********************************************************************************************/
 
 static TREE * alz_stack[10] = {NULL,};
@@ -5291,7 +5293,7 @@ alz_dict = model->dict;
 
 alz_file = fopen ("alzheimer.dmp", "a" );
 
-if (!direction) direction = urnd(stamp_max);
+if (direction < 2) direction = urnd(stamp_max);
 
 	/* density is an estimate of the amount of nodes we expect to reap per timestamp
 	** step is our estimate for the number of steps we need to add to stamp_min to harvest
@@ -5311,7 +5313,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
     if (!step) step = 1;
     limit = stamp_min + step;
 
-#if WANT_DUMP_ALZHEIMER_PROGRESS
+#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 1)
     fprintf(stderr, "Model_alzheimer(%u:%s) NodeCount=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f Step=%u Limit=%u\n"
 	, direction, (direction%2) ? "Backward" : "Forward"
 	    , (unsigned)memstats.node_cnt, (unsigned)maxnodecount
@@ -5374,7 +5376,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
 	, direction, (direction%2) ? "Backward" : "Forward" , count
 	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODE_COUNT
 	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)(stamp_max-stamp_min), density);
-	/* Avoid the next iteration to overshoot (we expect to harvest count) */
+	/* Avoid the next iteration to overshoot (we expect to harvest 'count' items) */
     direction++;
     if (memstats.node_cnt <= maxnodecount+count/2) break;
     }
