@@ -639,21 +639,15 @@ STATIC int resize_tree(TREE *tree, unsigned newsize);
 STATIC void add_swap(SWAP *list, char *from, char *to);
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICT *dict, STRING word);
-STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words);
 STATIC size_t word_format(char *buff, STRING string);
 STATIC size_t symbol_format(char *buff, WordNum sym);
 
 STATIC size_t tokenize(char *string, int *sp);
 
 STATIC void capitalize(char *);
-STATIC void changevoice(DICT *, unsigned int);
-STATIC void change_personality(DICT *, unsigned int, MODEL **);
 STATIC void delay(char *);
 STATIC void die(int);
-STATIC bool dissimilar(DICT *, DICT *);
 STATIC void error(char *, char *, ...);
-STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence);
-STATIC COMMAND_WORDS execute_command(DICT *, unsigned int *position);
 STATIC void exithal(void);
 STATIC TREE *find_symbol(TREE *node, WordNum symbol);
 STATIC TREE *find_symbol_add(TREE *, WordNum);
@@ -697,8 +691,6 @@ STATIC bool load_model(char *path, MODEL *mp);
 STATIC void load_personality(MODEL **);
 STATIC TREE * load_tree(FILE *);
 STATIC void load_word(FILE *, DICT *);
-STATIC DICT *make_keywords(MODEL *, DICT *);
-STATIC char *make_output(DICT *);
 STATIC MODEL *new_model(int);
 STATIC TREE *node_new(unsigned nchild);
 STATIC SWAP *new_swap(void);
@@ -805,30 +797,36 @@ STATIC unsigned cha_latin2utf8(unsigned char *dst, unsigned val);
 STATIC size_t hexdump_string(char *buff, STRING string);
 STATIC size_t decode_word(char * buff, STRING src, int type );
 
+#define WANT_SENTENCE 1
 #if WANT_SENTENCE
 struct sentence {
 	unsigned size;
 	unsigned msize;
 	struct	{
-		STRING word;
+		STRING string;
 		} *entry;
 	} ;
-struct sentence glob_input = {0,0,NULL};
-struct sentence glob_greets = {0,0,NULL};
+struct sentence *glob_input = NULL;
+struct sentence *glob_greets = NULL;
 STATIC void make_words(char * str, struct sentence * dst);
 STATIC void add_word_nofuss(struct sentence *dst, STRING word);
 STATIC void learn_from_input(MODEL * mp, struct sentence *src);
 STATIC char *generate_reply(MODEL *mp, struct sentence *src);
+STATIC double evaluate_reply(MODEL *model, DICT *keywords, struct sentence *sentence);
 STATIC void make_greeting(struct sentence *dst);
-STATIC DICT *one_reply(MODEL *, DICT *);
-/* functions to fix::
-train(MODEL *model, char *filename);
-generate_reply(glob_model, glob_input);
-one_reply(model, keywords);
-STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence);
-STATIC char *make_output(DICT *words);
-STATIC bool dissimilar(DICT *dic1, DICT *dic2);
-*/
+STATIC struct sentence * sentence_new(void);
+STATIC int sentence_grow(struct sentence *ptr);
+STATIC int sentence_resize(struct sentence *ptr, unsigned newsize);
+STATIC void sentence_reverse(struct sentence *ptr);
+STATIC struct sentence *one_reply(MODEL *, DICT *);
+STATIC COMMAND_WORDS execute_command(struct sentence *, unsigned int *position);
+STATIC void changevoice(struct sentence *, unsigned int);
+STATIC void change_personality(struct sentence *, unsigned int, MODEL **);
+STATIC DICT *make_keywords(MODEL *mp, struct sentence *src);
+STATIC bool dissimilar(struct sentence *one, struct sentence *two);
+STATIC WordNum babble(MODEL *model, DICT *keywords, struct sentence *words);
+STATIC char *make_output(struct sentence *src);
+
 #else
 static DICT *glob_input = NULL;
 static DICT *glob_greets = NULL;
@@ -836,8 +834,16 @@ STATIC void make_words(char *, DICT *);
 STATIC WordNum add_word_nofuss(DICT *dict, STRING word);
 STATIC void learn_from_input(MODEL *mp, DICT * src);
 STATIC char *generate_reply(MODEL *mp, DICT *src);
+STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence);
 STATIC void make_greeting(DICT *dst);
 STATIC struct sentence *one_reply(MODEL *, DICT *);
+STATIC COMMAND_WORDS execute_command(DICT *, unsigned int *position);
+STATIC void changevoice(DICT *, unsigned int);
+STATIC void change_personality(DICT *, unsigned int, MODEL **);
+STATIC DICT *make_keywords(MODEL *, DICT *);
+STATIC bool dissimilar(DICT *, DICT *);
+STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words);
+STATIC char *make_output(DICT *);
 #endif
 
 void megahal_setquiet(void)
@@ -926,6 +932,8 @@ void megahal_initialize(void)
 		);
 
 #if WANT_SENTENCE
+    glob_input = sentence_new();
+    glob_greets = sentence_new();
 #else
     glob_input = new_dict();
     glob_greets = new_dict();
@@ -1114,7 +1122,11 @@ void megahal_cleanup(void)
  *		Purpose:		Detect whether the user has typed a command, and
  *						execute the corresponding function.
  */
-STATIC COMMAND_WORDS execute_command(DICT *words, unsigned int *position)
+#if WANT_SENTENCE
+STATIC COMMAND_WORDS execute_command(struct sentence *src, unsigned int *position)
+#else
+STATIC COMMAND_WORDS execute_command(DICT *src, unsigned int *position)
+#endif
 {
     unsigned int iwrd;
     unsigned int j;
@@ -1122,8 +1134,8 @@ STATIC COMMAND_WORDS execute_command(DICT *words, unsigned int *position)
     /*
      *		If there is only one word, then it can't be a command.
      */
-    *position = words->size+1;
-    if (words->size <= 1) return UNKNOWN;
+    *position = src->size+1;
+    if (src->size <= 1) return UNKNOWN;
 
     /*
      *		Search through the word array.  If a command prefix is found,
@@ -1132,16 +1144,16 @@ STATIC COMMAND_WORDS execute_command(DICT *words, unsigned int *position)
      *		Following word is a number, then change the judge.  Otherwise,
      *		continue the search.
      */
-    for(iwrd = 0; iwrd < words->size-1; iwrd++) {
+    for(iwrd = 0; iwrd < src->size-1; iwrd++) {
 	/*
 	 *		The command prefix was found.
 	 */
-	if (words->entry[iwrd].string.word[words->entry[iwrd].string.length - 1] != '#') continue;
+	if (src->entry[iwrd].string.word[src->entry[iwrd].string.length - 1] != '#') continue;
 	    /*
 	     *		Look for a command word.
 	     */
 	for(j = 0; j < COUNTOF(commands); j++)
-	if (!strncasecmp(commands[j].word.word, words->entry[iwrd + 1].string.word, words->entry[iwrd + 1].string.length) ) {
+	if (!strncasecmp(commands[j].word.word, src->entry[iwrd + 1].string.word, src->entry[iwrd + 1].string.length) ) {
 	    *position = iwrd + 1;
 	    return commands[j].command;
 		}
@@ -1564,7 +1576,7 @@ STATIC void add_word_nofuss(struct sentence *dst, STRING word)
 
 if (!dst) return ;
 
-if (dst->size >= dst->msize && grow_sentence(dst)) return ;
+if (dst->size >= dst->msize && sentence_grow(dst)) return ;
 
 
 dst->entry[dst->size++].string = word;
@@ -2713,9 +2725,9 @@ return TOKEN_MISC;
  *		Purpose:		Learn from the user's input.
  */
 #if WANT_SENTENCE
-STATIC void learn_from_input(MODEL *model, DICT *words)
-#else
 STATIC void learn_from_input(MODEL *model, struct sentence *words)
+#else
+STATIC void learn_from_input(MODEL *model, DICT *words)
 #endif
 {
     unsigned widx;
@@ -2794,9 +2806,9 @@ STATIC void train(MODEL *model, char *filename)
 {
     FILE *fp;
 #if WANT_SENTENCE
-    struct sentence *words = NULL;
+    struct sentence *exercise = NULL;
 #else
-    DICT *words = NULL;
+    DICT *exercise = NULL;
 #endif
     int length;
     char buffer[4*1024];
@@ -2813,7 +2825,11 @@ STATIC void train(MODEL *model, char *filename)
     length = ftell(fp);
     rewind(fp);
 
-    words = new_dict();
+#if WANT_SENTENCE
+    exercise = sentence_new();
+#else
+    exercise = new_dict();
+#endif
 
     progress("Training from file", 0, 1);
     while( fgets(buffer, sizeof buffer, fp) ) {
@@ -2822,15 +2838,19 @@ STATIC void train(MODEL *model, char *filename)
 	buffer[strlen(buffer)-1] ='\0';
 
 	/* upper(buffer);*/
-	make_words(buffer, words);
-	learn_from_input(model, words);
+	make_words(buffer, exercise);
+	learn_from_input(model, exercise);
 
 	progress(NULL, ftell(fp), length);
 
     }
     progress(NULL, 1, 1);
 
-    empty_dict(words);
+#if WANT_SENTENCE
+    exercise->size = 0;
+#else
+    empty_dict(exercise);
+#endif
     fclose(fp);
 }
 
@@ -3131,9 +3151,9 @@ fail:
  *	NOTE No memory for the STRINGS is allocated: the DICT points to the input string.
  */
 #if WANT_SENTENCE
-STATIC void make_words(char * str, struct sentence * target)
+STATIC void make_words(char * src, struct sentence * target)
 #else
-STATIC void make_words(char *input, DICT *target)
+STATIC void make_words(char *src, DICT *target)
 #endif /* WANT_SENTENCE */
 {
     size_t len, pos, chunk;
@@ -3142,24 +3162,24 @@ STATIC void make_words(char *input, DICT *target)
     int state = 0; /* FIXME: this could be made static to allow for multi-line strings */
 
 #if WANT_SENTENCE
-    target->used = 0;
+    target->size = 0;
 #else
     empty_dict(target);
 #endif
 
-    len = strlen(input);
+    len = strlen(src);
     if (!len) return;
 
     for(pos=0; pos < len ; ) {
 
-	chunk = tokenize(input+pos, &state);
+	chunk = tokenize(src+pos, &state);
         if (!chunk) { /* maybe we should reset state here ... */ pos++; }
         if (chunk > 255) {
-            warn( "Make_words", "Truncated too long  string(%u) at %s\n", (unsigned) chunk, input+pos);
+            warn( "Make_words", "Truncated too long string(%u) at %s\n", (unsigned) chunk, src+pos);
             chunk = 255;
             }
         word.length = chunk;
-        word.word = input+pos;
+        word.word = src+pos;
 #if WANT_SUPPRESS_WHITESPACE
         if (word_is_usable(word)) add_word_nofuss(target, word);
 #else
@@ -3456,8 +3476,13 @@ STATIC void make_greeting(DICT *target)
     unsigned int iwrd;
 
     for(iwrd = 0; iwrd < target->size; iwrd++) free(target->entry[iwrd].string.word);
+#if WANT_SENTENCE
+    target->size = 0;
+    // if (glob_grt->size > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->size) ].string );
+#else
     empty_dict(target);
     if (glob_grt->size > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->size) ].string );
+#endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3573,13 +3598,17 @@ STATIC char *generate_reply(MODEL *model, DICT *src)
  *		Purpose:		Return TRUE or FALSE depending on whether the dictionaries
  *						are the same or not.
  */
-STATIC bool dissimilar(DICT *dic1, DICT *dic2)
+#if WANT_SENTENCE
+STATIC bool dissimilar(struct sentence *one, struct sentence *two)
+#else
+STATIC bool dissimilar(DICT *one, DICT *two)
+#endif
 {
     unsigned int iwrd;
 
-    if (dic1->size != dic2->size) return TRUE;
-    for(iwrd = 0; iwrd < dic1->size; iwrd++)
-	if (wordcmp(dic1->entry[iwrd].string , dic2->entry[iwrd].string ) ) return TRUE;
+    if (one->size != two->size) return TRUE;
+    for(iwrd = 0; iwrd < one->size; iwrd++)
+	if (wordcmp(one->entry[iwrd].string , two->entry[iwrd].string ) ) return TRUE;
     return FALSE;
 }
 
@@ -3592,7 +3621,11 @@ STATIC bool dissimilar(DICT *dic1, DICT *dic2)
  *						a keywords dictionary, which will be used when generating
  *						a reply.
  */
-STATIC DICT *make_keywords(MODEL *model, DICT *words)
+#if WANT_SENTENCE
+STATIC DICT *make_keywords(MODEL *model, struct sentence *src)
+#else
+STATIC DICT *make_keywords(MODEL *model, DICT *src)
+#endif
 {
     unsigned int iwrd;
     WordNum symbol;
@@ -3623,16 +3656,16 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
     empty_dict(glob_keys);
 #endif
 
-    for(iwrd = 0; iwrd < words->size; iwrd++) {
+    for(iwrd = 0; iwrd < src->size; iwrd++) {
 	/*
 	 *		Find the symbol ID of the word.  If it doesn't exist in
 	 *		the model, or if it begins with a non-alphanumeric
 	 *		character, or if it is in the exclusion array, then
 	 *		skip over it.
 	 */
-	if (!myisalnum(words->entry[iwrd].string.word[0] )) continue;
+	if (!myisalnum(src->entry[iwrd].string.word[0] )) continue;
 	/* if (word_is_allcaps(words->entry[iwrd].string)) continue;*/
-        symbol = find_word(model->dict, words->entry[iwrd].string );
+        symbol = find_word(model->dict, src->entry[iwrd].string );
         if (symbol == WORD_NIL) continue;
         // if (symbol == WORD_ERR) continue;
         // if (symbol == WORD_FIN) continue;
@@ -3652,15 +3685,11 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 	for (other = 0; other < echocount; other++ ) {
 		unsigned dist;
 		dist = (other >=rotor ? (other - rotor): (rotor-other)) %  COUNTOF(distance_weight);
-		/* if (symbol < 2 || symbol >= model->dict->size
-		|| echobox[other] < 2 || echobox[other] >= model->dict->size ) fprintf(stderr, "[? %u, %u[%u/%u]]\n"
-			, symbol,echobox[other], other, echocount);
-		else */ crosstab_add_pair( glob_crosstab, echobox[other] , canonsym, distance_weight [dist] );
+		crosstab_add_pair( glob_crosstab, echobox[other] , canonsym, distance_weight [dist] );
 		}
 	if (echocount < COUNTOF(echobox)) echocount++;
 	echobox[rotor] = canonsym;
 	if (++rotor >= COUNTOF(echobox)) rotor =0;
-	/* fprintf(stderr, "[%u/%u %u]", rotor, echocount, other); */
 	}
 #endif
 
@@ -3668,15 +3697,15 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
     {
     unsigned int iswp, swapped = 0;
 	for(iswp = 0; iswp < glob_swp->size; iswp++)
-	    if (!wordcmp(glob_swp->pairs[iswp].from , words->entry[iwrd].string ) ) {
+	    if (!wordcmp(glob_swp->pairs[iswp].from , src->entry[iwrd].string ) ) {
 		add_key(model, glob_keys, glob_swp->pairs[iswp].to );
 		swapped++;
 		break;
 	    }
-	if (!swapped) add_key(model, glob_keys, words->entry[iwrd].string );
+	if (!swapped) add_key(model, glob_keys, src->entry[iwrd].string );
     }
 #else
-	add_key(model, glob_keys, words->entry[iwrd].string );
+	add_key(model, glob_keys, src->entry[iwrd].string );
 #if (KEYWORD_DICT_SIZE)
         if (glob_keys->size > 2* KEYWORD_DICT_SIZE) schrink_keywords(glob_keys, KEYWORD_DICT_SIZE);
 #endif
@@ -3689,17 +3718,17 @@ STATIC DICT *make_keywords(MODEL *model, DICT *words)
 #endif
 
 #if DONT_WANT_THIS
-    if (glob_keys->size > 0) for(iwrd = 0; iwrd < words->size; iwrd++) {
+    if (glob_keys->size > 0) for(iwrd = 0; iwrd < src->size; iwrd++) {
 
-	if (!myisalnum(words->entry[iwrd].string.word[0] )) continue;
+	if (!myisalnum(src->entry[iwrd].string.word[0] )) continue;
 	swapped = 0;
 	for(iswp = 0; iswp < glob_swp->size; iswp++)
-	    if (!wordcmp(glob_swp->pairs[iswp].from, words->entry[iwrd].string )) {
+	    if (!wordcmp(glob_swp->pairs[iswp].from, src->entry[iwrd].string )) {
 		add_aux(model, glob_keys, glob_swp->pairs[iswp].to );
 		swapped++;
 		break;
 	    }
-	if (!swapped) add_aux(model, glob_keys, words->entry[iwrd].string );
+	if (!swapped) add_aux(model, glob_keys, src->entry[iwrd].string );
     }
 #endif
 
@@ -3841,10 +3870,14 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
 #endif
     unsigned int widx;
     WordNum symbol;
-    // bool start = TRUE;
 
+#if WANT_SENTENCE
+    if (!zereply) zereply = sentence_new();
+    else zereply->size = 0;
+#else
     if (!zereply) zereply = new_dict();
     else empty_dict(zereply);
+#endif
 
     /*
      *		Start off by making sure that the model's context is empty.
@@ -3888,6 +3921,24 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
     /*
      *		Generate the reply in the backward direction.
      */
+#if WANT_SENTENCE
+    sentence_reverse(zereply);
+    while(1) {
+	/*
+	 *		Get a random symbol from the current context.
+	 */
+	symbol = babble(model, keywords, zereply);
+	if (symbol <= WORD_FIN) break;
+
+	add_word_nofuss(zereply, model->dict->entry[symbol].string );
+
+	/*
+	 *		Extend the current context of the model with the current symbol.
+	 */
+	update_context(model, symbol);
+    }
+    sentence_reverse(zereply);
+#else /* WANT_SENTENCE */
     while(1) {
 	/*
 	 *		Get a random symbol from the current context.
@@ -3919,6 +3970,7 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
 	 */
 	update_context(model, symbol);
     }
+#endif
 
     return zereply;
 }
@@ -3931,7 +3983,11 @@ STATIC DICT *one_reply(MODEL *model, DICT *keywords)
  *		Purpose:		Measure the average surprise of keywords relative to the
  *						language model.
  */
+#if WANT_SENTENCE
+STATIC double evaluate_reply(MODEL *model, DICT *keywords, struct sentence *sentence)
+#else
 STATIC double evaluate_reply(MODEL *model, DICT *keywords, DICT *sentence)
+#endif
 {
     unsigned int widx, iord;
     WordNum symbol, ksymbol, canonsym;
@@ -4097,7 +4153,11 @@ update2:
  *
  *		Purpose:		Generate a string from the dictionary of reply words.
  */
-STATIC char *make_output(DICT *words)
+#if WANT_SENTENCE
+STATIC char *make_output(struct sentence *src)
+#else
+STATIC char *make_output(DICT *src)
+#endif
 {
     static char *output = NULL;
     unsigned int widx;
@@ -4110,15 +4170,15 @@ STATIC char *make_output(DICT *words)
 #endif
 
 
-    if (words->size == 0) { return output_none; }
+    if (src->size == 0) { return output_none; }
 	/* calculate the space we'll need.
 	** We assume one space between adjacent wordst plus a NUL at the end.
 	*/
     length = 1;
 #if WANT_SUPPRESS_WHITESPACE
-    for(widx = 0; widx < words->size; widx++) length += 1+ words->entry[widx].string.length;
+    for(widx = 0; widx < src->size; widx++) length += 1+ src->entry[widx].string.length;
 #else
-    for(widx = 0; widx < words->size; widx++) length += words->entry[widx].string.length;
+    for(widx = 0; widx < src->size; widx++) length += src->entry[widx].string.length;
 #endif
     output = realloc(output, length);
     if (!output) {
@@ -4127,8 +4187,8 @@ STATIC char *make_output(DICT *words)
     }
 
 #if WANT_SUPPRESS_WHITESPACE
-    tags = malloc(2+words->size);
-    if (tags) memset(tags, 0, words->size);
+    tags = malloc(2+src->size);
+    if (tags) memset(tags, 0, src->size);
 #define NO_SPACE_L 1
 #define NO_SPACE_R 2
 #define IS_SINGLE 4
@@ -4136,31 +4196,31 @@ STATIC char *make_output(DICT *words)
 #define IS_HYPHEN 16
 
 	/* do we want a white before or after the token at [widx] ? */
-    for(widx = 0; widx < words->size; widx++) {
-	if (!widx			|| dont_need_white_l(words->entry[widx].string)) tags[widx] |= NO_SPACE_L;
-	if (widx == words->size-1	|| dont_need_white_r(words->entry[widx].string)) tags[widx] |= NO_SPACE_R;
-	if (words->entry[widx].string.length <= 1 && words->entry[widx].string.word[0] == '\'' ) { sqcnt++; tags[widx] |= IS_SINGLE; }
-	if (words->entry[widx].string.length <= 1 && words->entry[widx].string.word[0] == '"' ) { dqcnt++; tags[widx] |= IS_DOUBLE; }
-	if (words->entry[widx].string.length <= 1 && words->entry[widx].string.word[0] == '-' ) { hycnt++; tags[widx] |= IS_HYPHEN; }
+    for(widx = 0; widx < src->size; widx++) {
+	if (!widx			|| dont_need_white_l(src->entry[widx].string)) tags[widx] |= NO_SPACE_L;
+	if (widx == src->size-1	|| dont_need_white_r(src->entry[widx].string)) tags[widx] |= NO_SPACE_R;
+	if (src->entry[widx].string.length <= 1 && src->entry[widx].string.word[0] == '\'' ) { sqcnt++; tags[widx] |= IS_SINGLE; }
+	if (src->entry[widx].string.length <= 1 && src->entry[widx].string.word[0] == '"' ) { dqcnt++; tags[widx] |= IS_DOUBLE; }
+	if (src->entry[widx].string.length <= 1 && src->entry[widx].string.word[0] == '-' ) { hycnt++; tags[widx] |= IS_HYPHEN; }
 	}
 
 	/* First detect o'Hara and don't */
-    if (sqcnt >0) for(widx = 0; widx < words->size; widx++) {
+    if (sqcnt >0) for(widx = 0; widx < src->size; widx++) {
 	if ( !(tags[widx] & IS_SINGLE)) continue;
 #if 0
-	 fprintf(stderr, "Single:"); dump_word(stderr, words->entry[widx].string);
-	if (widx) { fprintf(stderr, "left:"); dump_word(stderr, words->entry[widx-1].string); fputc('\n', stderr); }
-	if (widx <words->size-1) { fprintf(stderr, "Right:"); dump_word(stderr, words->entry[widx+1].string); fputc('\n', stderr); }
+	 fprintf(stderr, "Single:"); dump_word(stderr, src->entry[widx].string);
+	if (widx) { fprintf(stderr, "left:"); dump_word(stderr, src->entry[widx-1].string); fputc('\n', stderr); }
+	if (widx <src->size-1) { fprintf(stderr, "Right:"); dump_word(stderr, src->entry[widx+1].string); fputc('\n', stderr); }
 #endif
 	/* if the word to the left is absent or 1char we dont want a white inbetween */
-	if (!widx || words->entry[widx-1].string.length <2) {
+	if (!widx || src->entry[widx-1].string.length <2) {
 		tags[widx] |= NO_SPACE_L;
 		tags[widx] |= NO_SPACE_R;
 		tags[widx] &= ~IS_SINGLE;
 		sqcnt--;
 		}
 	/* if the word to the right is absent or 1char we dont want a white inbetween */
-	if (widx == words->size-1 || words->entry[widx+1].string.length <2) {
+	if (widx == src->size-1 || src->entry[widx+1].string.length <2) {
 		tags[widx] |= NO_SPACE_L;
 		tags[widx] |= NO_SPACE_R;
 		tags[widx] &= ~IS_SINGLE;
@@ -4168,11 +4228,11 @@ STATIC char *make_output(DICT *words)
 	}
 
 	/* Try to match pairs of single quotes. This is rude: we don't care about nesting. */
-    if (sqcnt >1) for(begin= -1,widx = 0; widx < words->size; widx++) {
+    if (sqcnt >1) for(begin= -1,widx = 0; widx < src->size; widx++) {
 		if (!(tags[widx] & IS_SINGLE)) continue;
 		if (begin < 0) {begin = widx; continue; }
 		tags[begin] |= NO_SPACE_R; tags[begin] &= ~NO_SPACE_L; if (begin) tags[begin-1] &= ~NO_SPACE_R;
-		tags[widx] |= NO_SPACE_L; tags[widx] &= ~NO_SPACE_R; if (begin < words->size-1) tags[begin+1] &= ~NO_SPACE_L;
+		tags[widx] |= NO_SPACE_L; tags[widx] &= ~NO_SPACE_R; if (begin < src->size-1) tags[begin+1] &= ~NO_SPACE_L;
 		tags[begin] &= ~IS_SINGLE;
 		tags[widx] &= ~IS_SINGLE;
 		begin = -1;
@@ -4180,7 +4240,7 @@ STATIC char *make_output(DICT *words)
 		}
 
 	/* idem: double quotes */
-    if (dqcnt >1) for(begin= -1,widx = 0; widx < words->size; widx++) {
+    if (dqcnt >1) for(begin= -1,widx = 0; widx < src->size; widx++) {
 		if (!(tags[widx] & IS_DOUBLE)) continue;
 		if (begin < 0) {begin = widx; continue; }
 		tags[begin] |= NO_SPACE_R;
@@ -4191,7 +4251,7 @@ STATIC char *make_output(DICT *words)
 		dqcnt -= 2;
 		}
 	/* Idem: hyphens  */
-    if (hycnt >1) for(begin= -1,widx = 0; widx < words->size; widx++) {
+    if (hycnt >1) for(begin= -1,widx = 0; widx < src->size; widx++) {
 		if (!(tags[widx] & IS_HYPHEN)) continue;
 		if (begin < 0) {begin = widx; continue; }
 		tags[begin] |= NO_SPACE_R;
@@ -4205,7 +4265,7 @@ STATIC char *make_output(DICT *words)
 	** if there are any unmached quotes or hyphens left,
 	**  they don't want whitespace around them. Rude, again.
 	*/
-    if (sqcnt+dqcnt+hycnt) for(widx = 0; widx < words->size; widx++) {
+    if (sqcnt+dqcnt+hycnt) for(widx = 0; widx < src->size; widx++) {
 		if (!(tags[widx] & (IS_SINGLE | IS_DOUBLE | IS_HYPHEN))) continue;
 		tags[widx] |= NO_SPACE_L;
 		tags[widx] |= NO_SPACE_R;
@@ -4213,15 +4273,15 @@ STATIC char *make_output(DICT *words)
 #endif
 
     length = 0;
-    for(widx = 0; widx < words->size; widx++) {
+    for(widx = 0; widx < src->size; widx++) {
 #if WANT_SUPPRESS_WHITESPACE
 	if (!widx) {;}
 	else if (tags[widx] & NO_SPACE_L ) {;}
 	else if (tags[widx-1] & NO_SPACE_R) {;}
 	else output[length++] = ' ';
 #endif
-	memcpy(output+length, words->entry[widx].string.word, words->entry[widx].string.length);
-	length += words->entry[widx].string.length;
+	memcpy(output+length, src->entry[widx].string.word, src->entry[widx].string.length);
+	length += src->entry[widx].string.length;
 	}
 
     output[length] = '\0';
@@ -4250,7 +4310,11 @@ STATIC char *make_output(DICT *words)
  *						on probabilities, favouring keywords.  In all cases,
  *						use the longest available context to choose the symbol.
  */
-STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
+#if WANT_SENTENCE
+STATIC WordNum babble(MODEL *model, DICT *keywords, struct sentence *src)
+#else
+STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *src)
+#endif
 {
     TREE *node;
     unsigned int oidx,cidx;
@@ -4287,7 +4351,7 @@ STATIC WordNum babble(MODEL *model, DICT *keywords, DICT *words)
 #if DONT_WANT_THIS
 	if (find_word(keywords, model->dict->entry[symbol].string) == WORD_NIL ) goto next;
 	if (used_key == FALSE && find_word(glob_aux, model->dict->entry[symbol].string) != WORD_NIL) goto next;
-	if (word_exists(words, model->dict->entry[symbol].string) ) goto next;
+	if (word_exists(src, model->dict->entry[symbol].string) ) goto next;
 	used_key = TRUE;
 next:
 #endif
@@ -4838,11 +4902,15 @@ bool initialize_speech(void)
  *
  *		Purpose:		change voice of speech output.
  */
-void changevoice(DICT* words, unsigned int position)
+#if WANT_SENTENCE
+void changevoice(struct sentence* src, unsigned int position)
+#else
+void changevoice(DICT* src, unsigned int position)
+#endif
 {
 #ifdef __mac_os
     int i, index;
-    STRING word ={ 1, "#" };
+    STRING word ={ 1,0, "#" };
     char buffer[80];
     VoiceSpec voiceSpec;
     VoiceDescription info;
@@ -4852,10 +4920,10 @@ void changevoice(DICT* words, unsigned int position)
     /*
      *		If there is less than 4 words, no voice specified.
      */
-    if (words->size <= 4) return;
+    if (src->size <= 4) return;
 
-    for(i = 0; i < words->size-4; i++)
-	if (!wordcmp(word, words->entry[i].string ) ) {
+    for(i = 0; i < src->size-4; i++)
+	if (!wordcmp(word, src->entry[i].string ) ) {
 
 	    err = CountVoices(&voiceCount);
 	    if (!err && voiceCount) {
@@ -4876,7 +4944,7 @@ void changevoice(DICT* words, unsigned int position)
 		     *		skip command and get voice name
 		     */
 		    index = i + 3;
-		    memcpy(buffer, words->entry[index].string.word, sizeof buffer);
+		    memcpy(buffer, src->entry[index].string.word, sizeof buffer);
 		    buffer[(sizeof buffer) -1] = 0;
 		    c2pstr(buffer);
 		    /* compare ignoring case*/
@@ -5103,7 +5171,11 @@ void load_personality(MODEL **model)
 
 /*---------------------------------------------------------------------------*/
 
+#if WANT_SENTENCE
+void change_personality(struct sentence *command, unsigned int position, MODEL **model)
+#else
 void change_personality(DICT *command, unsigned int position, MODEL **model)
+#endif
 {
 
     if ( !glob_directory ) {
@@ -5247,28 +5319,47 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
     return 0; /* success */
 }
 
-STATIC int grow_sentence(struct sentence *ptr)
+STATIC struct sentence * sentence_new(void)
+{
+struct sentence *new;
+new = malloc (sizeof *new);
+new->size = new->msize = 0;
+new->entry= NULL;
+return new;
+}
+STATIC int sentence_grow(struct sentence *ptr)
 {
     unsigned newsize;
 
-    newsize = ptr->size ? ptr->size + ptr->size/2 : 64;
-    return resize_sentence(ptr, newsize);
+    newsize = ptr->size ? ptr->size + (1+ptr->size)/2 : 64;
+    return sentence_resize(ptr, newsize);
 }
 
 
-STATIC int resize_sentence(struct sentence *ptr, unsigned newsize)
+STATIC int sentence_resize(struct sentence *ptr, unsigned newsize)
 {
     void * old;
     old = ptr->entry ;
     ptr->entry = realloc (ptr->entry, newsize * sizeof *ptr->entry);
     if (!ptr->entry) {
-	error("resize_sentence", "Unable to allocate dict->slots.");
+	error("sentence_resize", "Unable to allocate entries.");
     	ptr->entry = old;
 	return -1;
 	}
     ptr->msize = newsize;
 
     return 0; /* success */
+}
+
+STATIC void sentence_reverse(struct sentence *ptr)
+{
+    unsigned bot,top;
+    for (bot = 0, top = ptr->size? ptr->size-1: 0; bot < top; bot++, top--) {
+	STRING tmp ;
+	tmp = ptr->entry[bot].string;
+	ptr->entry[bot].string = ptr->entry[top].string;
+	ptr->entry[top].string  = tmp;
+	}
 }
 
 /*********************************************************************************************/
