@@ -19,6 +19,12 @@
 #define SHOW_GEHANNUS 0
 #define SHOW_PERMUTE 0
 #define SHOW_INDEXES 0
+struct label {
+	size_t size;
+	size_t used;
+	char ** tabl ;
+	} *labels;
+
 
 static void cross_wipe_slot(struct crosstab *ptr,unsigned int slot);
 static void cross_fuzz_slot(struct crosstab *ptr,unsigned int slot);
@@ -39,6 +45,7 @@ static void index2_2d( unsigned *target, unsigned *index, unsigned cnt);
 static unsigned permute_doubles( double *values, unsigned *index, unsigned cnt);
 static unsigned permute_unsigned( unsigned *values, unsigned *index, unsigned cnt);
 static unsigned permute_rows( struct crossrow *rows, unsigned *index, unsigned cnt);
+static unsigned get_label (char *dst, unsigned num);
 
 extern unsigned urnd(unsigned lim);
 
@@ -75,8 +82,9 @@ static double crosstab_value(struct crosstab *ptr,unsigned slot)
 {
 double this;
 
-if (slot >= ptr->msize ) this = ptr->total.sum ? 1.0/ptr->total.sum : 0.0;
-else this =  ptr->score * ptr->scores[slot] ;
+if (slot >= ptr->msize) this = 0; // ptr->total.sum ? 0.1/ptr->total.sum : 0.0;
+else this = ptr->score * ptr->scores[slot] ;
+/* else this =  ptr->scores[slot] * ptr->total.sum * (double) ptr->table[slot].payload.uniq ; */
 
 /* return log(1/(1- this)) ; */
 return this;
@@ -352,7 +360,7 @@ unsigned idx,slot;
 if (!ptr || newsize >= ptr->msize) return;
 
 	/* Pick a victim: a random slot from idx[0] ... idx[newsize] and eat some of it's meat.
-	** we don't bother about the elements at newsize and beyond, because they are allmost dead meat anyway.
+	** we don't bother about the elements at newsize and beyond, because they are almost dead anyway.
 	 */
 idx = urnd(newsize);
 slot = ptr->index[idx] ;
@@ -361,7 +369,7 @@ cross_fuzz_slot(ptr,slot);
 	/* recalculate the power-iteration */
 crosstab_recalc(ptr);
 
-	/* reshuffle the index, such that idx[0] ... idx[newsize] contain the best items */
+	/* reshuffle the index, such that index[0] ... idx[newsize-1] contain the indexes of the best/worst items */
 index_doubles(ptr->index, ptr->scores, ptr->msize);
 
 #if ( SHOW_ITER >= 2)
@@ -371,8 +379,8 @@ for (slot=0; slot < ptr->msize; slot++ ) {
 	}
 fprintf(stderr, "\nTheVect" );
 for (slot=0; slot < ptr->msize; slot++ ) {
-	iter = ptr->index[slot];
-	fprintf(stderr, " | %6.4f", ptr->scores[iter] );
+	idx = ptr->index[slot];
+	fprintf(stderr, " | %6.4f", ptr->scores[idx] );
 	}
 fprintf(stderr, " | %6.4f\n", ptr->score);
 #endif
@@ -658,16 +666,21 @@ index_doubles(ptr->index, ptr->scores, ptr->msize);
 
 fprintf(fp, "\n[%4u]:        |%6u/%3u| %6.3f | weight |\n"
 	, ptr->freelist!=IDX_NIL? ptr->freelist:9999, ptr->total.sum,ptr->total.uniq,  ptr->score );
-fprintf(fp, "------|--------+----------+--------+--------+\n" );
+fprintf(fp, "------|--------+----------+---------+--------+\n" );
 for (idx=0; idx < ptr->msize; idx++ ) {
 	slot = ptr->index[idx];
 	value = crosstab_value(ptr,slot);
 	fprintf(fp, "%2u  %2u|", idx, slot );
 	if (ptr->table[slot].hash.key == IDX_NIL) fprintf(fp, " <free> |" );
 	else fprintf(fp, " %6u |", ptr->table[slot].hash.key );
-	fprintf(fp, "%6u/%2u | %6.4f | %6.4f |", ptr->table[slot].payload.sum, ptr->table[slot].payload.uniq, ptr->scores[slot], value );
+	fprintf(fp, "%6u/%2u | %6.5f | %6.4f |"
+		, ptr->table[slot].payload.sum, ptr->table[slot].payload.uniq
+		, (double) ptr->scores[slot], (double) value );
 
-	if (ptr->table[slot].hash.key != IDX_NIL && cnv) cnv(buff, ptr->table[slot].hash.key );
+	if (ptr->table[slot].hash.key != IDX_NIL) {
+		if (cnv) cnv(buff, ptr->table[slot].hash.key );
+		else get_label(buff, ptr->table[slot].hash.key );
+		}
 	else buff[0] = 0;
 	fprintf(fp, "%s\n", buff );
 	}
@@ -914,6 +927,49 @@ fclose (fp);
 fprintf(stderr,"Master=%u/%u; Sum=%u Cnt=%u\n"
 	, master.sum, master.uniq, sum, cnt);
 return cnt;
+}
+
+unsigned crosstab_labels_load(struct crosstab *dummy, char *name)
+{
+FILE *fp;
+char buff[512];
+size_t beg,len;
+
+fp = fopen(name, "r" );
+fprintf(stderr,"Names_Load(%s) :=%p\n", name, (void*) fp);
+
+if (labels) while (labels->used) {
+	free (labels->tabl[ --labels->used ] );
+	}
+if (!labels) { labels = malloc (sizeof *labels); labels->size = labels->used = 0; labels->tabl = NULL; }
+
+while (fgets(buff, sizeof buff, fp)) {
+	beg = strcspn(buff, "'" );
+	if (!beg) continue;
+	len = strcspn(buff, "#" );
+	if (len && len < beg) continue;
+	beg++;
+	len = strcspn(buff+beg, "'" );
+	buff[beg+len] = 0;
+	if (labels->used >= labels->size) {
+		size_t new_size = labels->size ? 2 * labels->size : 16;
+		labels->tabl = realloc (labels->tabl, new_size * sizeof *labels->tabl);
+		labels->size = new_size;
+		}
+	labels->tabl[ labels->used ] = malloc (1+len);
+	memcpy (labels->tabl[ labels->used ] , buff+beg, 1+len);
+	labels->used += 1;
+	}
+fclose (fp);
+fprintf(stderr,"Names=%u/%u;\n"
+	, (unsigned int) labels->used, (unsigned int) labels->size);
+return labels->used;
+}
+
+static unsigned get_label (char *dst, unsigned num)
+{
+if (num >= labels->used) return sprintf(dst, "<%u>", num);
+else return sprintf (dst, "'%s'", labels->tabl[ num] );
 }
 
 /* Eof */
