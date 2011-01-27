@@ -347,8 +347,10 @@
 	** be entered into the matrix.
 	*/
 #define CROSS_DICT_SIZE 31
-#define CROSS_DICT_WORD_DISTANCE 3
+#define CROSS_DICT_WORD_DISTANCE 2
 
+#define WANT_PARROT_CHECK 15
+#define PARROT_ADD(x) parrot_hash[ (x) % WANT_PARROT_CHECK] += 1
 	/* Use keyword weights when evaluating the replies */
 #define WANT_KEYWORD_WEIGHTS 1
 
@@ -559,6 +561,9 @@ static bool quiet = FALSE;
 static FILE *errorfp;
 static FILE *statusfp;
 
+#if WANT_PARROT_CHECK
+unsigned parrot_hash[WANT_PARROT_CHECK] = {0,};
+#endif /* WANT_PARROT_CHECK */
 #if DONT_WANT_THIS
 static bool used_key;
 #endif
@@ -732,7 +737,7 @@ static int check_interval(unsigned min, unsigned max, unsigned this);
 void read_dict_from_ascii(DICT *dict, char *name);
 static DICT *alz_dict = NULL;
 
-STATIC void dump_model(MODEL *model);
+STATIC void dump_model(MODEL * model, char *path, int flags);
 STATIC void dump_model_recursive(FILE *fp, TREE *tree, DICT *dict, int indent);
 
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol);
@@ -981,6 +986,11 @@ char *megahal_input(char *prompt)
 	return read_input(prompt);
 }
 
+void megahal_dumptree(char *path, int flags)
+{
+
+dump_model(glob_model, path, flags);
+}
 /*
    megahal_command --
 
@@ -1124,7 +1134,7 @@ STATIC void exithal(void)
 #endif
 
 #if WANT_DUMP_MODEL
-    dump_model(glob_model);
+    dump_model(glob_model, "megaha;.dmp", WANT_DUMP_MODEL);
 #endif
     show_memstat("Exit(0)" );
     exit(0);
@@ -2121,24 +2131,24 @@ STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
     return node;
 }
 
-STATIC void dump_model(MODEL * model)
+STATIC void dump_model(MODEL * model, char *path, int flags)
 {
 FILE *fp;
 
-fp = fopen ("tree.dmp", "w" );
+fp = fopen (path , "w" );
 if (!fp) return;
 
 fprintf(fp, "[ stamp Min=%u Max=%u ]\n", (unsigned)stamp_min, (unsigned)stamp_max);
 
-#if (WANT_DUMP_MODEL & 1)
-fprintf(fp, "->forward order=%u\n", (unsigned) model->order);
-dump_model_recursive(fp, model->forward, model->dict, 0);
-#endif
+if (flags & 1) {
+	fprintf(fp, "->forward order=%u\n", (unsigned) model->order);
+	dump_model_recursive(fp, model->forward, model->dict, 0);
+	}
 
-#if (WANT_DUMP_MODEL & 2)
-fprintf(fp, "->backward order=%u\n", (unsigned) model->order);
-dump_model_recursive(fp, model->backward, model->dict, 0);
-#endif
+if (flags & 2) {
+	fprintf(fp, "->backward order=%u\n", (unsigned) model->order);
+	dump_model_recursive(fp, model->backward, model->dict, 0);
+	}
 fprintf(fp, "->Eof\n" );
 fclose (fp);
 }
@@ -2716,7 +2726,7 @@ STATIC void learn_from_input(MODEL *model, struct sentence *words)
 STATIC void train(MODEL *model, char *filename)
 {
     FILE *fp;
-    struct sentence *exercise = NULL;
+    static struct sentence *exercise = NULL;
     int length;
     char buffer[4*1024];
 
@@ -2732,7 +2742,9 @@ STATIC void train(MODEL *model, char *filename)
     length = ftell(fp);
     rewind(fp);
 
-    exercise = sentence_new();
+    if (!exercise) exercise = sentence_new();
+    else exercise->size = 0;
+    
 
     progress("Training from file", 0, 1);
     while( fgets(buffer, sizeof buffer, fp) ) {
@@ -2749,7 +2761,6 @@ STATIC void train(MODEL *model, char *filename)
     }
     progress(NULL, 1, 1);
 
-    exercise->size = 0;
     fclose(fp);
 }
 
@@ -3379,6 +3390,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     char *output;
     unsigned count;
     int basetime;
+    double penalty;
 
 #if ALZHEIMER_FACTOR
     count = urnd(ALZHEIMER_FACTOR);
@@ -3411,6 +3423,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
      *		replies
      */
     max_surprise = -100.0;
+    penalty = 0.0;
     count = 0;
     basetime = time(NULL);
     progress("Generating reply", 0, 1);
@@ -3436,6 +3449,30 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	surprise = evaluate_reply(model, zeresult);
 	count++;
 	if (surprise > max_surprise && dissimilar(src, zeresult) ) {
+#if WANT_PARROT_CHECK
+{ unsigned pidx,nonempty,ssq;
+	double calc;
+	for (nonempty=ssq=pidx=0; pidx < WANT_PARROT_CHECK; pidx++) { 
+		if (parrot_hash[ pidx] ) nonempty++;
+		ssq += parrot_hash[ pidx] * parrot_hash[ pidx];
+		}
+	if (nonempty <= 1) continue;
+	if (ssq >= zeresult->size * zeresult->size) continue;
+	calc = (double) zeresult->size / WANT_PARROT_CHECK;
+	calc *= calc;
+	penalty = ssq ? log(ssq/calc) : 1.0;
+	penalty *= penalty;
+	penalty /= log(nonempty);
+        surprise /= penalty;
+        if (surprise <= max_surprise) continue;
+	max_surprise = surprise;
+	fprintf(stderr, "\nParrot= {" );
+	for (pidx=0; pidx < WANT_PARROT_CHECK; pidx++) { 
+		fprintf(stderr, "%u ", parrot_hash[ pidx] ); 
+		}
+	fprintf(stderr, "} ssq= %u Sq(N/h) = %f rat = %f penal = %f", ssq, calc, ssq/calc , penalty);
+}
+#endif /* WANT_PARROT_CHECK */
 	    output = make_output(zeresult);
 #if WANT_DUMP_ALL_REPLIES
 		fprintf(stderr, "\n%u %lf N=%u (Typ=%d Fwd=%lf Rev=%lf):\n\t%s\n"
@@ -3443,7 +3480,6 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 			, init_typ_fwd, init_val_fwd, init_val_rev
 			, output);
 #endif
-	    max_surprise = surprise;
 	}
  	progress(NULL, (time(NULL)-basetime),glob_timeout);
     } while(time(NULL)-basetime < glob_timeout);
@@ -3649,6 +3685,10 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
     initialize_context(model);
     model->context[0] = model->forward;
 
+#if WANT_PARROT_CHECK
+    memset (parrot_hash, 0, sizeof parrot_hash);
+#endif /* WANT_PARROT_CHECK */
+
     totcount = 0, entropy = 0.0;
     for (widx = 0; widx < sentence->size; widx++) {
 	symbol = find_word(model->dict, sentence->entry[widx].string );
@@ -3703,6 +3743,13 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
         entropy -= log(term);
 update1:
         update_context(model, symbol);
+#if WANT_PARROT_CHECK
+        for(iord = model->order+1; iord > 0; iord--) {
+	    node = model->context[iord] ;
+           if (node) break;
+           }
+	if (node) PARROT_ADD(node->stamp);
+#endif /* WANT_PARROT_CHECK */
     }
 
     initialize_context(model);
