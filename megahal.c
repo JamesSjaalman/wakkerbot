@@ -349,9 +349,6 @@
 #define CROSS_DICT_SIZE 31
 #define CROSS_DICT_WORD_DISTANCE 2
 
-#define WANT_PARROT_CHECK 15
-#define PARROT_ADD(x) parrot_hash[ (x) % WANT_PARROT_CHECK] += 1
-	/* Use keyword weights when evaluating the replies */
 #define WANT_KEYWORD_WEIGHTS 1
 
 	/* suppress whitespace; only store REAL words.
@@ -403,6 +400,9 @@
 	** whitespace does not count (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
 #define MIN_REPLY_SIZE 14
+#define WANT_PARROT_CHECK MIN_REPLY_SIZE
+#define PARROT_ADD(x) parrot_hash[ (x) % WANT_PARROT_CHECK] += 1
+	/* Use keyword weights when evaluating the replies */
 
 	/* Flags for converting strings to/from latin/utf8
 	** Best is to keep the corpus in utf8.
@@ -3430,49 +3430,43 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     do {
 	zeresult = one_reply(model);
 	if (zeresult->size < MIN_REPLY_SIZE) continue;
-#if DONT_WANT_THIS
-{ unsigned widx;
-
-    widx = zeresult->size;
-    if (widx) {
-        WordNum symbol;
-        TREE *node;
-	symbol = find_word(model->dict, zeresult->entry[0].string);
-        node = find_symbol(model->forward, symbol);
-        if (!node) continue;
-	symbol = find_word(model->dict, zeresult->entry[widx-1].string);
-        node = find_symbol(model->backward, symbol);
-        if (!node) continue;
-	}
-}
-#endif
 	surprise = evaluate_reply(model, zeresult);
 	count++;
-	if (surprise > max_surprise && dissimilar(src, zeresult) ) {
 #if WANT_PARROT_CHECK
-{ unsigned pidx,nonempty,ssq;
-	double calc;
-	for (nonempty=ssq=pidx=0; pidx < WANT_PARROT_CHECK; pidx++) { 
-		if (parrot_hash[ pidx] ) nonempty++;
-		ssq += parrot_hash[ pidx] * parrot_hash[ pidx];
-		}
-	if (nonempty <= 1) continue;
-	if (ssq >= zeresult->size * zeresult->size) continue;
-	calc = (double) zeresult->size / WANT_PARROT_CHECK;
-	calc *= calc;
-	penalty = ssq ? log(ssq/calc) : 1.0;
-	penalty *= penalty;
-	penalty /= log(nonempty);
-        surprise /= penalty;
-        if (surprise <= max_surprise) continue;
-	max_surprise = surprise;
-	fprintf(stderr, "\nParrot= {" );
-	for (pidx=0; pidx < WANT_PARROT_CHECK; pidx++) { 
-		fprintf(stderr, "%u ", parrot_hash[ pidx] ); 
-		}
-	fprintf(stderr, "} ssq= %u Sq(N/h) = %f rat = %f penal = %f", ssq, calc, ssq/calc , penalty);
-}
+	if (1) { unsigned pidx,nonemp,top,ssq,sum;
+	    double calc;
+	    top=sum=nonemp=ssq=0;
+	    for (pidx=0; pidx < WANT_PARROT_CHECK; pidx++) { 
+		    if (parrot_hash[pidx] ) nonemp++;
+		    if (top < parrot_hash[pidx]) top = parrot_hash[pidx] ;
+		    sum += parrot_hash[pidx] ;
+		    /* if (parrot_hash[pidx] > 1) ssq += (parrot_hash[pidx] -1)  * ( parrot_hash[pidx] -1) ; */
+		    ssq += parrot_hash[pidx] * parrot_hash[pidx] ;
+		    }
+	    if (nonemp <= 1) continue;
+	    // if (ssq >= zeresult->size * zeresult->size) continue;
+	    calc = (double) sum / WANT_PARROT_CHECK ; /* estimated count per cell */
+	    calc *= calc;
+	    calc *= WANT_PARROT_CHECK; /* estimated sum of squares */
+	    penalty = ((double)ssq/calc) ;
+	    // penalty *= sqrt( (double)top / sum);
+	    // penalty /= log(nonemp);
+            surprise /= penalty;
+#else
+	if (surprise > max_surprise && dissimilar(src, zeresult) ) {
 #endif /* WANT_PARROT_CHECK */
+
+#include <float.h>
+            if (surprise <= max_surprise + 2*DBL_EPSILON ) continue;
+
+#if WANT_PARROT_CHECK
+	    fprintf(stderr, "\nParrot= {" );
+	    for (pidx=0; pidx < WANT_PARROT_CHECK; pidx++) { fprintf(stderr, "%u ", parrot_hash[ pidx] ); }
+	    fprintf(stderr, "} Sum=%u Top=%u Nonemp=%u Ssq=%u Exp=%f Rat=%f Penal=%f Max=%f, Surp=%f"
+		, sum, top,nonemp, ssq, calc, ssq/calc , penalty, max_surprise, surprise);
+#endif /* WANT_PARROT_CHECK */
+
+	    max_surprise = surprise;
 	    output = make_output(zeresult);
 #if WANT_DUMP_ALL_REPLIES
 		fprintf(stderr, "\n%u %lf N=%u (Typ=%d Fwd=%lf Rev=%lf):\n\t%s\n"
@@ -3530,7 +3524,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
     STRING canonword;
     WordNum canonsym;
     WordNum echobox[CROSS_DICT_WORD_DISTANCE];
-    unsigned rotor , echocount;
+    unsigned rotor,echocount;
     unsigned other;
 
     if (!glob_crosstab ) {
@@ -3699,7 +3693,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac <= 1.0 / CROSS_DICT_SIZE /* && urnd(64) > 0 */ ) goto update1;
+	if (kfrac <= 1.0 / CROSS_DICT_SIZE ) goto update1;
 	probability = 0.0;
         count = 0;
         totcount++;
@@ -3708,12 +3702,11 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
-
             probability += (double)node->thevalue / model->context[iord]->childsum;
             count++;
             }
-
         if (!count) goto update1;
+
         gfrac = symbol_weight(model->dict, symbol, 0);
         weight = kfrac * log(1.0+gfrac);
         term = (double) probability / count;
@@ -3748,7 +3741,7 @@ update1:
 	    node = model->context[iord] ;
            if (node) break;
            }
-	if (node) PARROT_ADD(node->stamp);
+	if (node) { PARROT_ADD(node->stamp); }
 #endif /* WANT_PARROT_CHECK */
     }
 
@@ -3762,7 +3755,7 @@ update1:
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac <= 1.0 / CROSS_DICT_SIZE /* && urnd(64) > 0 */ ) goto update2;
+	if (kfrac <= 1.0 / CROSS_DICT_SIZE ) goto update2;
         probability = 0.0;
         count = 0;
         totcount++;
@@ -3771,11 +3764,13 @@ update1:
 
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
+
             probability += (double)node->thevalue / model->context[iord]->childsum;
             count++;
         }
 
         if ( !count ) goto update2;
+
         gfrac = symbol_weight(model->dict, symbol, 0);
         weight = kfrac * log(1.0+gfrac);
         term = (double) probability / count;
@@ -3786,6 +3781,13 @@ update1:
 #endif
 update2:
         update_context(model, symbol);
+#if WANT_PARROT_CHECK
+        for(iord = model->order+1; iord > 0; iord--) {
+	    node = model->context[iord] ;
+           if (node) break;
+           }
+	if (node) { PARROT_ADD(node->stamp); }
+#endif /* WANT_PARROT_CHECK */
     }
 
     /* if (totcount >= 8) entropy /= sqrt(totcount-1); */
@@ -3800,7 +3802,8 @@ update2:
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
     if (widx) {
-	if (widx > MIN_REPLY_SIZE) entropy /= sqrt (1.0* widx / MIN_REPLY_SIZE);
+	// if (widx > MIN_REPLY_SIZE) entropy /= sqrt (1.0* widx / MIN_REPLY_SIZE);
+	if (widx > MIN_REPLY_SIZE) entropy -= log (1.0* widx / MIN_REPLY_SIZE);
 	init_val_fwd = start_penalty(model, sentence->entry[0].string);
 	init_val_rev = end_penalty(model, sentence->entry[widx-1].string );
         if ( init_val_fwd != 0.0) entropy -= init_val_fwd;
@@ -4411,7 +4414,7 @@ unsigned int urnd(unsigned int range)
 #if defined(__mac_os) || defined(DOS)
     return rand()%range;
 #else
-if (range <1) return 0;
+if (range <= 1) return 0;
 while(1)	{
     unsigned val, box;
 #if WANT_RDTSC_RANDOM
@@ -4997,7 +5000,6 @@ alz_dict = model->dict;
 
 alz_file = fopen ("alzheimer.dmp", "a" );
 
-if (direction < 2) direction = urnd(stamp_max);
 
 	/* density is an estimate of the amount of nodes we expect to reap per timestamp
 	** step is our estimate for the number of steps we need to add to stamp_min to harvest
@@ -5007,6 +5009,7 @@ if (density == 0.0) {
 	width = (unsigned)(stamp_max-stamp_min);
 	if (width < 2) return 0;
 	density = (double)memstats.node_cnt / width ;
+	direction = urnd(stamp_max);
 	}
 
 for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
@@ -5017,7 +5020,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
     if (!step) step = 1;
     limit = stamp_min + step;
 
-#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 1)
+#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 2)
     fprintf(stderr, "Model_alzheimer(%u:%s) NodeCount=%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f Step=%u Limit=%u\n"
 	, direction, (direction%2) ? "Backward" : "Forward"
 	    , (unsigned)memstats.node_cnt, (unsigned)maxnodecount
@@ -5033,7 +5036,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
 
     rc = check_interval(stamp_min, stamp_max, limit);
     if (rc) { /* outside interval */
-#if WANT_DUMP_ALZHEIMER_PROGRESS
+#if (WANT_DUMP_ALZHEIMER_PROGRESS >=0)
 	    fprintf(stderr, "Model_alzheimer(%u:%s) outside interval Rc=%d Ajuus!\n"
 		, direction, (direction%2) ? "Backward" : "Forward", rc);
 #endif
@@ -5053,10 +5056,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
         count = symbol_alzheimer_recurse(model->backward, 0, limit);
         break;
 	}
-#if WANT_DUMP_ALZHEIMER_PROGRESS
-    fprintf(stderr, "symbol_alzheimer_after(%u:%s) := %u\n"
-	, direction, (direction%2) ? "Backward" : "Forward" , count);
-#endif
+
     totcount += count;
 
 	/*
@@ -5070,16 +5070,18 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
     stamp_min = limit;
 
 #if WANT_DUMP_ALZHEIMER_PROGRESS
-    fprintf(stderr, "Model_alzheimer(%u:%s) (after) Count=%u/%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f\n"
+    fprintf(stderr, "Model_alzheimer(%u:%s) Count=%6u %u/%u Stamp=[%u,%u] Width=%u Step=%u Dens=%6.4f\n"
 	, direction, (direction%2) ? "Backward" : "Forward" , count
-	    , (unsigned)memstats.node_cnt, (unsigned)maxnodecount
-	    , (unsigned)stamp_min, (unsigned)stamp_max,(unsigned)(stamp_max-stamp_min), density);
+	, (unsigned)memstats.node_cnt, (unsigned)maxnodecount
+	, (unsigned)stamp_min, (unsigned)stamp_max,(unsigned)(stamp_max-stamp_min)
+	,step, density);
 #endif
 
-    fprintf(alz_file, "Model_alzheimer(%u:%s) (after) Count=%u/%u/%u Stamp_min=%u Stamp_max=%u Width=%u Dens=%6.4f\n"
+    fprintf(alz_file,  "Model_alzheimer(%u:%s) Count=%6u %u/%u Stamp=[%u,%u] Width=%u Step=%u Dens=%6.4f\n"
 	, direction, (direction%2) ? "Backward" : "Forward" , count
 	    , (unsigned)memstats.node_cnt, (unsigned)ALZHEIMER_NODE_COUNT
-	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)(stamp_max-stamp_min), density);
+	    , (unsigned)stamp_min, (unsigned)stamp_max, (unsigned)(stamp_max-stamp_min)
+	,step, density);
 	/* Avoid the next iteration to overshoot (we expect to harvest 'count' items) */
     direction++;
     if (memstats.node_cnt <= maxnodecount+count/2) break;
@@ -5101,7 +5103,7 @@ alz_stack[lev++] = tree;
 
 rc = check_interval(lim, stamp_max, tree->stamp);
 if (rc) { /* Too old: outside interval */
-#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 2)
+#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 3)
 	for (slot=0; slot< lev; slot++) fputc(' ', alz_file);
 	for (slot=0; slot< lev; slot++) fprintf(alz_file, "[%u:%u]", alz_stack[slot]->symbol, alz_stack[slot]->stamp );
 	fprintf(alz_file, "symbol_alzheimer_recurse(rc=%d) Node considered too old (stamp=%u symbol=%u childsum=%u count=%u)\n"
@@ -5117,7 +5119,7 @@ count = 0;
 for (slot = tree->branch; slot--> 0;	) {
 	TREE *child;
 
-#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 2)
+#if (WANT_DUMP_ALZHEIMER_PROGRESS >= 3)
     fprintf(alz_file, "symbol_alzheimer_recurse(lev=%u lim=%u) Stamp=%u enter this slot=%u\n"
 	, lev, lim, tree->stamp, slot);
 #endif
