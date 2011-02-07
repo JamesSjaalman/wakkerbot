@@ -63,6 +63,7 @@ else	return x+(y*(y+1))/2;
 unsigned crosstab_get(struct crosstab *ptr,unsigned idx)
 {
 unsigned slot;
+if (idx >= ptr->msize) return IDX_NIL;
 slot = ptr->index[idx];
 return ptr->table[slot].hash.key;
 }
@@ -83,6 +84,7 @@ static double crosstab_value(struct crosstab *ptr,unsigned slot)
 double this;
 
 if (slot >= ptr->msize) this = 0; // ptr->total.sum ? 0.1/ptr->total.sum : 0.0;
+// else if (slot >= ptr->msize/2) this = ptr->total.sum ? 1.0/ptr->total.sum : 0.0;
 else this = ptr->score * ptr->scores[slot] ;
 /* else this =  ptr->scores[slot] * ptr->total.sum * (double) ptr->table[slot].payload.uniq ; */
 
@@ -359,12 +361,14 @@ unsigned idx,slot;
 
 if (!ptr || newsize >= ptr->msize) return;
 
+#if 0
 	/* Pick a victim: a random slot from idx[0] ... idx[newsize] and eat some of it's meat.
 	** we don't bother about the elements at newsize and beyond, because they are almost dead anyway.
 	 */
 idx = urnd(newsize);
 slot = ptr->index[idx] ;
 cross_fuzz_slot(ptr,slot);
+#endif
 
 	/* recalculate the power-iteration */
 crosstab_recalc(ptr);
@@ -395,7 +399,7 @@ void crosstab_repack(struct crosstab * ptr)
 unsigned int *index_2d;
 
 if (!ptr) return;
-	/* do poswer-iteration and reshuffle index */
+	/* do power-iteration and reshuffle index */
 crosstab_recalc(ptr);
 index_doubles(ptr->index, ptr->scores, ptr->msize);
 
@@ -660,7 +664,7 @@ unsigned int slot,idx;
 double value;
 char buff [500];
 
-	/* do poswer-iteration and reshuffle index */
+	/* do power-iteration and reshuffle index */
 crosstab_recalc(ptr);
 index_doubles(ptr->index, ptr->scores, ptr->msize);
 
@@ -736,7 +740,6 @@ anchor_double= values;
 qsort (index, cnt, sizeof index[0], cmp_ranked_double);
 }
 
-/* Eof */
 static void index2_2d( unsigned *target, unsigned *index, unsigned cnt)
 {
 unsigned x_dst,y_dst,x_src,y_src,z_dst,z_src;
@@ -898,7 +901,7 @@ fclose (fp);
 unsigned crosstab_bin_load(struct crosstab *ptr, char *name)
 {
 FILE *fp;
-unsigned int cnt,sum;
+unsigned int cnt,sum, res;
 struct dmprec {
 	unsigned key0;
 	unsigned key1;
@@ -907,22 +910,25 @@ struct dmprec {
 	} master,detail;
 
 fp = fopen(name, "rb" );
-/* crosstab_recalc(ptr); */
 fprintf(stderr,"Load(%s) :=%p\n", name, (void*) fp);
 
-fread(&master, sizeof master, 1, fp);
+res = fread(&master, sizeof master, 1, fp);
+if (res < 1) goto kut;
 
 for (sum=cnt=0; ;  ) {
 	fread(&detail, sizeof detail, 1, fp);
 	if (fread(&detail, sizeof detail, 1, fp) <1) break;
+	/* fprintf(stderr, "[%u %u] %u\n", detail.key0,  detail.key1, detail.sum); */
 	if (detail.key0 == IDX_NIL) continue;
 	if (detail.key1 == IDX_NIL) continue;
 	if (detail.sum == 0) continue;
-	/* if (cnt >= ptr->msize-2) crosstab_resize (ptr, ptr->msize? 2*ptr->msize: 16 ); */
 	crosstab_add_pair(ptr, detail.key0,  detail.key1, detail.sum);
 	sum += detail.sum;
 	cnt += 1;
+	if (cnt % 4096 == 0) fprintf(stderr,"Master=%u/%u; Sum=%u Cnt=%u\n"
+		, master.sum, master.uniq, sum, cnt);
 	}
+kut:
 fclose (fp);
 fprintf(stderr,"Master=%u/%u; Sum=%u Cnt=%u\n"
 	, master.sum, master.uniq, sum, cnt);
@@ -971,5 +977,68 @@ static unsigned get_label (char *dst, unsigned num)
 if (num >= labels->used) return sprintf(dst, "<%u>", num);
 else return sprintf (dst, "'%s'", labels->tabl[ num] );
 }
+
+#define HASH2(k0,k1) ((k0)<<7^(k1))
+struct sparse_elem {
+	unsigned keys[2];
+	unsigned link;
+	unsigned val;
+	};
+
+struct sparse_table {
+	unsigned size;
+	unsigned free;
+	struct sparse_elem *data;
+	};
+
+struct sparse_table *sparse_new(unsigned size)
+{
+struct sparse_table *new;
+
+new = malloc (sizeof *new);
+if (!new) return new;
+new->free = 0;
+new->size = 0;
+new->data = malloc ( size * sizeof *new->data);
+if (new->data) {
+	sparse_elem_format(new->data, size);
+	new->size = size;
+	}
+return new;
+}
+
+void sparse_resize(struct sparse_table *tbl, unsigned size)
+{
+struct sparse_elsem *old;
+unsigned idx, oldsize;
+
+old = tbl->data ;
+oldsize = tbl->size ;
+tbl->data = malloc ( size * sizeof *tbl->data);
+if (!tbl->data) return new;
+if (!tbl->data) { tbl->data = old; return; }
+sparse_elem_format(tbl->data, size);
+tbl->size = size;
+for (idx = 0; idx < oldsize ; idx++) {
+	unsigned slot;
+	}
+
+tbl->free = new->size;
+return ;
+}
+
+void sparse_elem_format(struct sparse_elem arr[], unsigned cnt)
+{
+unsigned idx;
+if (!cnt) return;
+for (idx=0; idx < cnt; idx++) {
+	arr [idx].keys[0] =0;
+	arr [idx].keys[1] =0;
+	arr [idx].val = 0;
+	arr [idx].link = idx+1;
+	}
+arr [cnt-1].link = 0xffffffff;
+}
+
 
 /* Eof */
