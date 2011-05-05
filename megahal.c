@@ -1,3 +1,10 @@
+/*
+* Copyright (C) 2010 Wildplasser
+* Plasbot 2.0, 2010-09-24 -- 2011-02-27
+*  Based on Megahal by Jason L. Hutchens.
+*
+*		* I should have rewritten it from scratch.
+*/
 /*===========================================================================*/
 
 /*
@@ -96,7 +103,6 @@
  */
 
 /*===========================================================================*/
-
 /*
  *		$Log: megahal.c,v $
  *		Revision 1.10  2004/02/23 11:12:29  lfousse
@@ -338,17 +344,19 @@
 	/* The crossdict is a cross-table containing a keyword-keyword adjacency matrix.
 	** this matrix is evaluated by a power-iteration algoritm, which basically
 	** yields the first eigenvector and -value.
-	** the matrix is fed with pairs of "n-adjacent" words, plus a distance.
+	** The matrix is fed with pairs of "n-adjacent" words, plus a distance.
+	** The matrix has a fixed size; if a new insertion would make it bigger than
+	** (CROSS_DICT_SIZE) the weakest keywords are removed.
+	**
 	** Only "rare" words (with "less than average" frequency of occurence) are considered.
 	** Only pairs of words with a (distance <= CROSS_DICT_WORD_DISTANCE) are entered.
-	** To avoid unbounded growth, random rows of the matrix have their values decremented
-	** periodicly.
 	** specifying a CROSS_DICT_WORD_DISTANCE of 3 will cause word[x] downto word[x-3] to
 	** be entered into the matrix.
 	*/
-#define CROSS_DICT_SIZE 31
-#define CROSS_DICT_WORD_DISTANCE 2
+#define CROSS_DICT_SIZE 71
+#define CROSS_DICT_WORD_DISTANCE 1
 
+	/* Use keyword weights when evaluating the replies */
 #define WANT_KEYWORD_WEIGHTS 1
 
 	/* suppress whitespace; only store REAL words.
@@ -366,7 +374,7 @@
 
 	/*
 	** ALZHEIMER_NODE_COUNT is the number of nodes we intend to maintain.
-	** if the actual number of nodes exceeds this limit, the Alzheimer-functions might be triggered,
+	** If the actual number of nodes exceeds this limit, the Alzheimer-functions might be triggered,
 	** and the oldest nodes will be pruned. The timestamp is used as a poor man's LRU.
 	** NOTE: this is the *intended* number. The actual number will fluctuate, and will
 	** sometimes exceed this limit.
@@ -386,10 +394,7 @@
 	/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
 
-	/* Resizing the tree is a space/time tradeoff:
-	** resizing it on every insert/delete results in O(N*N) behavior.
-	** Doing it less often will cost less CPU, but will consume more memory.
-	** For TREEs, we use SQRT(n) as the value to increment/decrement with.
+	/* For TREEs, we use SQRT(n) as the value to increment/decrement with.
 	** NOTE dicts will hardly ever be shrunk; only emptied.
 	*/
 #define DICT_SIZE_INITIAL 4
@@ -400,9 +405,8 @@
 	** whitespace does not count (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
 #define MIN_REPLY_SIZE 14
-#define WANT_PARROT_CHECK MIN_REPLY_SIZE
+#define WANT_PARROT_CHECK (MIN_REPLY_SIZE-1)
 #define PARROT_ADD(x) parrot_hash[ (x) % WANT_PARROT_CHECK] += 1
-	/* Use keyword weights when evaluating the replies */
 
 	/* Flags for converting strings to/from latin/utf8
 	** Best is to keep the corpus in utf8.
@@ -863,6 +867,8 @@ void megahal_settimeout (char *string)
 
 void megahal_initialize(void)
 {
+    unsigned bogus;
+    bogus = urnd(100);
     errorfp = stderr;
     statusfp = stdout;
 
@@ -894,6 +900,7 @@ void megahal_initialize(void)
     glob_input = sentence_new();
     glob_greets = sentence_new();
     change_personality(NULL, 0, &glob_model);
+    while (bogus--) urnd(42);
 }
 
 /*
@@ -2456,6 +2463,8 @@ STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
  * The sorting does not consume enough CPU to justify a mergesort or insertion sort variant.
  * (qsort ate 10% when training, most of it in the compare function)
  * This is a "one pass bubblesort"; it will _eventually_ get the array sorted.
+ * Having the array sorted is not important: babble() may need some more steps
+ * on an unsorted array.
  */
 unsigned idx;
 for (idx = 1; idx < count; idx++) {
@@ -2469,7 +2478,10 @@ for (idx = 1; idx < count; idx++) {
 qsort(slots, count, sizeof *slots, treeslots_cmp);
 #endif
 }
-
+/* Profiling shows that node_hnd() is the biggest CPU consumer
+** (unless Alzheimer kicks in ;-)
+** I don't see a way to speed this thing up, except for maybe making is static.
+*/
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol)
 {
 ChildIndex *ip;
@@ -2549,7 +2561,9 @@ if (altsym != WORD_NIL) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
 
 if (altsym==WORD_NIL) {
 	/* this is to catch typos, which have an initial score of 2*(1+order) */
-	// if (dict->entry[symbol].stats.valuesum < 10) return 0.00099;
+	if (dict->entry[symbol].stats.valuesum <= 12) return 0.00099;
+	if (dict->entry[symbol].stats.nnode <= 12) return 0.00088;
+	if (dict->entry[symbol].stats.valuesum == dict->entry[symbol].stats.nnode) return 0.00777;
         return ((double)dict->stats.valuesum / dict->stats.nonzero)
 		/ (0.5 + dict->entry[symbol].stats.valuesum)
 		;
@@ -2785,6 +2799,7 @@ void show_dict(DICT *dict)
 	return;
     }
 
+fprintf(fp, "#Nnode\tnValue\tR(Nfrac/Vfrac)\tWord\t");
 fprintf(fp, "# TotStats= %llu %llu Words= %lu/%lu Nonzero=%lu\n"
 	, (unsigned long long) dict->stats.nnode, (unsigned long long) dict->stats.valuesum
 	, (unsigned long) dict->size, (unsigned long) dict->msize, (unsigned long) dict->stats.nonzero );
@@ -3399,6 +3414,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
         model_alzheimer(model, ALZHEIMER_NODE_COUNT);
 	}
 #endif
+
     initialize_context(model);
     /*
      *		Create an array of keywords from the words in the user's input
@@ -3406,17 +3422,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     make_keywords(model, src);
     output = output_none;
 
-#if 0
-    {
-    static DICT *dummy = NULL;
-    if (!dummy) dummy = new_dict();
-    zeresult = one_reply(model, dummy);
-    if (dissimilar(src, zeresult)) output = make_output(zeresult);
-    }
-#else
     zeresult = one_reply(model);
-    /* output = make_output(zeresult); */
-#endif
 
     /*
      *		Loop for the specified waiting period, generating and evaluating
@@ -3444,12 +3450,12 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 		    ssq += parrot_hash[pidx] * parrot_hash[pidx] ;
 		    }
 	    if (nonemp <= 1) continue;
-	    // if (ssq >= zeresult->size * zeresult->size) continue;
 	    calc = (double) sum / WANT_PARROT_CHECK ; /* estimated count per cell */
 	    calc *= calc;
 	    calc *= WANT_PARROT_CHECK; /* estimated sum of squares */
 	    penalty = ((double)ssq/calc) ;
-	    // penalty *= sqrt( (double)top / sum);
+	    penalty *= sqrt ((double)sum/nonemp);
+	    penalty *= sqrt ( (double)top / sum);
 	    // penalty /= log(nonemp);
             surprise /= penalty;
 #else
@@ -3702,6 +3708,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
+            if (node->thevalue < 2) continue; /* too unique: don't count them */
             probability += (double)node->thevalue / model->context[iord]->childsum;
             count++;
             }
@@ -3764,6 +3771,7 @@ update1:
 
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
+            if (node->thevalue < 2) continue;
 
             probability += (double)node->thevalue / model->context[iord]->childsum;
             count++;
@@ -3802,8 +3810,8 @@ update2:
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
     if (widx) {
-	// if (widx > MIN_REPLY_SIZE) entropy /= sqrt (1.0* widx / MIN_REPLY_SIZE);
-	if (widx > MIN_REPLY_SIZE) entropy -= log (1.0* widx / MIN_REPLY_SIZE);
+	entropy /= (1.0* widx / MIN_REPLY_SIZE);
+	if (widx > MIN_REPLY_SIZE) entropy /= sqrt (1.0* widx / MIN_REPLY_SIZE);
 	init_val_fwd = start_penalty(model, sentence->entry[0].string);
 	init_val_rev = end_penalty(model, sentence->entry[widx-1].string );
         if ( init_val_fwd != 0.0) entropy -= init_val_fwd;
@@ -4056,11 +4064,13 @@ STATIC WordNum seed(MODEL *model)
 		? model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol
 		: WORD_NIL;
 	if (symbol >= model->dict->size) symbol = urnd(model->dict->size);
+#if 0
 	else {
 		altword = word_dup_initcaps (model->dict->entry[symbol].string);
 		altsym = find_word(model->dict, altword);
 		if (altsym != WORD_NIL) symbol = altsym;
 		}
+#endif
     // fprintf(stderr, "{*%u}", symbol );
     return symbol;
 }
@@ -4415,6 +4425,7 @@ unsigned int urnd(unsigned int range)
     return rand()%range;
 #else
 if (range <= 1) return 0;
+
 while(1)	{
     unsigned val, box;
 #if WANT_RDTSC_RANDOM
