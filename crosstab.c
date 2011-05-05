@@ -85,7 +85,7 @@ double this;
 
 if (slot >= ptr->msize) this = 0; // ptr->total.sum ? 0.1/ptr->total.sum : 0.0;
 // else if (slot >= ptr->msize/2) this = ptr->total.sum ? 1.0/ptr->total.sum : 0.0;
-else this = ptr->score * ptr->scores[slot] ;
+else this = /* ptr->score * */ ptr->scores[slot] ;
 /* else this =  ptr->scores[slot] * ptr->total.sum * (double) ptr->table[slot].payload.uniq ; */
 
 /* return log(1/(1- this)) ; */
@@ -978,6 +978,7 @@ if (num >= labels->used) return sprintf(dst, "<%u>", num);
 else return sprintf (dst, "'%s'", labels->tabl[ num] );
 }
 
+#if WANT_SPARSE
 #define HASH2(k0,k1) ((k0)<<7^(k1))
 struct sparse_elem {
 	unsigned keys[2];
@@ -1042,3 +1043,4 @@ arr [cnt-1].link = 0xffffffff;
 
 
 /* Eof */
+#endif /* WANT_SPARSE */
