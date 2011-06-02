@@ -1,10 +1,3 @@
-/*
-* Copyright (C) 2010 Wildplasser
-* Plasbot 2.0, 2010-09-24 -- 2011-02-27
-*  Based on Megahal by Jason L. Hutchens.
-*
-*		* I should have rewritten it from scratch.
-*/
 /*===========================================================================*/
 
 /*
@@ -103,6 +96,7 @@
  */
 
 /*===========================================================================*/
+
 /*
  *		$Log: megahal.c,v $
  *		Revision 1.10  2004/02/23 11:12:29  lfousse
@@ -268,6 +262,7 @@
 #include <string.h>
 #include <strings.h> /* strncasecmp */
 #include <signal.h>
+#include <float.h> /* DBL_EPSILON */
 #include <math.h>
 #include <time.h>
 #include <ctype.h>
@@ -301,8 +296,8 @@
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
+#define STATIC static
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
@@ -353,8 +348,8 @@
 	** specifying a CROSS_DICT_WORD_DISTANCE of 3 will cause word[x] downto word[x-3] to
 	** be entered into the matrix.
 	*/
-#define CROSS_DICT_SIZE 71
-#define CROSS_DICT_WORD_DISTANCE 1
+#define CROSS_DICT_SIZE 41
+#define CROSS_DICT_WORD_DISTANCE 2
 
 	/* Use keyword weights when evaluating the replies */
 #define WANT_KEYWORD_WEIGHTS 1
@@ -375,8 +370,8 @@
 	/*
 	** ALZHEIMER_NODE_COUNT is the number of nodes we intend to maintain.
 	** If the actual number of nodes exceeds this limit, the Alzheimer-functions might be triggered,
-	** and the oldest nodes will be pruned. The timestamp is used as a poor man's LRU.
-	** NOTE: this is the *intended* number. The actual number will fluctuate, and will
+	** and the oldest nodes will be pruned off. A timestamp is used as a poor man's LRU.
+	** NOTE: this is the *intended* number of nodes. The actual number will fluctuate, and will
 	** sometimes exceed this limit.
 	**
 	** (1/ALZHEIMER_FACTOR) is the chance of Alzheimer hitting the tree, once per reply or lerning step.
@@ -389,7 +384,7 @@
 	** YMMV
 	*/
 #define ALZHEIMER_NODE_COUNT ( 35 * 1000 * 1000)
-#define ALZHEIMER_FACTOR 100
+#define ALZHEIMER_FACTOR 1000
 
 	/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
@@ -405,8 +400,8 @@
 	** whitespace does not count (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
 #define MIN_REPLY_SIZE 14
-#define WANT_PARROT_CHECK (MIN_REPLY_SIZE-1)
-#define PARROT_ADD(x) parrot_hash[ (x) % WANT_PARROT_CHECK] += 1
+#define WANT_PARROT_CHECK (MIN_REPLY_SIZE)
+#define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1
 
 	/* Flags for converting strings to/from latin/utf8
 	** Best is to keep the corpus in utf8.
@@ -1141,7 +1136,7 @@ STATIC void exithal(void)
 #endif
 
 #if WANT_DUMP_MODEL
-    dump_model(glob_model, "megaha;.dmp", WANT_DUMP_MODEL);
+    dump_model(glob_model, "megahal.dmp", WANT_DUMP_MODEL);
 #endif
     show_memstat("Exit(0)" );
     exit(0);
@@ -2680,7 +2675,7 @@ STATIC void learn_from_input(MODEL *model, struct sentence *words)
 
 #if ALZHEIMER_FACTOR
     { unsigned val;
-    val = urnd(10*ALZHEIMER_FACTOR);
+    val = urnd(ALZHEIMER_FACTOR);
     if (val == ALZHEIMER_FACTOR/2) {
         initialize_context(model);
         model_alzheimer(model, ALZHEIMER_NODE_COUNT);
@@ -2893,7 +2888,7 @@ STATIC void save_model(char *modelname, MODEL *model)
     save_dict(fp, model->dict);
     status("Saved %lu(%lu+%lu) nodes, %u words.\n"
 	, memstats.node_cnt, forw, back
-	,memstats.word_cnt);
+	, memstats.word_cnt);
     fclose(fp);
 }
 
@@ -3401,13 +3396,17 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     static char *output_none = "Geert! doe er wat aan!" ;
 	/* "I don't know enough to answer you yet!"; */
     struct sentence *zeresult;
-    double surprise, max_surprise;
+    double rawsurprise, surprise, max_surprise;
     char *output;
     unsigned count;
     int basetime;
     double penalty;
+#if WANT_PARROT_CHECK
+    unsigned pidx,nonemp,top,ssq,sum;
+    double calc;
+#endif
 
-#if ALZHEIMER_FACTOR
+#if 0&ALZHEIMER_FACTOR
     count = urnd(ALZHEIMER_FACTOR);
     if (count == ALZHEIMER_FACTOR/2) {
         initialize_context(model);
@@ -3422,9 +3421,8 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     make_keywords(model, src);
     output = output_none;
 
-    zeresult = one_reply(model);
-
     /*
+    zeresult = one_reply(model);
      *		Loop for the specified waiting period, generating and evaluating
      *		replies
      */
@@ -3435,52 +3433,52 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     progress("Generating reply", 0, 1);
     do {
 	zeresult = one_reply(model);
-	if (zeresult->size < MIN_REPLY_SIZE) continue;
-	surprise = evaluate_reply(model, zeresult);
+	// if (zeresult->size < MIN_REPLY_SIZE) continue;
+	rawsurprise = evaluate_reply(model, zeresult);
+        /* if (rawsurprise >= -1000000 && rawsurprise <= 1000000) {;} 
+	else continue; */
 	count++;
 #if WANT_PARROT_CHECK
-	if (1) { unsigned pidx,nonemp,top,ssq,sum;
-	    double calc;
-	    top=sum=nonemp=ssq=0;
-	    for (pidx=0; pidx < WANT_PARROT_CHECK; pidx++) { 
-		    if (parrot_hash[pidx] ) nonemp++;
-		    if (top < parrot_hash[pidx]) top = parrot_hash[pidx] ;
-		    sum += parrot_hash[pidx] ;
-		    /* if (parrot_hash[pidx] > 1) ssq += (parrot_hash[pidx] -1)  * ( parrot_hash[pidx] -1) ; */
-		    ssq += parrot_hash[pidx] * parrot_hash[pidx] ;
-		    }
-	    if (nonemp <= 1) continue;
-	    calc = (double) sum / WANT_PARROT_CHECK ; /* estimated count per cell */
-	    calc *= calc;
-	    calc *= WANT_PARROT_CHECK; /* estimated sum of squares */
-	    penalty = ((double)ssq/calc) ;
-	    penalty *= sqrt ((double)sum/nonemp);
-	    penalty *= sqrt ( (double)top / sum);
-	    // penalty /= log(nonemp);
-            surprise /= penalty;
+	top=sum=nonemp=ssq=0;
+	for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { 
+	    if (parrot_hash[pidx] ) nonemp++;
+	    if (top < parrot_hash[pidx]) top = parrot_hash[pidx] ;
+	    sum += parrot_hash[pidx] ;
+	    ssq += parrot_hash[pidx] * parrot_hash[pidx] ;
+	    }
+	if (nonemp <= 1) continue;
+	calc = (sum * sum) / (COUNTOF(parrot_hash)); /* estimated sum of squares */
+	penalty = ((double)ssq/calc) ;
+	// penalty *= sqrt(penalty);
+	// penalty = sqrt((double)ssq/calc) ;
+	// penalty /= sqrt ((double)(ssq+calc) );
+	// penalty *= sqrt ((double)sum/nonemp);
+	// penalty *= sqrt ( (double)top / sum);
+	// penalty /= log(nonemp);
+        surprise = rawsurprise / penalty;
+        if ( (surprise - max_surprise) <= (5*DBL_EPSILON) ) continue;
 #else
-	if (surprise > max_surprise && dissimilar(src, zeresult) ) {
+	if (surprise <= max_surprise || !dissimilar(src, zeresult) ) continue;
 #endif /* WANT_PARROT_CHECK */
-
-#include <float.h>
-            if (surprise <= max_surprise + 2*DBL_EPSILON ) continue;
 
 #if WANT_PARROT_CHECK
-	    fprintf(stderr, "\nParrot= {" );
-	    for (pidx=0; pidx < WANT_PARROT_CHECK; pidx++) { fprintf(stderr, "%u ", parrot_hash[ pidx] ); }
-	    fprintf(stderr, "} Sum=%u Top=%u Nonemp=%u Ssq=%u Exp=%f Rat=%f Penal=%f Max=%f, Surp=%f"
-		, sum, top,nonemp, ssq, calc, ssq/calc , penalty, max_surprise, surprise);
+fprintf(stderr, "\nParrot= {" );
+for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, "%u ", parrot_hash[ pidx] ); }
+fprintf(stderr, "} Sum=%u Top=%u Nonemp=%u\n"
+"Ssq=%u Exp=%f Rat=%f\n"
+"Penal=%f Raw=%f, Max=%f, Surp=%f"
+, sum, top,nonemp, ssq, calc, ssq/calc
+, penalty, rawsurprise, max_surprise, surprise);
 #endif /* WANT_PARROT_CHECK */
 
-	    max_surprise = surprise;
-	    output = make_output(zeresult);
+	max_surprise = surprise;
+	output = make_output(zeresult);
 #if WANT_DUMP_ALL_REPLIES
-		fprintf(stderr, "\n%u %lf N=%u (Typ=%d Fwd=%lf Rev=%lf):\n\t%s\n"
-			, count, surprise, (unsigned) zeresult->size
-			, init_typ_fwd, init_val_fwd, init_val_rev
-			, output);
+fprintf(stderr, "\n%u %lf N=%u (Typ=%d Fwd=%lf Rev=%lf):\n\t%s\n"
+, count, surprise, (unsigned) zeresult->size
+, init_typ_fwd, init_val_fwd, init_val_rev
+, output);
 #endif
-	}
  	progress(NULL, (time(NULL)-basetime),glob_timeout);
     } while(time(NULL)-basetime < glob_timeout);
     progress(NULL, 1, 1);
@@ -3540,7 +3538,6 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 #else
     unsigned int ikey;
 #endif
-
 
 
     for(iwrd = 0; iwrd < src->size; iwrd++) {
@@ -3673,10 +3670,9 @@ STATIC struct sentence *one_reply(MODEL *model)
  */
 STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 {
-    unsigned int widx, iord;
+    unsigned int widx, iord, count, totcount ;
     WordNum symbol, canonsym;
     double gfrac, kfrac, weight,term,probability, entropy;
-    unsigned count, totcount ;
     TREE *node;
     STRING canonword;
 
@@ -3699,24 +3695,25 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac <= 1.0 / CROSS_DICT_SIZE ) goto update1;
+	if (kfrac < 1.0 / (CROSS_DICT_SIZE) ) goto update1;
 	probability = 0.0;
         count = 0;
         totcount++;
         for(iord = 0; iord < model->order; iord++) {
             if ( !model->context[iord] ) continue;
-
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
-            if (node->thevalue < 2) continue; /* too unique: don't count them */
-            probability += (double)node->thevalue / model->context[iord]->childsum;
             count++;
+		/* too unique: don't count them */
+            if (node->thevalue < 2) continue; 
+            probability += (0.1+node->thevalue) / (0.1 + model->context[iord]->childsum);
             }
         if (!count) goto update1;
+        if (!(probability > 0.0)) goto update1;
 
+        term = (double) probability / count;
         gfrac = symbol_weight(model->dict, symbol, 0);
         weight = kfrac * log(1.0+gfrac);
-        term = (double) probability / count;
 #if WANT_KEYWORD_WEIGHTS
         entropy -= weight * log(term);
 #else
@@ -3724,33 +3721,38 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 #endif
 
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
-        fprintf(stderr, "V=%9lu/%9llu N=%9lu/%9llu: Gf=%6.4e Ef=%6.4e P=%6.4e/Cnt=%u W=%6.4e T=%6.4e=lg(%6.4e) %6.4e '%*.*s'\n"
+fprintf(stderr, "#### '%*.*s'\n"
+"Valsum=%9lu/%9llu Nnode=%9lu/%9llu\n"
+"Gfrac=%6.4e Kfrac=%6.4e W=%6.4e\n"
+"Prob=%6.4e/Cnt=%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
+        , (int) sentence->entry[widx].string.length
+        , (int) sentence->entry[widx].string.length
+        , sentence->entry[widx].string.word
         , (unsigned long) model->dict->entry[symbol].stats.valuesum
         , (unsigned long long) model->dict->stats.valuesum
         , (unsigned long) model->dict->entry[symbol].stats.nnode
         , (unsigned long long) model->dict->stats.nnode
-        , gfrac, kfrac
+        , gfrac, kfrac, weight
         , probability , (unsigned) count
-        , weight
-        , (double) log( term )
         , (double) term
         , (double) weight * log( term )
-        , (int) sentence->entry[widx].string.length
-        , (int) sentence->entry[widx].string.length
-        , sentence->entry[widx].string.word
+        , (double) entropy
         );
 #endif
-        entropy -= log(term);
 update1:
         update_context(model, symbol);
 #if WANT_PARROT_CHECK
-        for(iord = model->order+1; iord > 0; iord--) {
-	    node = model->context[iord] ;
+        for(iord = model->order+1; iord-- > 0; ) {
+	   node = model->context[iord] ;
            if (node) break;
            }
 	if (node) { PARROT_ADD(node->stamp); }
 #endif /* WANT_PARROT_CHECK */
     }
+#if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
+fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
+	);
+#endif
 
     initialize_context(model);
     model->context[0] = model->backward;
@@ -3762,46 +3764,69 @@ update1:
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac <= 1.0 / CROSS_DICT_SIZE ) goto update2;
+	if (kfrac < 1.0 / (CROSS_DICT_SIZE) ) goto update2;
         probability = 0.0;
         count = 0;
         totcount++;
         for(iord = 0; iord < model->order; iord++) {
             if ( !model->context[iord] ) continue;
-
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
-            if (node->thevalue < 2) continue;
-
-            probability += (double)node->thevalue / model->context[iord]->childsum;
             count++;
+            if (node->thevalue < 2) continue; /* Too unique */
+            probability += (0.1+node->thevalue) / (0.1 + model->context[iord]->childsum);
         }
 
         if ( !count ) goto update2;
+        if (!(probability > 0.0)) goto update2;
 
+        term = (double) probability / count;
         gfrac = symbol_weight(model->dict, symbol, 0);
         weight = kfrac * log(1.0+gfrac);
-        term = (double) probability / count;
 #if WANT_KEYWORD_WEIGHTS
         entropy -= weight * log(term);
 #else
         entropy -= log(term);
 #endif
+
+#if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
+fprintf(stderr, "#### Rev '%*.*s'\n"
+"Valsum=%9lu/%9llu Nnode=%9lu/%9llu\n"
+"Gfrac=%6.4e Kfrac=%6.4e W=%6.4e\n"
+"Prob=%6.4e/Cnt=%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
+        , (int) sentence->entry[widx].string.length
+        , (int) sentence->entry[widx].string.length
+        , sentence->entry[widx].string.word
+        , (unsigned long) model->dict->entry[symbol].stats.valuesum
+        , (unsigned long long) model->dict->stats.valuesum
+        , (unsigned long) model->dict->entry[symbol].stats.nnode
+        , (unsigned long long) model->dict->stats.nnode
+        , gfrac, kfrac, weight
+        , probability , (unsigned) count
+        , (double) term
+        , (double) weight * log( term )
+        , (double) entropy
+        );
+#endif
 update2:
         update_context(model, symbol);
 #if WANT_PARROT_CHECK
-        for(iord = model->order+1; iord > 0; iord--) {
+        for(iord = model->order+1; iord-- > 0; ) {
 	    node = model->context[iord] ;
            if (node) break;
            }
 	if (node) { PARROT_ADD(node->stamp); }
 #endif /* WANT_PARROT_CHECK */
     }
+#if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
+fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
+	);
+#endif
 
     /* if (totcount >= 8) entropy /= sqrt(totcount-1); */
     /* if (totcount >= 16) entropy /= totcount;*/
-    if (totcount >= 3) entropy /= sqrt(totcount);
-    if (totcount >= 7) entropy /= totcount;
+    if (totcount >= (MIN_REPLY_SIZE/4)) entropy /= sqrt(totcount);
+    if (totcount >= (MIN_REPLY_SIZE/2)) entropy /= totcount;
 
 
 	/* extra penalty for sentences that are too long */
@@ -3810,13 +3835,23 @@ update2:
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
     if (widx) {
-	entropy /= (1.0* widx / MIN_REPLY_SIZE);
-	if (widx > MIN_REPLY_SIZE) entropy /= sqrt (1.0* widx / MIN_REPLY_SIZE);
+#if 1
+	if (widx >= MIN_REPLY_SIZE) {
+		entropy /= (1.0* widx / MIN_REPLY_SIZE);
+		}
+	else	{
+		entropy /= sqrt ((0.0+MIN_REPLY_SIZE) / (widx+1) );
+		}
+#endif
 	init_val_fwd = start_penalty(model, sentence->entry[0].string);
 	init_val_rev = end_penalty(model, sentence->entry[widx-1].string );
-        if ( init_val_fwd != 0.0) entropy -= init_val_fwd;
-        if ( init_val_rev != 0.0) entropy -= init_val_rev;
+        entropy -= sqrt(init_val_fwd);
+        entropy -= sqrt(init_val_rev);
 	}
+#if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
+fprintf(stderr, "####[Corrected] =%6.4f\n", (double) entropy
+	);
+#endif
 
     return entropy;
 }
@@ -4059,6 +4094,7 @@ STATIC WordNum seed(MODEL *model)
 	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/2)) );
 	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/4)) );
 	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/8)) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/16)) );
 	if (symbol >= model->dict->size) symbol
 		 = (model->context[0]->branch) 
 		? model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol
@@ -4425,7 +4461,6 @@ unsigned int urnd(unsigned int range)
     return rand()%range;
 #else
 if (range <= 1) return 0;
-
 while(1)	{
     unsigned val, box;
 #if WANT_RDTSC_RANDOM
