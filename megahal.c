@@ -348,8 +348,8 @@
 	** specifying a CROSS_DICT_WORD_DISTANCE of 3 will cause word[x] downto word[x-3] to
 	** be entered into the matrix.
 	*/
-#define CROSS_DICT_SIZE 41
-#define CROSS_DICT_WORD_DISTANCE 2
+#define CROSS_DICT_SIZE 71
+#define CROSS_DICT_WORD_DISTANCE 1
 
 	/* Use keyword weights when evaluating the replies */
 #define WANT_KEYWORD_WEIGHTS 1
@@ -369,9 +369,9 @@
 
 	/*
 	** ALZHEIMER_NODE_COUNT is the number of nodes we intend to maintain.
-	** If the actual number of nodes exceeds this limit, the Alzheimer-functions might be triggered,
-	** and the oldest nodes will be pruned off. A timestamp is used as a poor man's LRU.
-	** NOTE: this is the *intended* number of nodes. The actual number will fluctuate, and will
+	** if the actual number of nodes exceeds this limit, the Alzheimer-functions might be triggered,
+	** and the oldest nodes will be pruned. The timestamp is used as a poor man's LRU.
+	** NOTE: this is the *intended* number. The actual number will fluctuate, and will
 	** sometimes exceed this limit.
 	**
 	** (1/ALZHEIMER_FACTOR) is the chance of Alzheimer hitting the tree, once per reply or lerning step.
@@ -384,7 +384,7 @@
 	** YMMV
 	*/
 #define ALZHEIMER_NODE_COUNT ( 35 * 1000 * 1000)
-#define ALZHEIMER_FACTOR 1000
+#define ALZHEIMER_FACTOR 100
 
 	/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
@@ -401,7 +401,7 @@
  	*/
 #define MIN_REPLY_SIZE 14
 #define WANT_PARROT_CHECK (MIN_REPLY_SIZE)
-#define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1
+#define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
 
 	/* Flags for converting strings to/from latin/utf8
 	** Best is to keep the corpus in utf8.
@@ -562,6 +562,7 @@ static FILE *statusfp;
 
 #if WANT_PARROT_CHECK
 unsigned parrot_hash[WANT_PARROT_CHECK] = {0,};
+unsigned parrot_hash2[WANT_PARROT_CHECK+1] = {0,};
 #endif /* WANT_PARROT_CHECK */
 #if DONT_WANT_THIS
 static bool used_key;
@@ -623,7 +624,6 @@ STATIC size_t symbol_format(char *buff, WordNum sym);
 
 STATIC size_t tokenize(char *string, int *sp);
 
-STATIC void capitalize(char *);
 STATIC void delay(char *);
 STATIC void die(int);
 STATIC void error(char *, char *, ...);
@@ -647,7 +647,6 @@ STATIC void save_model(char *, MODEL *);
 #ifdef __mac_os
 STATIC char *strdup(const char *);
 #endif
-STATIC void upper(char *);
 STATIC void log_input(char *);
 STATIC void log_output(char *);
 #if defined(DOS) || defined(__mac_os)
@@ -690,18 +689,15 @@ STATIC void update_context(MODEL *, WordNum symbol);
 STATIC void update_model(MODEL *model, WordNum symbol);
 STATIC bool warn(char *, char *, ...);
 STATIC int wordcmp(STRING one, STRING two);
-STATIC bool word_exists(DICT *, STRING);
 unsigned int urnd(unsigned int range);
 
 STATIC HashVal hash_mem(void *dat, size_t len);
 STATIC WordNum * dict_hnd(DICT *dict, STRING word);
-STATIC WordNum * dict_hnd_tail (DICT *dict, STRING word);
 STATIC HashVal hash_word(STRING word);
 STATIC int grow_dict(DICT *dict);
 STATIC int resize_dict(DICT *dict, unsigned newsize);
 STATIC void format_dictslots(struct dictslot * slots, unsigned size);
 STATIC unsigned long set_dict_count(MODEL *model);
-STATIC unsigned long dict_inc_refa_node(DICT *dict, TREE *node, WordNum symbol);
 STATIC unsigned long dict_inc_ref_recurse(DICT *dict, TREE *node);
 STATIC unsigned long dict_inc_ref(DICT *dict, WordNum symbol, unsigned nnode, unsigned valuesum);
 STATIC unsigned long dict_dec_ref(DICT *dict, WordNum symbol, unsigned nnode, unsigned valuesum);
@@ -750,12 +746,12 @@ STATIC STRING word_dup_initcaps(STRING org);
 STATIC STRING word_dup_othercase(STRING org);
 	/* The weight we want we want to associate with a word.
 	** if want_other is nonzero, we are also interested in
-	** other capitulisations of the word.
+	** other capitalisations of the word.
 	*/
 STATIC double word_weight(DICT *dict, STRING word, int want_other);
 STATIC double symbol_weight(DICT *dict, WordNum symbol, int want_other);
 	/* The aftermath for the output-sentence.
-	** Sentences that don't start with a Capitalised word
+	** Sentences that don't start with a Capitalised Word
 	** or don't end with a period get penalised.
 	** [the ugly globals are only used in debug printf()s]
 	*/
@@ -766,7 +762,6 @@ double start_penalty(MODEL *model, STRING word);
 double end_penalty(MODEL *model, STRING word);
 
 STATIC void dump_word(FILE *fp, STRING word);
-STATIC void schrink_keywords(DICT *words, unsigned newsize);
 STATIC char * scrutinize_string(char * src, int mode);
 STATIC char * utf2latin(char * src, size_t len);
 STATIC char * latin2utf(char * src, size_t len);
@@ -913,12 +908,9 @@ char *megahal_do_reply(char *input, int log)
     if (log != 0)
 	log_input(input);  /* log input if so desired */
 
-    /* upper(input);*/
-
     make_words(input, glob_input);
     if (!glob_timeout) learn_from_input(glob_model, glob_input);
     else output = generate_reply(glob_model, glob_input);
-    /* capitalize(output);*/
     return output;
 }
 
@@ -933,8 +925,6 @@ void megahal_learn_no_reply(char *input, int log)
 {
     if (log != 0)
 	log_input(input);  /* log input if so desired */
-
-    /* upper(input);*/
 
     make_words(input, glob_input);
 
@@ -1390,7 +1380,6 @@ STATIC void log_output(char *output)
     char *formatted;
     char *bit;
 
-    /* capitalize(output);*/
     speak(output);
 
     // glob_width = 75;
@@ -1405,47 +1394,6 @@ STATIC void log_output(char *output)
 	(void)status(MY_NAME ": %s\n", bit);
 	bit = strtok(NULL, "\n");
     }
-}
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Capitalize
- *
- *		Purpose:		Convert a string to look nice.
- */
-STATIC void capitalize(char *str)
-{
-    size_t len, idx;
-    /* unsigned char *ucp = (unsigned char *) str;*/
-    bool start = TRUE;
-
-    len = strlen(str);
-    for(idx = 0; idx < len; idx++) {
-	if (myisalpha(UCPstr[idx])) {
-	    if (start == TRUE) UCPstr[idx] = toupper(UCPstr[idx]);
-	    else UCPstr[idx] = tolower(UCPstr[idx]);
-	    start = FALSE;
-	}
-	if (idx > 2 && strchr("!.?", UCPstr[idx-1]) != NULL && isspace(UCPstr[idx]))
-	    start = TRUE;
-    }
-}
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Upper
- *
- *		Purpose:		Convert a string to its uppercase representation.
- */
-STATIC void upper(char *str)
-{
-    size_t len, idx;
-    /* unsigned char *ucp = (unsigned char *) str;*/
-
-    len = strlen(str);
-    for(idx = 0; idx < len; idx++) UCPstr[idx] = toupper(UCPstr[idx]);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2675,7 +2623,7 @@ STATIC void learn_from_input(MODEL *model, struct sentence *words)
 
 #if ALZHEIMER_FACTOR
     { unsigned val;
-    val = urnd(ALZHEIMER_FACTOR);
+    val = urnd(10*ALZHEIMER_FACTOR);
     if (val == ALZHEIMER_FACTOR/2) {
         initialize_context(model);
         model_alzheimer(model, ALZHEIMER_NODE_COUNT);
@@ -2761,7 +2709,6 @@ STATIC void train(MODEL *model, char *filename)
 
 	buffer[strlen(buffer)-1] ='\0';
 
-	/* upper(buffer);*/
 	make_words(buffer, exercise);
 	learn_from_input(model, exercise);
 
@@ -2888,7 +2835,7 @@ STATIC void save_model(char *modelname, MODEL *model)
     save_dict(fp, model->dict);
     status("Saved %lu(%lu+%lu) nodes, %u words.\n"
 	, memstats.node_cnt, forw, back
-	, memstats.word_cnt);
+	,memstats.word_cnt);
     fclose(fp);
 }
 
@@ -3121,10 +3068,11 @@ STATIC void make_words(char * src, struct sentence * target)
  * This tokeniser attempts to respect abbreviations such as R.W.A or R.w.a.
  * Also numeric literals, such as 200.50 are left alone (almost the same for 200,50 or 200.000,00)
  * Maybe 10e-0.6 should also be recognised.
- * multiple stretches of .,!? are kept intact. , multiple stretches of
+ * multiple stretches of .,!? are kept intact, multiple stretches of
  * other non alphanumerc tokens (@#$%^&*) as well.
- * brackets and brases are always chopped up to 1-character tokens.
- * quotes are not handled yet.
+ * brackets and braces are always chopped up to 1-character tokens.
+ * quoted strings are not respected, but broken up into seperate tokens.
+ * The quotes are treated as seperate tokens too.
  */
 #define T_INIT 0
 #define T_ANY 1
@@ -3402,18 +3350,19 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     int basetime;
     double penalty;
 #if WANT_PARROT_CHECK
-    unsigned pidx,nonemp,top,ssq,sum;
-    double calc;
+    unsigned pidx,ssq1,sum1;
+    double calc1;
+    unsigned ssq2,sum2;
+    double calc2,penalty1,penalty2;
 #endif
 
-#if 0&ALZHEIMER_FACTOR
+#if ALZHEIMER_FACTOR
     count = urnd(ALZHEIMER_FACTOR);
     if (count == ALZHEIMER_FACTOR/2) {
         initialize_context(model);
         model_alzheimer(model, ALZHEIMER_NODE_COUNT);
 	}
 #endif
-
     initialize_context(model);
     /*
      *		Create an array of keywords from the words in the user's input
@@ -3439,36 +3388,48 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	else continue; */
 	count++;
 #if WANT_PARROT_CHECK
-	top=sum=nonemp=ssq=0;
+	sum1=ssq1=0;
 	for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { 
-	    if (parrot_hash[pidx] ) nonemp++;
-	    if (top < parrot_hash[pidx]) top = parrot_hash[pidx] ;
-	    sum += parrot_hash[pidx] ;
-	    ssq += parrot_hash[pidx] * parrot_hash[pidx] ;
+	    sum1 += parrot_hash[pidx] ;
+	    ssq1 += parrot_hash[pidx] * parrot_hash[pidx] ;
 	    }
-	if (nonemp <= 1) continue;
-	calc = (sum * sum) / (COUNTOF(parrot_hash)); /* estimated sum of squares */
-	penalty = ((double)ssq/calc) ;
-	// penalty *= sqrt(penalty);
-	// penalty = sqrt((double)ssq/calc) ;
-	// penalty /= sqrt ((double)(ssq+calc) );
-	// penalty *= sqrt ((double)sum/nonemp);
-	// penalty *= sqrt ( (double)top / sum);
-	// penalty /= log(nonemp);
-        surprise = rawsurprise / penalty;
+	if (sum1 <= 1) continue;
+	calc1 = (sum1 * sum1) / (COUNTOF(parrot_hash)); /* estimated sum of squares */
+	penalty1 = ((double)ssq1/calc1) ;
+
+	sum2=ssq2=0;
+	for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { 
+	    sum2 += parrot_hash2[pidx] ;
+	    ssq2 += parrot_hash2[pidx] * parrot_hash2[pidx] ;
+	    }
+	calc2 = (sum2 * sum2) / (COUNTOF(parrot_hash2)); /* estimated sum of squares */
+	penalty2 = ((double)ssq2/calc2) ;
+#if 1
+        penalty = penalty1<penalty2 ?penalty1:penalty2 ;
+        penalty = sqrt(penalty*penalty1*penalty2) ;
+#else
+	penalty = (penalty1*penalty2) / (penalty1+penalty2);
+	penalty *= penalty;
+#endif
+        surprise = rawsurprise / penalty ;
         if ( (surprise - max_surprise) <= (5*DBL_EPSILON) ) continue;
 #else
 	if (surprise <= max_surprise || !dissimilar(src, zeresult) ) continue;
 #endif /* WANT_PARROT_CHECK */
 
 #if WANT_PARROT_CHECK
-fprintf(stderr, "\nParrot= {" );
-for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, "%u ", parrot_hash[ pidx] ); }
-fprintf(stderr, "} Sum=%u Top=%u Nonemp=%u\n"
-"Ssq=%u Exp=%f Rat=%f\n"
-"Penal=%f Raw=%f, Max=%f, Surp=%f"
-, sum, top,nonemp, ssq, calc, ssq/calc
-, penalty, rawsurprise, max_surprise, surprise);
+fprintf(stderr, "\nParrot1={" );
+for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, " %u", parrot_hash[ pidx] ); }
+fprintf(stderr, "} Sum=%u Ssq=%u Exp=%f Rat=%f\n"
+, sum1, ssq1, calc1, penalty1 );
+
+fprintf(stderr, "Parrot2={" );
+for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { fprintf(stderr, " %u", parrot_hash2[ pidx] ); }
+fprintf(stderr, "} Sum=%u Ssq=%u Exp=%f Rat=%f\n"
+, sum2, ssq2, calc2, penalty2);
+fprintf(stderr, "Penal=%f Raw=%f, Max=%f, Surp=%f"
+ , penalty, rawsurprise, max_surprise, surprise);
+
 #endif /* WANT_PARROT_CHECK */
 
 	max_surprise = surprise;
@@ -3683,6 +3644,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 
 #if WANT_PARROT_CHECK
     memset (parrot_hash, 0, sizeof parrot_hash);
+    memset (parrot_hash2, 0, sizeof parrot_hash2);
 #endif /* WANT_PARROT_CHECK */
 
     totcount = 0, entropy = 0.0;
@@ -4063,23 +4025,6 @@ done:
 /*---------------------------------------------------------------------------*/
 
 /*
- *		Function:	Word_Exists
- *
- *		Purpose:		A silly brute-force searcher for the reply string.
- */
-STATIC bool word_exists(DICT *dict, STRING word)
-{
-    unsigned int iwrd;
-
-    for(iwrd = 0; iwrd < dict->size; iwrd++)
-	if (!wordcmp(dict->entry[iwrd].string , word) )
-	    return TRUE;
-    return FALSE;
-}
-
-/*---------------------------------------------------------------------------*/
-
-/*
  *		Function:	Seed
  *
  *		Purpose:		Seed the reply by guaranteeing that it contains a
@@ -4088,8 +4033,7 @@ STATIC bool word_exists(DICT *dict, STRING word)
 STATIC WordNum seed(MODEL *model)
 {
 
-    WordNum symbol, altsym;
-    STRING altword;
+    WordNum symbol;
 	symbol = crosstab_get(glob_crosstab, urnd (CROSS_DICT_SIZE) );
 	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/2)) );
 	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/4)) );
@@ -4102,6 +4046,8 @@ STATIC WordNum seed(MODEL *model)
 	if (symbol >= model->dict->size) symbol = urnd(model->dict->size);
 #if 0
 	else {
+    		STRING altword;
+    		WordNum altsym;
 		altword = word_dup_initcaps (model->dict->entry[symbol].string);
 		altsym = find_word(model->dict, altword);
 		if (altsym != WORD_NIL) symbol = altsym;
@@ -4931,16 +4877,6 @@ for (np = &dict->entry[slot].tabl ; *np != WORD_NIL ; np = &dict->entry[*np].lin
 return np;
 }
 
-STATIC WordNum * dict_hnd_tail (DICT *dict, STRING word)
-{
-WordNum *np;
-
-for (np = dict_hnd(dict,word); np ; np = &dict->entry[*np].link ) {
-	if (*np == WORD_NIL) break;
-	}
-return np;
-}
-
 STATIC int grow_dict(DICT *dict)
 {
     unsigned newsize;
@@ -5365,11 +5301,11 @@ for (idx = 0; idx <  string.length; idx++) {
 		else if ((cha & 0xe0) == 0xc0) { state = 1; val = cha & 0x1f ; continue; }
 		else if ((cha & 0xf0) == 0xe0) { state = 2; val = cha & 0x0f ; continue; }
 		else if ((cha & 0xf8) == 0xf0) { state = 3; val = cha & 0x07 ; continue; }
-		else if ((cha & 0xfc) == 0xf8) { state = 4; val = cha & 0x13 ; continue; }
-		else if ((cha & 0xfe) == 0xfc) { state = 5; val = cha & 0x11 ; continue; }
+		else if ((cha & 0xfc) == 0xf8) { state = 4; val = cha & 0x03 ; continue; }
+		else if ((cha & 0xfe) == 0xfc) { state = 5; val = cha & 0x01 ; continue; }
 		else { type |= 1; continue; }
 	case 1:
-		if (((cha & 0xc0) != 0x80) ) type |= 1;
+		if ((cha & 0xc0) != 0x80) type |= 1;
 		else {
 			type |= 2;
 			val <<= 6; val |= cha&0x3f; state--;
@@ -5380,7 +5316,7 @@ for (idx = 0; idx <  string.length; idx++) {
 	case 3:
 	case 4:
 	case 5:
-		if (((cha & 0xc0) != 0x80) ) type |= 1;
+		if ((cha & 0xc0) != 0x80 ) type |= 1;
 		val <<= 6; val |= cha&0x3f; state--;
 		break;
 		}
