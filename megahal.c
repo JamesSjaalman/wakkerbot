@@ -261,7 +261,9 @@
 
 #include <string.h>
 #include <strings.h> /* strncasecmp */
+#include <errno.h>
 #include <signal.h>
+
 #include <float.h> /* DBL_EPSILON */
 #include <math.h>
 #include <time.h>
@@ -466,7 +468,7 @@ BigThing rdtsc_rand(void);
 
 typedef struct {
     StrLen length;
-    StrType type;
+    StrType type;	/* type is not stored in the brainfile but recomputed on loading */
     char *word;
 } STRING;
 
@@ -568,6 +570,8 @@ unsigned parrot_hash2[WANT_PARROT_CHECK+1] = {0,};
 static bool used_key;
 #endif
 static MODEL *glob_model = NULL;
+	/* Refers to a dup'd fd for the brainfile, used for locking */
+static int glob_fd = -1;
 #if 1||CROSS_DICT_SIZE
 #include "crosstab.h"
 struct crosstab *glob_crosstab = NULL;
@@ -1362,7 +1366,8 @@ STATIC bool print_header(FILE *fp)
     strftime(timestamp, 1024, "Start at: [%Y/%m/%d %H:%M:%S]\n", local);
 
     fprintf(fp, "MegaHALv8\n");
-    fprintf(fp, "Copyright (C) 1998 Jason Hutchens\n%s", timestamp);
+    fprintf(fp, "Copyright (C) 1998 Jason Hutchens\nCompiled Wakkerbot %s %s\n%s"
+	, __DATE__ , __TIME__, timestamp);
     fflush(fp);
 
     return TRUE;
@@ -2826,6 +2831,7 @@ STATIC void save_model(char *modelname, MODEL *model)
 	warn("save_model", "Unable to open file `%s'", filename);
 	return;
     }
+
     memstats.node_cnt = 0;
     memstats.word_cnt = 0;
     fwrite(COOKIE, sizeof(char), strlen(COOKIE), fp);
@@ -2837,6 +2843,7 @@ STATIC void save_model(char *modelname, MODEL *model)
 	, memstats.node_cnt, forw, back
 	,memstats.word_cnt);
     fclose(fp);
+    close( glob_fd  ); glob_fd = -1;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2924,7 +2931,8 @@ STATIC TREE * load_tree(FILE *fp)
 	if (level == 0) progress(NULL, cidx, ptr->branch);
     }
     if (childsum != ptr->childsum) {
-		fprintf(stderr, "Oldvalue = %u <- Newvalue= %u\n", ptr->childsum , childsum);
+		fprintf(stderr, "Oldvalue = %llu <- Newvalue= %llu\n"
+		, (unsigned long long) ptr->childsum , (unsigned long long) childsum);
 		ptr->childsum = childsum;
 		}
     if (level == 0) progress(NULL, 1, 1);
@@ -2948,17 +2956,42 @@ STATIC bool load_model(char *filename, MODEL *model)
 
     if (!filename) return FALSE;
 
-    fp = fopen(filename, "rb");
+    // fp = fopen(filename, "rb");
+    fp = fopen(filename, "wb+"); //lockf needs write permission
 
     if (!fp) {
 	warn("load_model", "Unable to open file `%s'", filename);
 	return FALSE;
     }
+    while (1) {
+	int rc;
+	if (glob_fd < 0) rc = dup( fileno(fp) );
+	else rc = dup2( fileno(fp), glob_fd  );
+	if (rc == -1) {
+		rc = errno;
+		warn("load_model", "Unable to dup2 file `%s' err=%d(%s) ", filename, rc, strerror(rc) );
+		fclose (fp);
+		return FALSE;
+		}
+	glob_fd = rc;
+	rc = lockf( glob_fd, F_TLOCK, sizeof cookie );
+	if (!rc) break;
+	rc = errno;
+	warn("load_model", "Unable to lock file `%s' err=%d(%s) ", filename, rc, strerror(rc) );
+	sleep (5);
+	}
 
 
     kuttje = fread(cookie, sizeof(char), strlen(COOKIE), fp);
+    if (kuttje != strlen(COOKIE) ) {
+	warn("load_model", "Read %u from '%s' (expected %u): %d (%s)\n"
+		, (unsigned) kuttje, filename, (unsigned) strlen(COOKIE), errno, strerror(errno)
+		);
+	exit(1);
+	}
     if (memcmp(cookie, COOKIE, strlen(COOKIE)) ) {
-	warn("load_model", "File `%s' is not a MegaHAL brain", filename);
+	warn("load_model", "File `%s' is not a MegaHAL brain: coockie='%s' (expected '%s')"
+		, filename , cookie,COOKIE);
 	goto fail;
     }
     memstats.node_cnt = 0;
@@ -2988,6 +3021,7 @@ STATIC bool load_model(char *filename, MODEL *model)
     status( "Stamp Min=%u Max=%u.\n", (unsigned long)stamp_min, (unsigned long)stamp_max);
 
     fclose(fp);
+    lseek (glob_fd, 0, SEEK_SET );
 
     show_dict(model->dict);
 
@@ -3405,6 +3439,8 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	calc2 = (sum2 * sum2) / (COUNTOF(parrot_hash2)); /* estimated sum of squares */
 	penalty2 = ((double)ssq2/calc2) ;
 #if 1
+	/* we use min(p1,p2) * p1 * p2; because (one of) p1,p2 might by inflated by
+	** hash collisions */
         penalty = penalty1<penalty2 ?penalty1:penalty2 ;
         penalty = sqrt(penalty*penalty1*penalty2) ;
 #else
@@ -3435,7 +3471,7 @@ fprintf(stderr, "Penal=%f Raw=%f, Max=%f, Surp=%f"
 	max_surprise = surprise;
 	output = make_output(zeresult);
 #if WANT_DUMP_ALL_REPLIES
-fprintf(stderr, "\n%u %lf N=%u (Typ=%d Fwd=%lf Rev=%lf):\n\t%s\n"
+fprintf(stderr, "\n%u %f N=%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
 , count, surprise, (unsigned) zeresult->size
 , init_typ_fwd, init_val_fwd, init_val_rev
 , output);
@@ -3796,13 +3832,13 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 	/* extra penalty for sentences that don't start with a capitalized letter */
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
-    if (widx) {
+    if (widx && widx != MIN_REPLY_SIZE) {
 #if 1
-	if (widx >= MIN_REPLY_SIZE) {
-		entropy /= (1.0* widx / MIN_REPLY_SIZE);
+	if (widx > MIN_REPLY_SIZE) {
+		entropy /= pow((1.0* widx) / MIN_REPLY_SIZE, 1.6);
 		}
 	else	{
-		entropy /= sqrt ((0.0+MIN_REPLY_SIZE) / (widx+1) );
+		entropy /= pow ((0.0+MIN_REPLY_SIZE) / widx , 1.4);
 		}
 #endif
 	init_val_fwd = start_penalty(model, sentence->entry[0].string);
@@ -4175,7 +4211,7 @@ case TOKEN_PUNCT:
 return (penalty);
 }
 /*---------------------------------------------------------------------------*/
-
+#if 0
 /*
  *		Function:	New_Swap
  *
@@ -4266,7 +4302,7 @@ STATIC void free_swap(SWAP *swap)
     free(swap->pairs);
     free(swap);
 }
-
+#endif
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -4751,7 +4787,7 @@ void load_personality(MODEL **model)
     empty_dict(glob_aux);
     free_words(glob_grt);
     empty_dict(glob_grt);
-    free_swap(glob_swp);
+    /* free_swap(glob_swp); */
 
     /*
      *		Create a language model.
@@ -4762,6 +4798,7 @@ void load_personality(MODEL **model)
      *		Train the model on a text if one exists
      */
 
+    close( glob_fd  ); glob_fd = -1;
     sprintf(filename, "%s%smegahal.brn", glob_directory, SEP);
     if (load_model(filename, *model) == FALSE) {
 	sprintf(filename, "%s%smegahal.trn", glob_directory, SEP);
@@ -4778,8 +4815,9 @@ void load_personality(MODEL **model)
     glob_aux = read_dict(filename);
     sprintf(filename, "%s%smegahal.grt", glob_directory, SEP);
     glob_grt = read_dict(filename);
-    sprintf(filename, "%s%smegahal.swp", glob_directory, SEP);
+    /* sprintf(filename, "%s%smegahal.swp", glob_directory, SEP);
     glob_swp = initialize_swap(filename);
+	*/
 }
 
 /*---------------------------------------------------------------------------*/
