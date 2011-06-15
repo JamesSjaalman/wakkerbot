@@ -1880,8 +1880,10 @@ STATIC void load_dict(FILE *fp, DICT *dict)
     unsigned int size;
     size_t kuttje; /* to silence gcc */
 
+	/* Avoid a lot of resizing by pre-allocating size+INITSIZE items. */
     kuttje = fread(&size, sizeof size, 1, fp);
-    status("Load_dictSize=%d\n", size);
+    resize_dict(dict, dict->msize+size);
+    status("Load_dictSize=%u Initial_dictSize=%u\n", size, dict->msize);
     progress("Loading dictionary", 0, 1);
     for(iwrd = 0; iwrd < size; iwrd++) {
 	load_word(fp, dict);
@@ -2149,8 +2151,8 @@ return;
 }
 
 /* Delete a symbol from a node.
-** The node's statistics are updated (but NOT it's parent's statistics!!)
-** The node's is compacted by shifting the highest element into the vacated slot.
+** The node's statistics are updated (but NOT it's parent's summary statistics!!)
+** The node is compacted by shifting the highest element into the vacated slot.
 ** The node's children-array is NOT (yet) reallocated.
 */
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
@@ -2186,7 +2188,7 @@ STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
     tree->childsum -= child->thevalue;
 
     /* FIXME: we should also decrement the refcounts for the corresponding dict-entry.
-    ** (but that would require acces to the model->dict, and we should avoid the risk
+    ** (but that would require access to the model->dict, and we should avoid the risk
     ** of creating stale pointers in model->context[order]
     */
     if (!tree->branch) {
@@ -2339,7 +2341,7 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
  * Since we need to rebuild the hachchains anyway, this is a good place to
  * sort the items (in descending order) to make life easier for babble() .
  * We only sort when the node is growing (newsize>oldsize), assuming ordering is more or less
- * fixed for older nodes.
+ * fixed for older nodes. FIXME
  */
     if (old) {
 	    if (newsize > oldsize && tree->branch > 1) {
@@ -2428,7 +2430,7 @@ qsort(slots, count, sizeof *slots, treeslots_cmp);
 }
 /* Profiling shows that node_hnd() is the biggest CPU consumer
 ** (unless Alzheimer kicks in ;-)
-** I don't see a way to speed this thing up, except for maybe making is static.
+** I don't see a way to speed this thing up, apart from maybe making is static.
 */
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol)
 {
@@ -2957,7 +2959,7 @@ STATIC bool load_model(char *filename, MODEL *model)
     if (!filename) return FALSE;
 
     // fp = fopen(filename, "rb");
-    fp = fopen(filename, "wb+"); //lockf needs write permission
+    fp = fopen(filename, "rb+"); //lockf needs write permission
 
     if (!fp) {
 	warn("load_model", "Unable to open file `%s'", filename);
@@ -2984,8 +2986,9 @@ STATIC bool load_model(char *filename, MODEL *model)
 
     kuttje = fread(cookie, sizeof(char), strlen(COOKIE), fp);
     if (kuttje != strlen(COOKIE) ) {
-	warn("load_model", "Read %u from '%s' (expected %u): %d (%s)\n"
-		, (unsigned) kuttje, filename, (unsigned) strlen(COOKIE), errno, strerror(errno)
+	warn("load_model", "Read %u/%u from '%s' : %d (%s)\n"
+		, (unsigned) kuttje, (unsigned) strlen(COOKIE), filename
+		, errno, strerror(errno)
 		);
 	exit(1);
 	}
@@ -4115,28 +4118,28 @@ case TOKEN_INITCAPS:
 	other = word_dup_lowercase(model->dict->entry[symbol].string);
 	altsym = find_word(model->dict, other);
 	if (altsym == WORD_NIL) { penalty = 0.0; break; } /* there is no other: This might be a capitalised Name */
-	else if (altsym==symbol) { penalty = 0.1; break; }
+	else if (altsym==symbol) { penalty = 0.0; break; }
 	altnode = find_symbol(model->forward, altsym);
 	if (!altnode) penalty = /* the other is not present at this level */
 			(model->dict->entry[altsym].stats.valuesum < model->dict->entry[symbol].stats.valuesum) /* assume Capitalised Name */
-			? 0.8
+			? 0.1
 			/* most common case: this is just a Begincaps */
 			: ((1.0+model->dict->entry[symbol].stats.valuesum)
 			/ (1.0+model->dict->entry[altsym].stats.valuesum)
 			);
-	// else if (altnode->thevalue <= node->thevalue) penalty = 0.1; /* Initcaps is more frequent at the start of a sentence */
-	else penalty = (node->thevalue) / (1.0+altnode->thevalue) ;
+	// else if (node->thevalue > altnode->thevalue) penalty = 0.1; /* Initcaps is more frequent at the start of a sentence */
+	else penalty = (0.0+node->thevalue) / (1.0+altnode->thevalue) ;
 	break;
 case TOKEN_LOWER:
 	/* The altsym refers tot the Initcaps version, which @linebegin should always be better than the original 'symbol' */
 	other = word_dup_initcaps(model->dict->entry[symbol].string);
 	altsym = find_word(model->dict, other);
-	if (altsym == WORD_NIL) { penalty = 2.0; break; } /* there is no other: still deprecated as a starting word */
+	if (altsym == WORD_NIL) { penalty = 1.0; break; } /* there is no other: still deprecated as a starting word */
 	altnode = find_symbol(model->forward, altsym);
 	if (!altnode)  penalty =
 			(model->dict->entry[altsym].stats.valuesum > model->dict->entry[symbol].stats.valuesum) /* Capitalised Name  ???*/
 			? 1.8
-			/* Altsymbol is less frequent: this should have been Begincapsed */
+			/* Altsymbol is less frequent: this should have been Initcapsed */
 			: ((1.0+model->dict->entry[symbol].stats.valuesum)
 			/ (1.0+model->dict->entry[altsym].stats.valuesum)
 			);
@@ -4979,7 +4982,8 @@ STATIC int sentence_resize(struct sentence *ptr, unsigned newsize)
     old = ptr->entry ;
     ptr->entry = realloc (ptr->entry, newsize * sizeof *ptr->entry);
     if (!ptr->entry) {
-	error("sentence_resize", "Unable to allocate entries.");
+	error("sentence_resize", "Unable to allocate entries:oldsize =%u newsize=%u"
+	, ptr->msize, newsize );
     	ptr->entry = old;
 	return -1;
 	}
