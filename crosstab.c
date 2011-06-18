@@ -11,7 +11,14 @@
 #include "crosstab.h"
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
-#define FRAC_LIMIT 0.1
+	/* settings for the power-iteration:
+	** :: the minimal amount the eigenvalue may to vary before we
+	** call it convergiance;
+	** :: the maximal number of iterations we allow 
+	** if convergiance is not reached.
+	 */
+#define PITER_FRAC_LIMIT 0.1
+#define PITER_ITER_MAX 100
 
 #define SHOW_CALLS 0
 #define SHOW_FUZZ 0
@@ -87,7 +94,8 @@ if (slot >= ptr->msize) this = 0; // ptr->total.sum ? 0.1/ptr->total.sum : 0.0;
 // else if (slot >= ptr->msize/2) this = ptr->total.sum ? 1.0/ptr->total.sum : 0.0;
 else this = /* ptr->score * */ ptr->scores[slot] ;
 /* else this =  ptr->scores[slot] * ptr->total.sum * (double) ptr->table[slot].payload.uniq ; */
-
+this *= ptr->score ;
+/* this /= sqrt(1.0+slot) ; */
 /* return log(1/(1- this)) ; */
 return this;
 }
@@ -335,14 +343,16 @@ double oldval,frac,limit;
 
 if (!ptr || !ptr->msize) return;
 
-limit = FRAC_LIMIT / (1+sqrt(ptr->total.uniq));
+limit = PITER_FRAC_LIMIT / (1+sqrt(ptr->total.uniq));
+
 #if SHOW_ITER
 	fprintf(stderr, "Cnt=%2u Uniq=%u limit = %6.5f\n" , ptr->total.sum, ptr->total.uniq, limit);
 #endif
+
 for (slot=0; slot < ptr->msize; slot++ ) {
 	ptr->scores[slot] = (double) 0.5 * ptr->table[slot].payload.sum / ptr->total.sum;
 	}
-for (iter =0; iter < 100; iter++) {
+for (iter =0; iter < PITER_ITER_MAX; iter++) {
 	oldval = ptr->score;
 	ptr->score = iterding (ptr->scores , ptr->matrix, ptr->msize );
 	frac = (ptr->score-oldval)/ ptr->score;
@@ -357,26 +367,27 @@ return;
 	/* find the weakest elements and put them on the freelist */
 void crosstab_reduce(struct crosstab * ptr, unsigned int newsize)
 {
-unsigned idx,slot;
 
 if (!ptr || newsize >= ptr->msize) return;
 
 #if 0
+{	unsigned idx,slot;
 	/* Pick a victim: a random slot from idx[0] ... idx[newsize] and eat some of it's meat.
 	** we don't bother about the elements at newsize and beyond, because they are almost dead anyway.
 	 */
 idx = urnd(newsize);
 slot = ptr->index[idx] ;
 cross_fuzz_slot(ptr,slot);
+}
 #endif
 
 	/* recalculate the power-iteration */
 crosstab_recalc(ptr);
-
 	/* reshuffle the index, such that index[0] ... idx[newsize-1] contain the indexes of the best/worst items */
 index_doubles(ptr->index, ptr->scores, ptr->msize);
 
 #if ( SHOW_ITER >= 2)
+{	unsigned idx,slot;
 fprintf(stderr, "NewIdx " );
 for (slot=0; slot < ptr->msize; slot++ ) {
 	fprintf(stderr, " | %5u ", ptr->index[slot] );
@@ -387,6 +398,7 @@ for (slot=0; slot < ptr->msize; slot++ ) {
 	fprintf(stderr, " | %6.4f", ptr->scores[idx] );
 	}
 fprintf(stderr, " | %6.4f\n", ptr->score);
+}
 #endif
 
 	/* put everything from idx[newsize] and up on the freelist */
@@ -668,13 +680,13 @@ char buff [500];
 crosstab_recalc(ptr);
 index_doubles(ptr->index, ptr->scores, ptr->msize);
 
-fprintf(fp, "\n[%4u]:        |%6u/%3u| %6.3f | weight |\n"
+fprintf(fp, "\n[%5u] :        |%6u/%3u| %6.3f | weight |\n"
 	, ptr->freelist!=IDX_NIL? ptr->freelist:9999, ptr->total.sum,ptr->total.uniq,  ptr->score );
-fprintf(fp, "------|--------+----------+---------+--------+\n" );
+fprintf(fp, "--------|--------+----------+---------+--------+\n" );
 for (idx=0; idx < ptr->msize; idx++ ) {
 	slot = ptr->index[idx];
 	value = crosstab_value(ptr,slot);
-	fprintf(fp, "%2u  %2u|", idx, slot );
+	fprintf(fp, "%3u  %3u|", idx, slot );
 	if (ptr->table[slot].hash.key == IDX_NIL) fprintf(fp, " <free> |" );
 	else fprintf(fp, " %6u |", ptr->table[slot].hash.key );
 	fprintf(fp, "%6u/%2u | %6.5f | %6.4f |"
@@ -690,7 +702,10 @@ for (idx=0; idx < ptr->msize; idx++ ) {
 	}
 crosstab_bin_dump(ptr);
 }
-
+	/* perform one power-iteration
+	** , using "vec" as input (which is modified by this function)
+	** return is the resulting (normalised) eigenvalue
+	*/
 double iterding(double *vec, unsigned int *mx, unsigned int cnt)
 {
 unsigned int i,j,zz;
@@ -716,6 +731,9 @@ free (tmp);
 return sum;
 }
 
+	/* we need this ugly global to supply 
+	** qsort() with a hidden 3rd argument
+	 */
 static double * anchor_double=NULL;
 static int cmp_ranked_double(const void *l, const void *r)
 {
@@ -901,7 +919,7 @@ fclose (fp);
 unsigned crosstab_bin_load(struct crosstab *ptr, char *name)
 {
 FILE *fp;
-unsigned int cnt,sum, res;
+unsigned int sum,cnt,res;
 struct dmprec {
 	unsigned key0;
 	unsigned key1;
@@ -909,13 +927,14 @@ struct dmprec {
 	unsigned sum;
 	} master,detail;
 
+sum=cnt=0;
 fp = fopen(name, "rb" );
 fprintf(stderr,"Load(%s) :=%p\n", name, (void*) fp);
 
 res = fread(&master, sizeof master, 1, fp);
 if (res < 1) goto kut;
 
-for (sum=cnt=0; ;  ) {
+while ( 1 ) {
 	fread(&detail, sizeof detail, 1, fp);
 	if (fread(&detail, sizeof detail, 1, fp) <1) break;
 	/* fprintf(stderr, "[%u %u] %u\n", detail.key0,  detail.key1, detail.sum); */
