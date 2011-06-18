@@ -350,7 +350,7 @@
 	** specifying a CROSS_DICT_WORD_DISTANCE of 3 will cause word[x] downto word[x-3] to
 	** be entered into the matrix.
 	*/
-#define CROSS_DICT_SIZE 71
+#define CROSS_DICT_SIZE 21
 #define CROSS_DICT_WORD_DISTANCE 1
 
 	/* Use keyword weights when evaluating the replies */
@@ -402,7 +402,7 @@
 	** whitespace does not count (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
 #define MIN_REPLY_SIZE 14
-#define WANT_PARROT_CHECK (MIN_REPLY_SIZE)
+#define WANT_PARROT_CHECK 14
 #define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
 
 	/* Flags for converting strings to/from latin/utf8
@@ -465,7 +465,7 @@ BigThing rdtsc_rand(void);
 #define WORD_ERR ((WordNum)0)
 #define WORD_FIN ((WordNum)1)
 #define CHILD_NIL ((ChildIndex)-1)
-
+#define STAMP_MAX ((Stamp)-1))
 typedef struct {
     StrLen length;
     StrType type;	/* type is not stored in the brainfile but recomputed on loading */
@@ -574,6 +574,7 @@ static MODEL *glob_model = NULL;
 static int glob_fd = -1;
 #if 1||CROSS_DICT_SIZE
 #include "crosstab.h"
+unsigned int cross_dict_size=0;
 struct crosstab *glob_crosstab = NULL;
 	/* this is ugly: a copy of model->dict is needed just for formatting the symbols
 	** in the callback for the print-crosstab function
@@ -584,12 +585,12 @@ static DICT *glob_dict = NULL;
 static DICT *glob_ban = NULL;
 static DICT *glob_aux = NULL;
 static DICT *glob_grt = NULL;
-static SWAP *glob_swp = NULL;
+/* static SWAP *glob_swp = NULL; */
 
 static char *glob_directory = NULL;
 static char *last_directory = NULL;
 
-static Stamp stamp_min = 0xffffffff, stamp_max=0;
+static Stamp stamp_min = 0, stamp_max=0;
 
 static COMMAND commands[] = {
     { { 4,0, "QUIT" }, "quits the program and saves MegaHAL's brain", QUIT },
@@ -620,7 +621,11 @@ SpeechChannel gSpeechChannel = nil;
 
 STATIC int resize_tree(TREE *tree, unsigned newsize);
 
+#if DONT_WANT_THIS
 STATIC void add_swap(SWAP *list, char *from, char *to);
+STATIC SWAP *initialize_swap(char *);
+STATIC SWAP *new_swap(void);
+#endif
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICT *dict, STRING word);
 STATIC size_t word_format(char *buff, STRING string);
@@ -667,7 +672,6 @@ STATIC void free_words(DICT *words);
 STATIC void initialize_context(MODEL *);
 STATIC void initialize_dict(DICT *);
 STATIC DICT *read_dict(char *filename);
-STATIC SWAP *initialize_swap(char *);
 STATIC void load_dict(FILE *, DICT *);
 STATIC bool load_model(char *path, MODEL *mp);
 STATIC void load_personality(MODEL **);
@@ -675,7 +679,6 @@ STATIC TREE * load_tree(FILE *);
 STATIC void load_word(FILE *, DICT *);
 STATIC MODEL *new_model(int);
 STATIC TREE *node_new(unsigned nchild);
-STATIC SWAP *new_swap(void);
 STATIC STRING new_string(char *str, size_t len);
 STATIC bool print_header(FILE *);
 bool progress(char *message, unsigned long done, unsigned long todo);
@@ -732,7 +735,11 @@ STATIC void del_word_dofree(DICT *dict, STRING word);
 void free_tree_recursively(TREE *tree);
 STATIC unsigned model_alzheimer(MODEL * model, unsigned maxnodecount);
 STATIC unsigned symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
-static int check_interval(unsigned min, unsigned max, unsigned this);
+static int check_interval(Stamp min, Stamp max, Stamp this);
+#define STAMP_INSIDE 0
+#define STAMP_BELOW -1
+#define STAMP_ABOVE 1
+
 void read_dict_from_ascii(DICT *dict, char *name);
 static DICT *alz_dict = NULL;
 
@@ -1151,16 +1158,11 @@ STATIC char *read_input(char *prompt)
 {
     static char *input = NULL;
     static size_t msize=0;
-    bool seen_eol;
+    unsigned seen_eol;
     size_t length;
     int c;
 
-    /*
-     *		Perform some initializations.  The seen_eol boolean variable is used
-     *		to detect a double line-feed, while length contains the number of
-     *		characters in the input string.
-     */
-    seen_eol = FALSE;
+    seen_eol = 0;
     length = 0;
 
     /*
@@ -1177,34 +1179,27 @@ STATIC char *read_input(char *prompt)
      */
     while(1) {
 
-	/*
-	 *		Read a single character from stdin.
-	 */
 	c = getc(stdin);
 
 	/*
-	 *		If the character is a line-feed, then set the seen_eol variable
-	 *		to TRUE.  If it already is TRUE, then this is a double line-feed,
+	 *		If the character is a line-feed, then bump the seen_eol variable
+	 *		If it already was nonzero, then this is a double line-feed,
 	 *		in which case we should exit.  After a line-feed, display the
 	 *		prompt again, and set the character to the space character, as
 	 *		we don't permit linefeeds to appear in the input.
 	 */
-	if (c == -1 ) {
-	    if (seen_eol == TRUE) break; else return NULL;
+	if (c == EOF) {
+	    if (seen_eol) break; else return NULL;
 		}
-	if (c == -1 || c == '\n') {
-	    if (seen_eol == TRUE) break;
+	if (c == EOF || c == '\n') {
+	    if (seen_eol ) break;
 	    if (prompt) { fprintf(stdout, "%s", prompt); fflush(stdout); }
-	    seen_eol = TRUE;
+	    seen_eol += 1;
 	    c = ' ';
 	} else {
-	    seen_eol = FALSE;
+	    seen_eol = 0;
 	}
 
-	/*
-	 *		Re-allocate the input string so that it can hold one more
-	 *		character.
-	 */
 	/* This will end execution on two consecutive empty lines*/
 	/* if (seen_eol && !length) return NULL;*/
 
@@ -1217,9 +1212,6 @@ STATIC char *read_input(char *prompt)
 	    return NULL;
 	}
 
-	/*
-	 *		Add the character just read to the input string.
-	 */
 	input[length++] = c;
 	input[length] ='\0';
     }
@@ -1227,9 +1219,6 @@ STATIC char *read_input(char *prompt)
     while(length > 0 && isspace(input[length-1])) length--;
     input[length] = '\0';
 
-    /*
-     *		We have finished, so return the input string.
-     */
 	/* scrutinize_string may or may not reallocate the output string, but we don't care */
     input = scrutinize_string (input, SCRUTINIZE_INPUT);
     return input;
@@ -2074,8 +2063,8 @@ STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
     /* fprintf(stderr, "Add_symbol(%u: Parent=%u->%u Child=%u->%u)\n"
 	, symbol, tree->symbol, tree->childsum, node->symbol, node->thevalue);
 	 */
-    node->thevalue += 1; tree->childsum += 1;
     node->stamp = stamp_max; tree->stamp = stamp_max;
+    node->thevalue += 1; tree->childsum += 1;
     if (!node->thevalue) {
 	warn("add_symbol", "Count wants to wrap");
 	node->thevalue -= 1;
@@ -2900,8 +2889,21 @@ STATIC TREE * load_tree(FILE *fp)
     kuttje = fread(&this.childsum, sizeof this.childsum, 1, fp);
     kuttje = fread(&this.thevalue, sizeof this.thevalue, 1, fp);
     kuttje = fread(&this.stamp, sizeof this.stamp, 1, fp);
+#if 0
     if ( this.stamp > stamp_max) stamp_max = this.stamp;
     else if ( this.stamp < stamp_min) stamp_min = this.stamp;
+#else
+    if (stamp_min == stamp_max) { stamp_min = this.stamp; stamp_max = 1+ this.stamp;}
+    else { int rc;
+    rc = check_interval (stamp_min, stamp_max, this.stamp);
+    switch (rc) {
+        case STAMP_BELOW: stamp_min = this.stamp; break;
+        case STAMP_ABOVE: stamp_max = this.stamp; break;
+	case STAMP_INSIDE: break;
+	default: error("load_tree", "Weird timestamp(%u,%u) +%u :%d", stamp_min, stamp_max, this.stamp, rc);
+	}
+    }
+#endif
     kuttje = fread(&this.branch, sizeof this.branch, 1, fp);
     // if (this.branch == 0) return NULL;
 
@@ -2920,9 +2922,7 @@ STATIC TREE * load_tree(FILE *fp)
     if (level == 0) progress("Loading tree", 0, 1);
     childsum = 0;
     for(cidx = 0; cidx < ptr->branch; cidx++) {
-	// node->children[cidx].ptr = node_new(0);
 	level++;
-	// load_tree(fp, node->children[cidx].ptr);
 	ptr->children[cidx].ptr = load_tree(fp);
 	level--;
 
@@ -3007,10 +3007,8 @@ STATIC bool load_model(char *filename, MODEL *model)
         status("Set Order to %u order= %u\n", (unsigned)model->order);
 	}
     status("Forward\n");
-    // load_tree(fp, model->forward);
     model->forward = load_tree(fp);
     status("Backward\n");
-    // load_tree(fp, model->backward);
     model->backward = load_tree(fp);
     status("Dict\n");
 #if 1
@@ -3419,10 +3417,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     progress("Generating reply", 0, 1);
     do {
 	zeresult = one_reply(model);
-	// if (zeresult->size < MIN_REPLY_SIZE) continue;
 	rawsurprise = evaluate_reply(model, zeresult);
-        /* if (rawsurprise >= -1000000 && rawsurprise <= 1000000) {;} 
-	else continue; */
 	count++;
 #if WANT_PARROT_CHECK
 	sum1=ssq1=0;
@@ -3441,13 +3436,13 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	    }
 	calc2 = (sum2 * sum2) / (COUNTOF(parrot_hash2)); /* estimated sum of squares */
 	penalty2 = ((double)ssq2/calc2) ;
-#if 1
+#if 0
 	/* we use min(p1,p2) * p1 * p2; because (one of) p1,p2 might by inflated by
 	** hash collisions */
         penalty = penalty1<penalty2 ?penalty1:penalty2 ;
         penalty = sqrt(penalty*penalty1*penalty2) ;
 #else
-	penalty = (penalty1*penalty2) / (penalty1+penalty2);
+	penalty = (2*penalty1*penalty2) / (penalty1+penalty2);
 	penalty *= penalty;
 #endif
         surprise = rawsurprise / penalty ;
@@ -3483,7 +3478,8 @@ fprintf(stderr, "\n%u %f N=%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
     } while(time(NULL)-basetime < glob_timeout);
     progress(NULL, 1, 1);
 #if WANT_DUMP_ALL_REPLIES
-	fprintf(stderr, "ReplyProbed=%u\n", count );
+	fprintf(stderr, "ReplyProbed=%u cross_dict_size=%u\n"
+	, count, cross_dict_size );
 #endif
 
     /*
@@ -3527,13 +3523,14 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 #if CROSS_DICT_SIZE
     STRING canonword;
     WordNum canonsym;
-    WordNum echobox[CROSS_DICT_WORD_DISTANCE];
+    WordNum echobox[CROSS_DICT_WORD_DISTANCE] = {0,};
     unsigned rotor,echocount;
     unsigned other;
+    cross_dict_size = sqrt(src->size);
+    if (cross_dict_size < CROSS_DICT_SIZE) cross_dict_size = CROSS_DICT_SIZE ;
 
-    if (!glob_crosstab ) {
-	glob_crosstab = crosstab_init(CROSS_DICT_SIZE);
-	}
+    if (glob_crosstab) crosstab_resize(glob_crosstab,cross_dict_size);
+    else glob_crosstab = crosstab_init(cross_dict_size);
     rotor = echocount = 0;
 #else
     unsigned int ikey;
@@ -3673,7 +3670,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
     unsigned int widx, iord, count, totcount ;
     WordNum symbol, canonsym;
     double gfrac, kfrac, weight,term,probability, entropy;
-    TREE *node;
+    TREE *node=NULL;
     STRING canonword;
 
     if (sentence->size == 0) return -100000.0;
@@ -3696,7 +3693,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac < 1.0 / (CROSS_DICT_SIZE) ) goto update1;
+	if (kfrac < 1.0 / (cross_dict_size) ) goto update1;
 	probability = 0.0;
         count = 0;
         totcount++;
@@ -3765,7 +3762,7 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac < 1.0 / (CROSS_DICT_SIZE) ) goto update2;
+	if (kfrac < 1.0 / (cross_dict_size) ) goto update2;
         probability = 0.0;
         count = 0;
         totcount++;
@@ -3835,13 +3832,14 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 	/* extra penalty for sentences that don't start with a capitalized letter */
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
-    if (widx && widx != MIN_REPLY_SIZE) {
+#define INTENDED_REPLY_SIZE (1*MIN_REPLY_SIZE)
+    if (widx && widx != INTENDED_REPLY_SIZE) {
 #if 1
-	if (widx > MIN_REPLY_SIZE) {
-		entropy /= pow((1.0* widx) / MIN_REPLY_SIZE, 1.6);
+	if (widx > INTENDED_REPLY_SIZE) {
+		entropy /= pow((1.0* widx) / INTENDED_REPLY_SIZE, 1.6);
 		}
 	else	{
-		entropy /= pow ((0.0+MIN_REPLY_SIZE) / widx , 1.4);
+		entropy /= pow ((0.0+INTENDED_REPLY_SIZE) / widx , 1.3);
 		}
 #endif
 	init_val_fwd = start_penalty(model, sentence->entry[0].string);
@@ -4073,11 +4071,11 @@ STATIC WordNum seed(MODEL *model)
 {
 
     WordNum symbol;
-	symbol = crosstab_get(glob_crosstab, urnd (CROSS_DICT_SIZE) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/2)) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/4)) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/8)) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (CROSS_DICT_SIZE/16)) );
+	symbol = crosstab_get(glob_crosstab, urnd (cross_dict_size) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/2)) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/4)) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/8)) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/16)) );
 	if (symbol >= model->dict->size) symbol
 		 = (model->context[0]->branch) 
 		? model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol
@@ -5166,7 +5164,7 @@ return count;
 }
 
 /* Check of this inside or above/below interval {min,max}
-** main and max may have been wrapped around zero (--> min > max)
+** min and max may have been wrapped around zero (--> min > max)
 ** return
 **	0 := this inside interval
 **	1 := this below interval
@@ -5179,17 +5177,21 @@ switch (4 *(max >= min)
 	+2 *(this >= min)
 	+1 *(this > max)
 	) {
-	case 0: return 0;
-	case 1: return 1;
+	case 0: return STAMP_INSIDE;	/* inside (wrapped) */
+	case 1: 		/* outside (wrapped) */
+		return ((Stamp)(min - this) < (Stamp)(this - max)) ? STAMP_BELOW : STAMP_ABOVE;
 	case 2: return -2;
-	case 3: return 0;
-	case 4: return 1;
-	case 5: return -2;
-	case 6: return 0;
-	case 7: return -1;
+	case 3: return STAMP_INSIDE;	/* inside (wrapped) */
+	case 4: 		/* all below */
+		return ((Stamp)(min - this) < (Stamp)(this - max)) ? STAMP_BELOW : STAMP_ABOVE;
+	case 5: return -2;	/* impossible */
+	case 6: return STAMP_INSIDE;	/* inside normal case */
+	case 7: 		/* all above) */
+		return ((Stamp)(min - this) < (Stamp)(this - max)) ? STAMP_BELOW : STAMP_ABOVE;
 	}
-return 0;
+return -2;
 }
+
 
 STATIC void dump_word(FILE *fp, STRING word)
 {
@@ -5228,12 +5230,12 @@ STATIC char * utf2latin(char * str, size_t len)
 {
 unsigned idx,pos;
 int ret;
-unsigned val;
 
 if (!len) len = strlen (str);
 
 	/* the string can only shrink, so we can perform this in place */
 for (idx=pos=0; idx < len ; idx += ret) {
+	unsigned val=0;
 	ret = eat_utf8 ((unsigned char*) str+idx, len-pos, &val);
 	if (ret == 0) break;
 	else if (ret < 0) { ret=1; str[pos++] = str[idx]; } /* does not fit, this should never happen */
@@ -5248,15 +5250,14 @@ STATIC size_t cp_utf2latin(char *dst, char * src, size_t len)
 {
 unsigned idx,pos;
 int ret;
-unsigned val;
 
 if (!len) len = strlen (src);
 
 for (idx=pos=0; idx < len ; idx += ret) {
+	unsigned val=0;
 	ret = eat_utf8 ((unsigned char*) src+idx, len-pos, &val);
 	if (ret == 0) break;
 	else if (ret < 0) { ret=1; dst[pos++] = src[idx]; } /* does not fit, this should never happen */
-	/* else if (ret==1)  { dst[pos++] = val; } normal character */
 	else	{ dst[pos++] = val; } /* we consumed ret characters, but only produced one */
 	}
 dst[pos] = 0;
@@ -5334,7 +5335,7 @@ unsigned idx;
 int type = 0;
 int state = 0;
 for (idx = 0; idx <  string.length; idx++) {
-	unsigned val, cha;
+	unsigned val=0, cha;
 	cha = 0xff & string.word[idx] ;
 	sprintf(buff+3*idx, " %02x", 0xff & cha );
 	switch(state) {
