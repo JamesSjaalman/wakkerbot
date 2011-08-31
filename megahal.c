@@ -303,6 +303,7 @@
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
+#define WAKKER_INF (1E+40)
 
 	/* define to outcomment old stuff */
 #define DONT_WANT_THIS 0
@@ -402,7 +403,7 @@
 	** whitespace does not count (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
 #define MIN_REPLY_SIZE 14
-#define WANT_PARROT_CHECK 14
+#define WANT_PARROT_CHECK 15
 #define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
 
 	/* Flags for converting strings to/from latin/utf8
@@ -566,6 +567,7 @@ static FILE *statusfp;
 unsigned parrot_hash[WANT_PARROT_CHECK] = {0,};
 unsigned parrot_hash2[WANT_PARROT_CHECK+1] = {0,};
 #endif /* WANT_PARROT_CHECK */
+
 #if DONT_WANT_THIS
 static bool used_key;
 #endif
@@ -810,6 +812,9 @@ STATIC void make_keywords(MODEL *mp, struct sentence *src);
 STATIC bool dissimilar(struct sentence *one, struct sentence *two);
 STATIC WordNum babble(MODEL *model, struct sentence *words);
 STATIC char *make_output(struct sentence *src);
+
+static double penalize_parrot(unsigned arr[], unsigned siz);
+double fact2 (unsigned expected, unsigned seen);
 
 void megahal_setquiet(void)
 {
@@ -3385,10 +3390,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     int basetime;
     double penalty;
 #if WANT_PARROT_CHECK
-    unsigned pidx,ssq1,sum1;
-    double calc1;
-    unsigned ssq2,sum2;
-    double calc2,penalty1,penalty2;
+    double penalty1,penalty2;
 #endif
 
 #if ALZHEIMER_FACTOR
@@ -3420,50 +3422,46 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	rawsurprise = evaluate_reply(model, zeresult);
 	count++;
 #if WANT_PARROT_CHECK
-	sum1=ssq1=0;
-	for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { 
-	    sum1 += parrot_hash[pidx] ;
-	    ssq1 += parrot_hash[pidx] * parrot_hash[pidx] ;
-	    }
-	if (sum1 <= 1) continue;
-	calc1 = (sum1 * sum1) / (COUNTOF(parrot_hash)); /* estimated sum of squares */
-	penalty1 = ((double)ssq1/calc1) ;
+	/* I'm not dead yet ... */
+	penalty1 = penalize_parrot(parrot_hash, COUNTOF(parrot_hash) );
+	// if (penalty1 < 1.0) continue;
+	penalty2 = penalize_parrot(parrot_hash2, COUNTOF(parrot_hash2) );
 
-	sum2=ssq2=0;
-	for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { 
-	    sum2 += parrot_hash2[pidx] ;
-	    ssq2 += parrot_hash2[pidx] * parrot_hash2[pidx] ;
-	    }
-	calc2 = (sum2 * sum2) / (COUNTOF(parrot_hash2)); /* estimated sum of squares */
-	penalty2 = ((double)ssq2/calc2) ;
 #if 0
 	/* we use min(p1,p2) * p1 * p2; because (one of) p1,p2 might by inflated by
-	** hash collisions */
+	** hash collisions
+	*/
         penalty = penalty1<penalty2 ?penalty1:penalty2 ;
         penalty = sqrt(penalty*penalty1*penalty2) ;
 #else
-	penalty = (2*penalty1*penalty2) / (penalty1+penalty2);
+	penalty = (penalty1*penalty2) / (penalty1+penalty2);
 	penalty *= penalty;
 #endif
+
         surprise = rawsurprise / penalty ;
         if ( (surprise - max_surprise) <= (5*DBL_EPSILON) ) continue;
-#else
+
+#else /* WANT_PARROT_CHECK */
 	if (surprise <= max_surprise || !dissimilar(src, zeresult) ) continue;
 #endif /* WANT_PARROT_CHECK */
 
 #if WANT_PARROT_CHECK
-fprintf(stderr, "\nParrot1={" );
-for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, " %u", parrot_hash[ pidx] ); }
-fprintf(stderr, "} Sum=%u Ssq=%u Exp=%f Rat=%f\n"
-, sum1, ssq1, calc1, penalty1 );
+{
+    unsigned pidx;
+    fprintf(stderr, "\nParrot1={" );
+    for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, " %u", parrot_hash[ pidx] ); }
+    fprintf(stderr, "}\n" );
+    /* fprintf(stderr, "} Sum=%u Ssq=%u Exp=%f Rat=%f\n" , sum1, ssq1, calc1, penalty1 ); */
 
-fprintf(stderr, "Parrot2={" );
-for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { fprintf(stderr, " %u", parrot_hash2[ pidx] ); }
-fprintf(stderr, "} Sum=%u Ssq=%u Exp=%f Rat=%f\n"
-, sum2, ssq2, calc2, penalty2);
-fprintf(stderr, "Penal=%f Raw=%f, Max=%f, Surp=%f"
- , penalty, rawsurprise, max_surprise, surprise);
+    fprintf(stderr, "Parrot2={" );
+    for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { fprintf(stderr, " %u", parrot_hash2[ pidx] ); }
+    fprintf(stderr, "}\n" );
 
+    fprintf(stderr, "Penal={%f %f} :: %f Raw=%f, Max=%f, Surp=%f"
+    , penalty1,penalty2
+    , penalty, rawsurprise, max_surprise, surprise);
+
+}
 #endif /* WANT_PARROT_CHECK */
 
 	max_surprise = surprise;
@@ -3488,6 +3486,57 @@ fprintf(stderr, "\n%u %f N=%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
     return output;
 }
 
+#if WANT_PARROT_CHECK
+static double penalize_parrot(unsigned arr[], unsigned siz)
+{
+unsigned idx;
+unsigned ssq,sum;
+double calc,penalty;
+
+sum=ssq=0;
+for (idx=0; idx < siz ; idx++) { 
+    sum += arr[idx] ;
+    ssq += arr[idx] * arr[idx] ;
+    }
+if (sum <= 1) return 0.0;
+#if 0
+calc = (double)(sum * sum) / siz; /* estimated sum of squares */
+penalty = ((double)ssq/calc) ;
+#else
+{
+penalty = 0;
+
+calc = (double)sum / siz; /* estimated cell value */
+for (idx=0; idx < siz ; idx++) { 
+    	if (arr[idx] > round(calc) ) penalty += fact2 (calc, arr[idx] );
+    	else if (arr[idx] < trunc(calc) ) penalty += fact2 (calc, arr[idx]);
+	}
+if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
+if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
+penalty /= (calc);
+penalty /= sqrt(siz);
+penalty = log(1+penalty);
+}
+
+#endif
+
+return penalty;
+}
+
+double fact2 (unsigned expected,unsigned seen) 
+{
+unsigned val;
+if (seen < expected) return fact2(seen, expected);
+if (seen < 2 || expected < 2) { seen += 2; expected += 2; }
+
+for (val =1; seen > expected; seen--) {
+	if (val * seen < val) return val* pow( (seen+expected)/2,(seen-expected));
+	val *= seen;
+	}
+/* if (expected) val/= expected; */
+return val;
+}
+#endif
 /*---------------------------------------------------------------------------*/
 
 /*
