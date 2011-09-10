@@ -403,7 +403,7 @@
 	** whitespace does not count (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
 #define MIN_REPLY_SIZE 14
-#define WANT_PARROT_CHECK 15
+#define WANT_PARROT_CHECK 7
 #define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
 
 	/* Flags for converting strings to/from latin/utf8
@@ -813,8 +813,11 @@ STATIC bool dissimilar(struct sentence *one, struct sentence *two);
 STATIC WordNum babble(MODEL *model, struct sentence *words);
 STATIC char *make_output(struct sentence *src);
 
-static double penalize_parrot(unsigned arr[], unsigned siz);
-double fact2 (unsigned expected, unsigned seen);
+	/* The lean statistics department.
+	*/
+STATIC double penalize_parrot(unsigned arr[], unsigned siz);
+STATIC double fact2 (unsigned expected, unsigned seen);
+STATIC unsigned long long dragon_denominator2(unsigned long nslot, unsigned long nitem);
 
 void megahal_setquiet(void)
 {
@@ -3486,57 +3489,6 @@ fprintf(stderr, "\n%u %f N=%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
     return output;
 }
 
-#if WANT_PARROT_CHECK
-static double penalize_parrot(unsigned arr[], unsigned siz)
-{
-unsigned idx;
-unsigned ssq,sum;
-double calc,penalty;
-
-sum=ssq=0;
-for (idx=0; idx < siz ; idx++) { 
-    sum += arr[idx] ;
-    ssq += arr[idx] * arr[idx] ;
-    }
-if (sum <= 1) return 0.0;
-#if 0
-calc = (double)(sum * sum) / siz; /* estimated sum of squares */
-penalty = ((double)ssq/calc) ;
-#else
-{
-penalty = 0;
-
-calc = (double)sum / siz; /* estimated cell value */
-for (idx=0; idx < siz ; idx++) { 
-    	if (arr[idx] > round(calc) ) penalty += fact2 (calc, arr[idx] );
-    	else if (arr[idx] < trunc(calc) ) penalty += fact2 (calc, arr[idx]);
-	}
-if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
-if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
-penalty /= (calc);
-penalty /= sqrt(siz);
-penalty = log(1+penalty);
-}
-
-#endif
-
-return penalty;
-}
-
-double fact2 (unsigned expected,unsigned seen) 
-{
-unsigned val;
-if (seen < expected) return fact2(seen, expected);
-if (seen < 2 || expected < 2) { seen += 2; expected += 2; }
-
-for (val =1; seen > expected; seen--) {
-	if (val * seen < val) return val* pow( (seen+expected)/2,(seen-expected));
-	val *= seen;
-	}
-/* if (expected) val/= expected; */
-return val;
-}
-#endif
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -5431,5 +5383,91 @@ default: ret = sprintf( buff, "SomeType=%d", type); break;
 	}
 buff[ ret] = 0;
 return ret;
+}
+
+#if WANT_PARROT_CHECK
+STATIC double penalize_parrot(unsigned arr[], unsigned siz)
+{
+unsigned idx;
+unsigned ssq,sum;
+double calc,penalty;
+
+sum=ssq=0;
+for (idx=0; idx < siz ; idx++) { 
+    sum += arr[idx] ;
+    ssq += arr[idx] * (1+arr[idx]) ;
+    }
+if (sum <= 1) return 0.0;
+#if 0
+calc = (double)(sum * sum) / siz; /* estimated sum of squares */
+penalty = ((double)ssq/calc) ;
+#elif 0
+{
+penalty = 0;
+
+calc = (double)sum / siz; /* estimated cell value */
+for (idx=0; idx < siz ; idx++) { 
+    	if (arr[idx] > round(calc) ) penalty += fact2 (calc, arr[idx] );
+    	else if (arr[idx] < trunc(calc) ) penalty += fact2 (calc, arr[idx]);
+	}
+if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
+if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
+penalty /= (calc);
+penalty /= sqrt(siz);
+penalty = log(1+penalty);
+}
+#else
+{
+unsigned long long red_dragon;
+
+/* Formula from hashtable-site www.strchr.com/hash_functions/
+**     Sum ( chainlen * (chainlen+1)) / 2    ## Chainlen := number of items/slot
+**     ------------------------------
+**          (n/2m)* (n+2m -1)
+**
+** N= nitem; m=nslot
+** for ease of computation, 2*nominator and 2*denominator are used here.
+** The result is a ratio that should be ~1 for perfect hashing/spread.
+** I penalize higher ratios by raising to a higher power (around 1.5)
+*/
+
+red_dragon = dragon_denominator2( siz, sum);
+
+penalty = pow ( (double)ssq/red_dragon, 1.4 );
+
+/* fprintf(stderr, "Sum=%u Siz=%u Ssq= %lu/%llu := %f\n" , sum, siz, ssq, red_dragon, penalty ); */
+
+if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
+if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
+
+}
+#endif
+
+return penalty;
+}
+
+STATIC double fact2 (unsigned expected,unsigned seen) 
+{
+unsigned val;
+if (seen < expected) return fact2(seen, expected);
+if (seen < 2 || expected < 2) { seen += 2; expected += 2; }
+
+for (val =1; seen > expected; seen--) {
+	if (val * seen < val) return val* pow( (seen+expected)/2,(seen-expected));
+	val *= seen;
+	}
+/* if (expected) val/= expected; */
+return val;
+}
+#endif
+
+/* expected value for ssq when dividing nitems over nslots */
+STATIC unsigned long long dragon_denominator2(unsigned long nslot, unsigned long nitem)
+{
+
+unsigned long long result;
+result = ((unsigned long long)nitem * (nitem+2*nslot-1)) / (nslot) ;
+/* fprintf (stderr, "Denominator (%lu,%lu) := %llu\n" , nslot, nitem, result); */
+return result;
 }
 /* Eof */
