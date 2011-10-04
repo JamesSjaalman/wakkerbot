@@ -100,7 +100,7 @@ this *= ptr->score ;
 return this;
 }
 
-	/* find the slot corresponding to num.
+	/* Find the slot corresponding to 'num'.
 	** if num is not found in the hashtable: allocate a new slot
 	** , initialise it, and put num into it.
 	*/
@@ -124,14 +124,17 @@ up = crosstab_hnd(ptr, num);
 return slot;
 }
 
+	/* Allocate a slot in the crosstab */
 static unsigned int cross_alloc_slot(struct crosstab *ptr)
 {
 unsigned int slot = IDX_NIL;
 
+	/* Nuke some entries until the freelist is non-empty */
 for (slot = ptr->freelist ; slot == IDX_NIL; slot = ptr->freelist) {
 	crosstab_reduce( ptr, ptr->msize - sqrt(ptr->msize) );
 	}
 
+	/* remove it from the freelist */
 if (slot != IDX_NIL) {
 	ptr->freelist = ptr->table[slot].hash.link;
 	ptr->table[slot].hash.link = IDX_NIL;
@@ -139,11 +142,12 @@ if (slot != IDX_NIL) {
 return slot;
 }
 
-	/* remove one "slot" from the crosstable.
-	** substract all it's values from the row/columns totals
-	** from the grand total, 
-	** set it's cell and row/column totals to zero.
-	** Dont touch the key or linked list yet; only the payload!
+	/* Remove one 'slot' from the crosstable.
+	** - substract all it's values in the row/columns totals
+	**   from the grand total, 
+	** - set it's cell value to zero.
+	** - set it's row/column totals to zero.
+	** - (dont touch the key or linked list yet; only the payload!)
 	*/
 static void cross_wipe_slot(struct crosstab *ptr,unsigned int slot)
 {
@@ -181,6 +185,7 @@ unsigned pay;
 #if (SHOW_CALLS || SHOW_FUZZ )
 fprintf(stderr, "fuzz_slot(%u->%u)\n", slot, ptr->table[slot].hash.key );
 #endif
+
 if (ptr->table[slot].hash.key == IDX_NIL ) return;
 
 	/* the row/columns totals for all indices (including ourself) */
@@ -354,8 +359,8 @@ for (slot=0; slot < ptr->msize; slot++ ) {
 	}
 for (iter =0; iter < PITER_ITER_MAX; iter++) {
 	oldval = ptr->score;
-	ptr->score = iterding (ptr->scores , ptr->matrix, ptr->msize );
-	frac = (ptr->score-oldval)/ ptr->score;
+	ptr->score = iterding (ptr->scores, ptr->matrix, ptr->msize );
+	frac = (ptr->score-oldval) / ptr->score;
 #if SHOW_ITER
 	fprintf(stderr, "Iter=%2u val=%6.4f %6.5f\n" , iter, ptr->score, frac);
 #endif
@@ -372,18 +377,22 @@ if (!ptr || newsize >= ptr->msize) return;
 
 #if 0
 {	unsigned idx,slot;
-	/* Pick a victim: a random slot from idx[0] ... idx[newsize] and eat some of it's meat.
-	** we don't bother about the elements at newsize and beyond, because they are almost dead anyway.
-	 */
+	/* Pick a victim: a random slot from idx[0] ... idx[newsize]
+	** and eat some of it's meat.
+	** We don't bother about the elements at newsize and beyond,
+	** because they are almost dead anyway.
+	*/
 idx = urnd(newsize);
 slot = ptr->index[idx] ;
 cross_fuzz_slot(ptr,slot);
 }
 #endif
 
-	/* recalculate the power-iteration */
+	/* recompute the power-iteration */
 crosstab_recalc(ptr);
-	/* reshuffle the index, such that index[0] ... idx[newsize-1] contain the indexes of the best/worst items */
+	/* reshuffle the index, such that index[0] ... idx[newsize-1]
+	**  contain the indexes of the best/worst items.
+	*/
 index_doubles(ptr->index, ptr->scores, ptr->msize);
 
 #if ( SHOW_ITER >= 2)
@@ -680,13 +689,13 @@ char buff [500];
 crosstab_recalc(ptr);
 index_doubles(ptr->index, ptr->scores, ptr->msize);
 
-fprintf(fp, "\n[%5u] :        |%6u/%3u| %6.3f | weight |\n"
+fprintf(fp, "\n[%4u]:        |%6u/%3u| %6.3f | weight |\n"
 	, ptr->freelist!=IDX_NIL? ptr->freelist:9999, ptr->total.sum,ptr->total.uniq,  ptr->score );
-fprintf(fp, "--------|--------+----------+---------+--------+\n" );
+fprintf(fp, "------|--------+----------+---------+--------+\n" );
 for (idx=0; idx < ptr->msize; idx++ ) {
 	slot = ptr->index[idx];
 	value = crosstab_value(ptr,slot);
-	fprintf(fp, "%3u  %3u|", idx, slot );
+	fprintf(fp, "%2u  %2u|", idx, slot );
 	if (ptr->table[slot].hash.key == IDX_NIL) fprintf(fp, " <free> |" );
 	else fprintf(fp, " %6u |", ptr->table[slot].hash.key );
 	fprintf(fp, "%6u/%2u | %6.5f | %6.4f |"
@@ -702,9 +711,9 @@ for (idx=0; idx < ptr->msize; idx++ ) {
 	}
 crosstab_bin_dump(ptr);
 }
-	/* perform one power-iteration
-	** , using "vec" as input (which is modified by this function)
-	** return is the resulting (normalised) eigenvalue
+	/* Perform one sweep of the power-iteration
+	** , using "vec" as input (which is modified by this function).
+	** Return value is the resulting (normalised) eigenvalue
 	*/
 double iterding(double *vec, unsigned int *mx, unsigned int cnt)
 {
@@ -739,11 +748,13 @@ static int cmp_ranked_double(const void *l, const void *r)
 {
 unsigned const *ul = l;
 unsigned const *ur = r;
-
+	/* compare values */
 if (anchor_double[*ul] > anchor_double[*ur] ) return -3;
 else if (anchor_double[*ul] < anchor_double[*ur] ) return 3;
+	/* compare offsets. This makes the sort stable */
 else if (*ul > *ur ) return 2;
 else if (*ul < *ur ) return -2;
+	/* compare displacement. This makes the sort UNstable ;-) */
 // else if (ul > ur ) return 1;
 // else if (ul < ur ) return -1;
 else return 0;
@@ -962,6 +973,7 @@ size_t beg,len;
 
 fp = fopen(name, "r" );
 fprintf(stderr,"Names_Load(%s) :=%p\n", name, (void*) fp);
+if (!fp) return labels? labels->used:0 ;
 
 if (labels) while (labels->used) {
 	free (labels->tabl[ --labels->used ] );
