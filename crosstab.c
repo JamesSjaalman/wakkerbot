@@ -13,10 +13,10 @@
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 	/* settings for the power-iteration:
 	** :: the minimal amount the eigenvalue may to vary before we
-	** call it convergiance;
+	** call it convergence; (this will be divided by sqrt(N).
 	** :: the maximal number of iterations we allow 
-	** if convergiance is not reached.
-	 */
+	** if convergence is not reached.
+	*/
 #define PITER_FRAC_LIMIT 0.1
 #define PITER_ITER_MAX 100
 
@@ -31,7 +31,6 @@ struct label {
 	size_t used;
 	char ** tabl ;
 	} *labels;
-
 
 static void cross_wipe_slot(struct crosstab *ptr,unsigned int slot);
 static void cross_fuzz_slot(struct crosstab *ptr,unsigned int slot);
@@ -90,8 +89,8 @@ static double crosstab_value(struct crosstab *ptr,unsigned slot)
 {
 double this;
 
-if (slot >= ptr->msize) this = 0; // ptr->total.sum ? 0.1/ptr->total.sum : 0.0;
-// else if (slot >= ptr->msize/2) this = ptr->total.sum ? 1.0/ptr->total.sum : 0.0;
+if (slot >= ptr->msize) this = 0; /* ptr->total.sum ? 0.1/ptr->total.sum : 0.0; */
+/* else if (slot >= ptr->msize/2) this = ptr->total.sum ? 1.0/ptr->total.sum : 0.0; */
 else this = /* ptr->score * */ ptr->scores[slot] ;
 /* else this =  ptr->scores[slot] * ptr->total.sum * (double) ptr->table[slot].payload.uniq ; */
 this *= ptr->score ;
@@ -193,7 +192,7 @@ for (xy=0; xy < ptr->msize; xy++ ) {
 	if (ptr->table[xy].hash.key == IDX_NIL ) continue;
 	zzz = XY2ZZ(slot,xy);
 	if (ptr->matrix[zzz] > 0) {
-		// pay = 1+sqrt( ptr->matrix[zzz] );
+		/* pay = 1+sqrt( ptr->matrix[zzz] ); */
 		pay = urnd( 1+ptr->matrix[zzz] );
 #if (SHOW_FUZZ > 1 )
 		fprintf(stderr, "[%u,%u] %u - %u\n", slot, xy, ptr->matrix[zzz], pay);
@@ -338,8 +337,8 @@ for (slot=LUSIZE(oldsize); slot < LUSIZE(newsize); slot++ ) {
 return ;
 }
 
-	/* perform power-iteration and keep the result vector in ->scores.
-	** the eigenvalue is put in ptr->score.
+	/* Perform power-iteration and keep the result vector in ->scores.
+	** the eigenvalue is stored in ptr->score.
 	 */
 static void crosstab_recalc(struct crosstab * ptr)
 {
@@ -755,8 +754,8 @@ else if (anchor_double[*ul] < anchor_double[*ur] ) return 3;
 else if (*ul > *ur ) return 2;
 else if (*ul < *ur ) return -2;
 	/* compare displacement. This makes the sort UNstable ;-) */
-// else if (ul > ur ) return 1;
-// else if (ul < ur ) return -1;
+/* else if (ul > ur ) return 1; */
+/* else if (ul < ur ) return -1; */
 else return 0;
 }
 
@@ -901,8 +900,9 @@ struct dmprec {
 
 fp = fopen("crosstab.dmp", "a+" );
 /* crosstab_recalc(ptr); */
+		/* record with key0=NIL := Grand total */
 record.key0= IDX_NIL;
-record.key1= IDX_NIL;
+record.key1= IDX_NIL; /* <- this could be the topic-number */
 record.uniq = ptr->total.uniq;
 record.sum = ptr->total.sum;
 fwrite(&record, sizeof record, 1, fp);
@@ -910,6 +910,7 @@ fwrite(&record, sizeof record, 1, fp);
 for (idx0=0; idx0 < ptr->msize; idx0++ ) {
 	if (ptr->table[idx0].hash.key == IDX_NIL) continue;
 	record.key0 = ptr->table[idx0].hash.key;
+		/* record with key1=NIL := row total */
 	record.key1 = IDX_NIL;
 	record.uniq = ptr->table[idx0].payload.uniq ;
 	record.sum = ptr->table[idx0].payload.sum ;
