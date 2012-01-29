@@ -407,7 +407,7 @@
 	** Note: both words and puntuation count as tokens.
 	** whitespace does not count (if WANT_SUPPRESS_WHITESPACE is enabled)
  	*/
-#define MIN_REPLY_SIZE 14
+#define MIN_REPLY_SIZE 333
 #define WANT_PARROT_CHECK 7
 #define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
 
@@ -1149,8 +1149,12 @@ STATIC void exithal(void)
     }
 #endif
 
-#if WANT_DUMP_MODEL
-    dump_model(glob_model, "megahal.dmp", WANT_DUMP_MODEL);
+#if (WANT_DUMP_MODEL & 1)
+    dump_model(glob_model, "tree_fwd.dmp", 1);
+#endif
+
+#if (WANT_DUMP_MODEL & 2)
+    dump_model(glob_model, "tree_rev.dmp", 2);
 #endif
     show_memstat("Exit(0)" );
     exit(0);
@@ -5372,13 +5376,13 @@ STATIC size_t decode_word(char * buff, STRING str, int type )
 size_t ret;
 
 switch (type) {
-case 0: memcpy( buff, str.word, ret = str.length); break;
-case 1: memcpy( buff, str.word, ret = str.length);break;
-case 2: ret = cp_utf2latin(buff, str.word, str.length); break;
-case 3: memcpy( buff, str.word, ret = str.length); break;
+case 0: memcpy( buff, str.word, ret = str.length); break;	/* plain ordinary ascii */
+case 1: memcpy( buff, str.word, ret = str.length); break;	/* contains non-utf bytes */
+case 2: ret = cp_utf2latin(buff, str.word, str.length); break;	/* contains utf bytes */
+case 3: memcpy( buff, str.word, ret = str.length); break;	/* contains both utf&& non-utf bytes */
 default: ret = sprintf( buff, "SomeType=%d", type); break;
 	}
-buff[ ret] = 0;
+buff[ret] = 0;
 return ret;
 }
 
