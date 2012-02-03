@@ -298,8 +298,8 @@
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 #define STATIC static
+#define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
@@ -336,31 +336,47 @@
 	 */
 #define WANT_DUMP_MODEL 0
 
-#define WANT_ANAGRAM 0
 /*
 ** Real SWITCHES. Note: these are not independent. Some combinations might be impossible
 */
+	/* The order of the Markov model.
+	** NOTE: if you change this, the (binary) .brn file will be rewritten
+	** using the new value of ORDER_WANTED. Be carefull.
+	*/
+#define ORDER_WANTED 5
 	/* The crossdict is a cross-table containing a keyword-keyword adjacency matrix.
 	** this matrix is evaluated by a power-iteration algoritm, which basically
 	** yields the first eigenvector and -value.
 	** The matrix is fed with pairs of "n-adjacent" words, plus a distance.
 	** The matrix has a fixed size; if a new insertion would make it bigger than
-	** (cross_dict_size) the weakest keywords are removed.
-	** cross_dict_size is established dynamically as log(wordcount) , but will always 
-	** be between CROSS_DICT_SIZE_MIN and CROSS_DICT_SIZE_MAX.
-	** The power-iteration has a complexity of O(N*N), with N being the crossdictsize.
+	** (CROSS_DICT_SIZE) the weakest keywords are removed.
 	**
-	** - Only "rare" words (with "less than average" frequency of occurence) are considered.
-	** - Only pairs of words with a (distance <= CROSS_DICT_WORD_DISTANCE) are entered.
-	**     specifying a CROSS_DICT_WORD_DISTANCE of 3 will cause word[x] downto word[x-3] to
-	**     be entered into the matrix.
+	** Only "rare" words (with "less than average" frequency of occurence) are considered
+	** , this is estimated by comparing ((freq(word)/mean_freq) < STOP_WORD_TRESHOLD ).
+	**
+	** Only pairs of words with a (distance <= CROSS_DICT_WORD_DISTANCE) are entered.
+	** Specifying a CROSS_DICT_WORD_DISTANCE of 3 will cause word[x] downto word[x-3] to
+	** be entered into the matrix.
 	*/
 #define CROSS_DICT_SIZE_MIN 21
-#define CROSS_DICT_SIZE_MAX 91
-#define CROSS_DICT_WORD_DISTANCE 2
+#define CROSS_DICT_SIZE_MAX 51
+#define CROSS_DICT_SIZE CROSS_DICT_SIZE_MAX
+#define CROSS_DICT_WORD_DISTANCE 1
 
 	/* Use keyword weights when evaluating the replies */
 #define WANT_KEYWORD_WEIGHTS 1
+	/* Assume words with a quality lower than STOP_WORD_TRESHOLD
+	** to be stopwords (and ingnore them)
+	** quality := 1/rel_frequency. Rel_frequency "mannen" == "vrouwen" := 1.5
+	** 10 := very common, 0.1 uncommon
+	*/
+#define STOP_WORD_TRESHOLD 0.5
+	/* Crostab entries with a value smaller than this are ignored
+	** Note: this is scaled by cross_tab_size.
+	** (after normating the constant is put into the eigen value;
+	** crostabb coefficients are supposed to sum up to 1.0)
+	*/
+#define CROSS_TAB_FRAC 0.01
 
 	/* suppress whitespace; only store REAL words.
 	** NOTE: changing this setting will require a complete rebuild of megahal's brain.
@@ -403,12 +419,21 @@
 #define DICT_SIZE_INITIAL 4
 #define DICT_SIZE_SHRINK 16
 
-	/* we don't want results smaller than this amount of tokens.
-	** Note: both words and puntuation count as tokens.
+	/* we don't want results with number of tokens < MIN_REPLY_SIZE. (default = 14)
+	** Note: both words and puntuation count as tokens,
 	** whitespace does not count (if WANT_SUPPRESS_WHITESPACE is enabled)
- 	*/
-#define MIN_REPLY_SIZE 333
-#define WANT_PARROT_CHECK 7
+	** WANT_PARROT_CHECK is the size of the parrot histograms (default = 13)
+	** PARROT_POWER is used in parrot_value := pow(parrot_score, PARROT_POWER) (default = 1.3)
+	** Higher values work towards a flatter histogram
+	** UNDER/OVER_SIZE_PENALTY_POWER is used to penalize under/over-sized replies. (default 1.5,1.4)
+	** Higher values work towards INTENDED_REPLY_SIZE
+	*/
+#define MIN_REPLY_SIZE 14
+#define INTENDED_REPLY_SIZE 73
+#define WANT_PARROT_CHECK 13
+#define PARROT_POWER 2.7
+#define OVERSIZE_PENALTY_POWER 1.7
+#define UNDERSIZE_PENALTY_POWER 1.2
 #define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
 
 	/* Flags for converting strings to/from latin/utf8
@@ -495,7 +520,7 @@ typedef struct {
     struct dictstat	{
 		UsageSum nnode;
 		UsageSum valuesum;
-    		DictSize nonzero;
+		DictSize nonzero;
 		} stats;
     struct dictslot *entry;
 } DICT;
@@ -503,8 +528,8 @@ typedef struct {
 typedef struct {
     Count size;
     struct {
-    	STRING from;
-    	STRING to;
+	STRING from;
+	STRING to;
 	} *pairs;
 } SWAP;
 
@@ -551,11 +576,10 @@ typedef struct {
 } COMMAND;
 
 /*===========================================================================*/
-
 static char *errorfilename = "megahal.log";
 static char *statusfilename = "megahal.txt";
 static int glob_width = 45;
-static int glob_order = 5;
+static int glob_order = ORDER_WANTED;
 static int glob_timeout = DEFAULT_TIMEOUT;
 
 static bool typing_delay = FALSE;
@@ -579,7 +603,7 @@ static bool used_key;
 static MODEL *glob_model = NULL;
 	/* Refers to a dup'd fd for the brainfile, used for locking */
 static int glob_fd = -1;
-#if 1||CROSS_DICT_SIZE_MAX
+#if 1||CROSS_DICT_SIZE
 #include "crosstab.h"
 unsigned int cross_dict_size=0;
 struct crosstab *glob_crosstab = NULL;
@@ -636,7 +660,6 @@ STATIC SWAP *new_swap(void);
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICT *dict, STRING word);
 STATIC size_t word_format(char *buff, STRING string);
-STATIC size_t symbol_format(char *buff, WordNum sym);
 
 STATIC size_t tokenize(char *string, int *sp);
 
@@ -768,6 +791,9 @@ STATIC STRING word_dup_othercase(STRING org);
 	*/
 STATIC double word_weight(DICT *dict, STRING word, int want_other);
 STATIC double symbol_weight(DICT *dict, WordNum symbol, int want_other);
+	/* Callback functions for crosstab */
+STATIC double symbol_weight_callback(WordNum sym);
+STATIC size_t symbol_format_callback(char *buff, WordNum sym);
 	/* The aftermath for the output-sentence.
 	** Sentences that don't start with a Capitalised Word
 	** or don't end with a period get penalised.
@@ -1150,11 +1176,10 @@ STATIC void exithal(void)
 #endif
 
 #if (WANT_DUMP_MODEL & 1)
-    dump_model(glob_model, "tree_fwd.dmp", 1);
+    dump_model(glob_model, "tree.fwd", 1);
 #endif
-
 #if (WANT_DUMP_MODEL & 2)
-    dump_model(glob_model, "tree_rev.dmp", 2);
+    dump_model(glob_model, "tree.rev", 2);
 #endif
     show_memstat("Exit(0)" );
     exit(0);
@@ -1187,7 +1212,7 @@ STATIC char *read_input(char *prompt)
      */
     if (prompt) {
 	fprintf(stdout, "%s", prompt);
-    	fflush(stdout);
+	fflush(stdout);
 	}
 
     /*
@@ -1589,7 +1614,7 @@ if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
 
 #if (WANT_DUMP_DELETE_DICT >= 1)
     status("dict(%llu:%llu/%llu) will be shrunk: %u/%u\n"
- 	, dict->stats.valuesum, dict->stats.nnode, dict->stats.nonzero, dict->branch, dict->msize);
+	, dict->stats.valuesum, dict->stats.nnode, dict->stats.nonzero, dict->branch, dict->msize);
 #endif
     resize_dict(dict, dict->size);
     }
@@ -2206,7 +2231,7 @@ STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
     if (!top || top == this) {;}
     else {
 	/* unlink top */
-    	ip = node_hnd(tree, tree->children[top].ptr->symbol);
+	ip = node_hnd(tree, tree->children[top].ptr->symbol);
 	*ip = tree->children[top].link;
 	tree->children[top].link = CHILD_NIL;
 	/* now swap this and top */
@@ -2214,7 +2239,7 @@ STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
 	tree->children[top].ptr = NULL;
 	
 	/* relink into the hash chain */
-    	ip = node_hnd(tree, tree->children[this].ptr->symbol);
+	ip = node_hnd(tree, tree->children[this].ptr->symbol);
 	*ip = this;
 	}
 
@@ -2228,7 +2253,7 @@ kill:
 	status("Tree(%u/%u) will be shrunk: %u/%u\n"
 		, tree->thevalue, tree->childsum, tree->branch, tree->msize);
 #endif
-        	resize_tree(tree, tree->branch);
+		resize_tree(tree, tree->branch);
 		}
 }
 
@@ -2357,7 +2382,7 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
 		, oldsize, newsize
 		, tree->thevalue, tree->childsum);
 #endif
-        	treeslots_sort(old, tree->branch );
+			treeslots_sort(old, tree->branch );
 		}
 
         for (item =0 ; item < tree->branch; item++) {
@@ -2419,8 +2444,8 @@ STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
  * The sorting does not consume enough CPU to justify a mergesort or insertion sort variant.
  * (qsort ate 10% when training, most of it in the compare function)
  * This is a "one pass bubblesort"; it will _eventually_ get the array sorted.
- * Having the array sorted is not important: babble() may need some more steps
- * on an unsorted array.
+ * Having the array sorted is not important: babble() will need only a few steps
+ * more on an unsorted array.
  */
 unsigned idx;
 for (idx = 1; idx < count; idx++) {
@@ -2516,10 +2541,15 @@ if (altsym != WORD_NIL) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
 /*		, (double ) dict->entry[i].stats.nnode * dict->size / dict->stats.node */
 
 if (altsym==WORD_NIL) {
-	/* this is to catch typos, which have an initial score of 2*(1+order) */
-	if (dict->entry[symbol].stats.valuesum <= 12) return 0.00099;
-	if (dict->entry[symbol].stats.nnode <= 12) return 0.00088;
+	/* this is to catch and ignore typos
+	** , which have an initial score of 2*(1+glob_order) 
+	** (and will hopefully decay)
+	*/
+#define TRESHOLD (2*(1+glob_order))
+	if (dict->entry[symbol].stats.valuesum <= TRESHOLD) return 0.00099;
+	if (dict->entry[symbol].stats.nnode <= TRESHOLD) return 0.00088;
 	if (dict->entry[symbol].stats.valuesum == dict->entry[symbol].stats.nnode) return 0.00777;
+#undef TRESHOLD
         return ((double)dict->stats.valuesum / dict->stats.nonzero)
 		/ (0.5 + dict->entry[symbol].stats.valuesum)
 		;
@@ -2630,6 +2660,7 @@ STATIC void learn_from_input(MODEL *model, struct sentence *words)
 
     /*
      *		We only learn from inputs which are long enough
+     *		We need N+1 words to feed a N-ary model.
      */
     if (words->size <= model->order) return;
     stamp_max++;
@@ -2691,7 +2722,7 @@ STATIC void learn_from_input(MODEL *model, struct sentence *words)
 /*
  *		Function:	Train
  *
- *		Purpose:	 	Infer a MegaHAL brain from the contents of a text file.
+ *		Purpose:		Infer a MegaHAL brain from the contents of a text file.
  */
 STATIC void train(MODEL *model, char *filename)
 {
@@ -2910,6 +2941,10 @@ STATIC TREE * load_tree(FILE *fp)
     if ( this.stamp > stamp_max) stamp_max = this.stamp;
     else if ( this.stamp < stamp_min) stamp_min = this.stamp;
 #else
+	/* We allow the timestamp to fold around at 0xffffffff
+	** -->> 0x00000001 wil be *above* 0xffffffff ...
+	** Current timestamp is 2386300 (2012-01-31) so this will probably never happen.
+	*/
     if (stamp_min == stamp_max) { stamp_min = this.stamp; stamp_max = 1+ this.stamp;}
     else { int rc;
     rc = check_interval (stamp_min, stamp_max, this.stamp);
@@ -3150,19 +3185,19 @@ STATIC size_t tokenize(char *str, int *sp)
 	/* if (UCPstr[pos] == '\'' ) { *sp |= 16; return pos; }*/
 	/* if (UCPstr[posi] == '"' ) { *sp |= 32; return pos; }*/
 #endif
-    	if (myisalpha(UCPstr[pos])) {*sp = T_WORD; pos++; continue; }
-    	if (myisalnum(UCPstr[pos])) {*sp = T_NUM; pos++; continue; }
+	if (myisalpha(UCPstr[pos])) {*sp = T_WORD; pos++; continue; }
+	if (myisalnum(UCPstr[pos])) {*sp = T_NUM; pos++; continue; }
 	/* if (strspn(str+pos, "-+")) { *sp = T_NUM; pos++; continue; }*/
 	*sp = T_ANY; continue;
 	break;
     case T_ANY: /* either whitespace or meuk: eat it */
-    	pos += strspn(str+pos, " \t\n\r\f\b" );
+	pos += strspn(str+pos, " \t\n\r\f\b" );
 	if (pos) {*sp = T_INIT; return pos; }
         *sp = T_MEUK; continue;
         break;
     case T_WORD: /* inside word */
 	while ( myisalnum(UCPstr[pos]) ) pos++;
-    	if (UCPstr[pos] == '\0' ) { *sp = T_INIT;return pos; }
+	if (UCPstr[pos] == '\0' ) { *sp = T_INIT;return pos; }
 	if (UCPstr[pos] == '.' ) { *sp = T_WORDDOT; pos++; continue; }
 	*sp = T_INIT; return pos;
         break;
@@ -3417,9 +3452,16 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
      *		Create an array of keywords from the words in the user's input
      */
     make_keywords(model, src);
+    fprintf(stderr,"MIN_REPLY_SIZE=%d\n", MIN_REPLY_SIZE);
+    fprintf(stderr,"STOP_WORD_TRESHOLD=%f\n", STOP_WORD_TRESHOLD);
+    fprintf(stderr,"CROSS_TAB_FRAC=%f\n", CROSS_TAB_FRAC);
+    fprintf(stderr,"PARROT_POWER=%f\n", PARROT_POWER);
+    fprintf(stderr,"OVERSIZE_PENALTY_POWER=%f\n", OVERSIZE_PENALTY_POWER);
+    fprintf(stderr,"UNDERSIZE_PENALTY_POWER=%f\n", UNDERSIZE_PENALTY_POWER);
     output = output_none;
 
     /*
+    zeresult = one_reply(model);
      *		Loop for the specified waiting period, generating and evaluating
      *		replies
      */
@@ -3475,7 +3517,7 @@ fprintf(stderr, "\n%u %f N=%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
 , init_typ_fwd, init_val_fwd, init_val_rev
 , output);
 #endif
- 	progress(NULL, (time(NULL)-basetime),glob_timeout);
+	progress(NULL, (time(NULL)-basetime),glob_timeout);
     } while(time(NULL)-basetime < glob_timeout);
     progress(NULL, 1, 1);
 #if WANT_DUMP_ALL_REPLIES
@@ -3521,7 +3563,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
     unsigned int iwrd;
     WordNum symbol;
 
-#if CROSS_DICT_SIZE_MAX
+#if CROSS_DICT_SIZE
     STRING canonword;
     WordNum canonsym;
     WordNum echobox[CROSS_DICT_WORD_DISTANCE] = {0,};
@@ -3557,12 +3599,14 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 		/* we may or may not like frequent words */
         // if (model->dict->entry[symbol].stats.nnode > model->dict->stats.nnode / model->dict->stats.nonzero ) continue;
         // if (model->dict->entry[symbol].stats.valuesum > model->dict->stats.valuesum / model->dict->stats.nonzero ) continue;
-	if (symbol_weight(model->dict, symbol, 0) < 1.0) continue;
+	/* 20120119:i We use the wordweight of the canonical form */
+	// if (symbol_weight(model->dict, symbol, 0) < STOP_WORD_TRESHOLD) continue;
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
+	if (symbol_weight(model->dict, canonsym, 0) < STOP_WORD_TRESHOLD) continue;
 
-#if CROSS_DICT_SIZE_MAX
+#if CROSS_DICT_SIZE
 	for (other = 0; other < echocount; other++ ) {
 		unsigned dist;
 		dist = other > rotor ? (other - rotor) : (other+CROSS_DICT_WORD_DISTANCE -rotor);
@@ -3575,8 +3619,8 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 #endif
 	}
 
-#if CROSS_DICT_SIZE_MAX
-	crosstab_show(stderr, glob_crosstab, symbol_format);
+#if CROSS_DICT_SIZE
+	crosstab_show(stderr, glob_crosstab, symbol_format_callback, symbol_weight_callback);
 #endif
 }
 
@@ -3695,11 +3739,11 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac < 1.0 / (cross_dict_size) ) goto update1;
+	if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update1;
 	probability = 0.0;
         count = 0;
         totcount++;
-        for(iord = 0; iord < model->order; iord++) {
+        for(iord = 0; iord <= model->order; iord++) {
             if ( !model->context[iord] ) continue;
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
@@ -3742,7 +3786,7 @@ fprintf(stderr, "#### '%*.*s'\n"
 update1:
         update_context(model, symbol);
 #if WANT_PARROT_CHECK
-        for(iord = model->order+1; iord-- > 0; ) {
+        for(iord = model->order+2; iord-- > 0; ) {
 	   node = model->context[iord] ;
            if (node) break;
            }
@@ -3764,11 +3808,11 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac < 1.0 / (cross_dict_size) ) goto update2;
+	if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update2;
         probability = 0.0;
         count = 0;
         totcount++;
-        for(iord = 0; iord < model->order; iord++) {
+        for(iord = 0; iord <= model->order; iord++) {
             if ( !model->context[iord] ) continue;
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
@@ -3811,7 +3855,7 @@ fprintf(stderr, "#### Rev '%*.*s'\n"
 update2:
         update_context(model, symbol);
 #if WANT_PARROT_CHECK
-        for(iord = model->order+1; iord-- > 0; ) {
+        for(iord = model->order+2; iord-- > 0; ) {
 	    node = model->context[iord] ;
            if (node) break;
            }
@@ -3834,14 +3878,13 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 	/* extra penalty for sentences that don't start with a capitalized letter */
 	/* extra penalty for incomplete sentences */
     widx = sentence->size;
-#define INTENDED_REPLY_SIZE (1*MIN_REPLY_SIZE)
     if (widx && widx != INTENDED_REPLY_SIZE) {
 #if 1
 	if (widx > INTENDED_REPLY_SIZE) {
-		entropy /= pow((1.0* widx) / INTENDED_REPLY_SIZE, 1.5);
+		entropy /= pow((1.0* widx) / INTENDED_REPLY_SIZE, OVERSIZE_PENALTY_POWER);
 		}
 	else	{
-		entropy /= pow ((0.0+INTENDED_REPLY_SIZE) / widx , 1.4);
+		entropy /= pow ((0.0+INTENDED_REPLY_SIZE) / widx , UNDERSIZE_PENALTY_POWER);
 		}
 #endif
 	init_val_fwd = start_penalty(model, sentence->entry[0].string);
@@ -3904,7 +3947,7 @@ STATIC char *make_output(struct sentence *src)
 
 	/* do we want a white before or after the token at [widx] ? */
     for(widx = 0; widx < src->size; widx++) {
-	if (!widx			|| dont_need_white_l(src->entry[widx].string)) tags[widx] |= NO_SPACE_L;
+	if (!widx		|| dont_need_white_l(src->entry[widx].string)) tags[widx] |= NO_SPACE_L;
 	if (widx == src->size-1	|| dont_need_white_r(src->entry[widx].string)) tags[widx] |= NO_SPACE_R;
 	if (src->entry[widx].string.length <= 1 && src->entry[widx].string.word[0] == '\'' ) { sqcnt++; tags[widx] |= IS_SINGLE; }
 	if (src->entry[widx].string.length <= 1 && src->entry[widx].string.word[0] == '"' ) { dqcnt++; tags[widx] |= IS_DOUBLE; }
@@ -4052,8 +4095,8 @@ STATIC WordNum babble(MODEL *model, struct sentence *src)
 	 */
 	symbol = node->children[cidx].ptr->symbol;
 	if (credit < node->children[cidx].ptr->thevalue) break;
-        if (node->children[cidx].ptr->thevalue == 0) credit--;
-	else credit -= node->children[cidx].ptr->thevalue;
+        /* 20120203 if (node->children[cidx].ptr->thevalue == 0) credit--; */
+	credit -= node->children[cidx].ptr->thevalue;
 	cidx = (cidx+1) % node->branch;
     }
 done:
@@ -4085,8 +4128,8 @@ STATIC WordNum seed(MODEL *model)
 	if (symbol >= model->dict->size) symbol = urnd(model->dict->size);
 #if 0
 	else {
-    		STRING altword;
-    		WordNum altsym;
+		STRING altword;
+		WordNum altsym;
 		altword = word_dup_initcaps (model->dict->entry[symbol].string);
 		altsym = find_word(model->dict, altword);
 		if (altsym != WORD_NIL) symbol = altsym;
@@ -4937,7 +4980,7 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
     dict->entry = malloc (newsize * sizeof *dict->entry);
     if (!dict->entry) {
 	error("resize_dict", "Unable to allocate dict->slots.");
-    	dict->entry = old;
+	dict->entry = old;
 	return -1;
 	}
     dict->msize = newsize;
@@ -4984,7 +5027,7 @@ STATIC int sentence_resize(struct sentence *ptr, unsigned newsize)
     if (!ptr->entry) {
 	error("sentence_resize", "Unable to allocate entries:oldsize =%u newsize=%u"
 	, ptr->msize, newsize );
-    	ptr->entry = old;
+	ptr->entry = old;
 	return -1;
 	}
     ptr->msize = newsize;
@@ -5017,7 +5060,7 @@ static double density = 0.0;
 static unsigned direction = 0;
 int rc;
 
-if (!model || ! maxnodecount) return 0;
+if (!model || !maxnodecount) return 0;
 if (memstats.node_cnt <= ALZHEIMER_NODE_COUNT) return 0;
 
 alz_dict = model->dict;
@@ -5180,15 +5223,15 @@ switch (4 *(max >= min)
 	+1 *(this > max)
 	) {
 	case 0: return STAMP_INSIDE;	/* inside (wrapped) */
-	case 1: 		/* outside (wrapped) */
+	case 1:				/* outside (wrapped) */
 		return ((Stamp)(min - this) < (Stamp)(this - max)) ? STAMP_BELOW : STAMP_ABOVE;
 	case 2: return -2;
 	case 3: return STAMP_INSIDE;	/* inside (wrapped) */
-	case 4: 		/* all below */
+	case 4:				/* all below */
 		return ((Stamp)(min - this) < (Stamp)(this - max)) ? STAMP_BELOW : STAMP_ABOVE;
 	case 5: return -2;	/* impossible */
 	case 6: return STAMP_INSIDE;	/* inside normal case */
-	case 7: 		/* all above) */
+	case 7:		/* all above) */
 		return ((Stamp)(min - this) < (Stamp)(this - max)) ? STAMP_BELOW : STAMP_ABOVE;
 	}
 return -2;
@@ -5202,7 +5245,7 @@ fprintf(fp,"'%*.*s'"
 	,  (int) word.length,  (int) word.length,  word.word );
 }
 
-#if CROSS_DICT_SIZE_MAX
+#if CROSS_DICT_SIZE
 STATIC size_t word_format(char *buff, STRING word)
 {
 
@@ -5210,11 +5253,18 @@ return sprintf(buff,"'%*.*s'"
 	,  (int) word.length,  (int) word.length,  word.word );
 }
 
-STATIC size_t symbol_format(char *buff, WordNum sym)
+STATIC size_t symbol_format_callback(char *buff, WordNum sym)
 {
 if (! (glob_dict = glob_model->dict)) return sprintf(buff, "<NoDict>" );
 else if (sym >= glob_dict->size) return sprintf(buff, "<%u>", sym );
 else return word_format(buff, glob_dict->entry[sym].string );
+}
+
+STATIC double symbol_weight_callback(WordNum sym)
+{
+if (! (glob_dict = glob_model->dict)) return 0.0;
+else if (sym >= glob_dict->size) return -1.0;
+else return symbol_weight(glob_dict, sym, 0 );
 }
 #endif
 
@@ -5291,10 +5341,10 @@ STATIC unsigned cha_latin2utf8(unsigned char *dst, unsigned val)
 if (val <  0x80)  { *dst = val; return 1; }
 else	{
 	/* all 11 bit codepoints (0x0 -- 0x7ff)
-  	** fit within a 2byte utf8 char
-  	** firstbyte = 110 +xxxxx := 0xc0 + (char>>6) MSB
-  	** second    = 10 +xxxxxx := 0x80 + (char& 63) LSB
-  	*/
+	** fit within a 2byte utf8 char
+	** firstbyte = 110 +xxxxx := 0xc0 + (char>>6) MSB
+	** second    = 10 +xxxxxx := 0x80 + (char& 63) LSB
+	*/
 	*dst++ = 0xc0 | ((val >>6) & 0x1f); /* 3+5 bits */
 	*dst++ = 0x80 | ((val) & 0x3f); /* 2+6 bits */
 	}
@@ -5376,13 +5426,13 @@ STATIC size_t decode_word(char * buff, STRING str, int type )
 size_t ret;
 
 switch (type) {
-case 0: memcpy( buff, str.word, ret = str.length); break;	/* plain ordinary ascii */
-case 1: memcpy( buff, str.word, ret = str.length); break;	/* contains non-utf bytes */
-case 2: ret = cp_utf2latin(buff, str.word, str.length); break;	/* contains utf bytes */
-case 3: memcpy( buff, str.word, ret = str.length); break;	/* contains both utf&& non-utf bytes */
+case 0: memcpy( buff, str.word, ret = str.length); break;
+case 1: memcpy( buff, str.word, ret = str.length);break;
+case 2: ret = cp_utf2latin(buff, str.word, str.length); break;
+case 3: memcpy( buff, str.word, ret = str.length); break;
 default: ret = sprintf( buff, "SomeType=%d", type); break;
 	}
-buff[ret] = 0;
+buff[ ret] = 0;
 return ret;
 }
 
@@ -5415,7 +5465,7 @@ if (sum <= 1) return 0.0;
 
 red_dragon = dragon_denominator2( siz, sum);
 
-penalty = pow ( (double)ssq/red_dragon, 1.5 );
+penalty = pow ( (double)ssq/red_dragon, PARROT_POWER );
 
 /* fprintf(stderr, "Sum=%u Siz=%u Ssq= %lu/%llu := %f\n" , sum, siz, ssq, red_dragon, penalty ); */
 
@@ -5451,331 +5501,3 @@ result = ((unsigned long long)nitem * (nitem+2*nslot-1)) / (nslot) ;
 return result;
 }
 /* Eof */
-#if WANT_ANAGRAM
-int letter_histogram[26];
-STATIC void make_histogram(int array[], struct sentence *src);
-STATIC char *generate_anagram(MODEL *model, struct sentence *src);
-STATIC struct sentence *one_anagram(MODEL *model);
-STATIC double evaluate_anagram(MODEL *model, struct sentence *sentence);
-
-/*---------------------------------------------------------------------------*/
-STATIC char *generate_anagram(MODEL *model, struct sentence *src)
-{
-    static char *output_none = "Geert! doe er wat aan!" ;
-	/* "I don't know enough to answer you yet!"; */
-    struct sentence *zeresult;
-    double rawsurprise, max_surprise;
-    char *output;
-    unsigned count;
-    int basetime;
-
-    initialize_context(model);
-    /*
-     *		Create a hsitogram of letters from the user's input
-     */
-    make_histogram(letter_histogram, src);
-    output = output_none;
-
-    /*
-     *		Loop for the specified waiting period, generating and evaluating
-     *		replies
-     */
-    max_surprise = -100.0;
-    count = 0;
-    basetime = time(NULL);
-    progress("Generating anagram", 0, 1);
-    do {
-	zeresult = one_anagram(model);
-	rawsurprise = evaluate_anagram(model, zeresult);
-	count++;
-
-	if (rawsurprise <= max_surprise ) continue;
-	max_surprise = rawsurprise;
-	output = make_output(zeresult);
-#if WANT_DUMP_ALL_REPLIES
-fprintf(stderr, "\n%u %f N=%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
-, count, rawsurprise, (unsigned) zeresult->size
-, init_typ_fwd, init_val_fwd, init_val_rev
-, output);
-#endif
- 	progress(NULL, (time(NULL)-basetime),glob_timeout);
-    } while(time(NULL)-basetime < glob_timeout);
-    progress(NULL, 1, 1);
-#if WANT_DUMP_ALL_REPLIES
-	fprintf(stderr, "AnagramProbed=%u cross_dict_size=%u\n"
-	, count, cross_dict_size );
-#endif
-
-    /*
-     *		Return the best answer we generated
-     */
-    return output;
-}
-
-STATIC void make_histogram(int array[], struct sentence *src)
-{
-    unsigned int iwrd, icha;
-    WordNum symbol;
-
-    unsigned int ikey;
-
-    for (icha=0; icha < src->entry[iwrd].string.length; icha++ ) {
-	    array [ icha ] = 0; }
-
-    for(iwrd = 0; iwrd < src->size; iwrd++) {
-	/*
-	 *		Find the symbol ID of the word.  If it doesn't exist in
-	 *		the model, or if it begins with a non-alphanumeric
-	 *		character, or if it is in the exclusion array, then
-	 *		skip over it.
-	 */
-	if (!myisalnum(src->entry[iwrd].string.word[0] )) continue;
-        symbol = find_word(model->dict, src->entry[iwrd].string );
-        if (symbol == WORD_NIL) continue;
-        if (symbol == WORD_ERR) continue;
-        if (symbol == WORD_FIN) continue;
-        if (symbol >= model->dict->size) continue;
-	for (icha=0; icha < src->entry[iwrd].string.length; icha++ ) {
-	    ikey = src->entry[iwrd].string.word[icha] ;
-	    if (ikey >= 'a' && ikey <= 'z') ikey -= ('a' - 'A');
-	    if (ikey >= 'A' && ikey <= 'Z') ikey -= 'A';
-	    else continue;
-	    array [ ikey] += 1;
-	    }
-	}
-
-#if HCROSS_DICT_SIZE
-	histogram_show(stderr, glob_crosstab, symbol_format);
-#endif
-}
-
-/*---------------------------------------------------------------------------*/
-
-STATIC struct sentence *one_anagram(MODEL *model)
-{
-    static struct sentence *zereply = NULL;
-    unsigned int widx;
-    WordNum symbol;
-
-    if (!zereply) zereply = sentence_new();
-    else zereply->size = 0;
-
-    /*
-     *		Start off by making sure that the model's context is empty.
-     */
-    initialize_context(model);
-    model->context[0] = model->forward;
-
-    /*
-     *		Generate the reply in the forward direction.
-     */
-    for (symbol = seed_anagram(model); symbol > WORD_FIN ; symbol = babble_anagram(model, zereply) ) {
-	/*
-	 *		Append the symbol to the reply dictionary.
-	 */
-	add_word_to_sentence(zereply, model->dict->entry[symbol].string );
-	/*
-	 *		Extend the current context of the model with the current symbol.
-	 */
-	update_context(model, symbol);
-    }
-
-    /*
-     *		Start off by making sure that the model's context is empty.
-     */
-    initialize_context(model);
-    model->context[0] = model->backward;
-
-    /*
-     *		Re-create the context of the model from the current reply
-     *		dictionary so that we can generate backwards to reach the
-     *		beginning of the string.
-     */
-    for(widx = MIN(zereply->size, 1+model->order); widx-- > 0; ) {
-	symbol = find_word(model->dict, zereply->entry[ widx ].string );
-	update_context(model, symbol);
-    }
-
-    /*
-     *		Generate the reply in the backward direction.
-     */
-    sentence_reverse(zereply);
-    while(1) {
-	/*
-	 *		Get a random symbol from the current context.
-	 */
-	symbol = babble_anagram(model, zereply);
-	if (symbol <= WORD_FIN) break;
-
-	add_word_to_sentence(zereply, model->dict->entry[symbol].string );
-
-	/*
-	 *		Extend the current context of the model with the current symbol.
-	 */
-	update_context(model, symbol);
-    }
-    sentence_reverse(zereply);
-
-    return zereply;
-}
-
-/*---------------------------------------------------------------------------*/
-
-STATIC double evaluate_anagram(MODEL *model, struct sentence *sentence)
-{
-    unsigned int widx, iord, count, totcount ;
-    WordNum symbol, canonsym;
-    double gfrac, kfrac, weight,term,probability, entropy;
-    TREE *node=NULL;
-    STRING canonword;
-
-    if (sentence->size == 0) return -100000.0;
-
-    initialize_context(model);
-    model->context[0] = model->forward;
-
-    totcount = 0, entropy = 0.0;
-    for (widx = 0; widx < sentence->size; widx++) {
-	symbol = find_word(model->dict, sentence->entry[widx].string );
-
-	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
-	canonsym = find_word( model->dict, canonword);
-        if (canonsym >= model->dict->size) canonsym = symbol;
-	probability = 0.0;
-        count = 0;
-        totcount++;
-        for(iord = 0; iord < model->order; iord++) {
-            if ( !model->context[iord] ) continue;
-            node = find_symbol(model->context[iord], symbol);
-            if (!node) continue;
-            count++;
-		/* too unique: don't count them */
-            if (node->thevalue < 2) continue; 
-            probability += (0.1+node->thevalue) / (0.1 + model->context[iord]->childsum);
-            }
-        if (!count) goto update1;
-        if (!(probability > 0.0)) goto update1;
-
-        term = (double) probability / count;
-        gfrac = symbol_weight(model->dict, symbol, 0);
-        weight = log(1.0+gfrac);
-        entropy -= weight * log(term);
-
-#if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
-fprintf(stderr, "#### '%*.*s'\n"
-"Valsum=%9lu/%9llu Nnode=%9lu/%9llu\n"
-"Gfrac=%6.4e Kfrac=%6.4e W=%6.4e\n"
-"Prob=%6.4e/Cnt=%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
-        , (int) sentence->entry[widx].string.length
-        , (int) sentence->entry[widx].string.length
-        , sentence->entry[widx].string.word
-        , (unsigned long) model->dict->entry[symbol].stats.valuesum
-        , (unsigned long long) model->dict->stats.valuesum
-        , (unsigned long) model->dict->entry[symbol].stats.nnode
-        , (unsigned long long) model->dict->stats.nnode
-        , gfrac, kfrac, weight
-        , probability , (unsigned) count
-        , (double) term
-        , (double) weight * log( term )
-        , (double) entropy
-        );
-#endif
-update1:
-        update_context(model, symbol);
-#if WANT_PARROT_CHECK
-        for(iord = model->order+1; iord-- > 0; ) {
-	   node = model->context[iord] ;
-           if (node) break;
-           }
-	if (node) { PARROT_ADD(node->stamp); }
-#endif /* WANT_PARROT_CHECK */
-    }
-#if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
-fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
-	);
-#endif
-
-    initialize_context(model);
-    model->context[0] = model->backward;
-
-    for(widx = sentence->size; widx-- > 0; ) {
-	symbol = find_word(model->dict, sentence->entry[widx].string );
-
-	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
-	canonsym = find_word( model->dict, canonword);
-        if (canonsym >= model->dict->size) canonsym = symbol;
-        probability = 0.0;
-        count = 0;
-        totcount++;
-        for(iord = 0; iord < model->order; iord++) {
-            if ( !model->context[iord] ) continue;
-            node = find_symbol(model->context[iord], symbol);
-            if (!node) continue;
-            count++;
-            if (node->thevalue < 2) continue; /* Too unique */
-            probability += (0.1+node->thevalue) / (0.1 + model->context[iord]->childsum);
-        }
-
-        if ( !count ) goto update2;
-        if (!(probability > 0.0)) goto update2;
-
-        term = (double) probability / count;
-        gfrac = symbol_weight(model->dict, symbol, 0);
-        weight = log(1.0+gfrac);
-        entropy -= weight * log(term);
-
-#if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
-fprintf(stderr, "#### Rev '%*.*s'\n"
-"Valsum=%9lu/%9llu Nnode=%9lu/%9llu\n"
-"Gfrac=%6.4e Kfrac=%6.4e W=%6.4e\n"
-"Prob=%6.4e/Cnt=%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
-        , (int) sentence->entry[widx].string.length
-        , (int) sentence->entry[widx].string.length
-        , sentence->entry[widx].string.word
-        , (unsigned long) model->dict->entry[symbol].stats.valuesum
-        , (unsigned long long) model->dict->stats.valuesum
-        , (unsigned long) model->dict->entry[symbol].stats.nnode
-        , (unsigned long long) model->dict->stats.nnode
-        , gfrac, kfrac, weight
-        , probability , (unsigned) count
-        , (double) term
-        , (double) weight * log( term )
-        , (double) entropy
-        );
-#endif
-update2:
-        update_context(model, symbol);
-#if WANT_PARROT_CHECK
-        for(iord = model->order+1; iord-- > 0; ) {
-	    node = model->context[iord] ;
-           if (node) break;
-           }
-	if (node) { PARROT_ADD(node->stamp); }
-#endif /* WANT_PARROT_CHECK */
-    }
-#if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
-fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
-	);
-#endif
-
-    /* if (totcount >= 8) entropy /= sqrt(totcount-1); */
-    /* if (totcount >= 16) entropy /= totcount;*/
-
-
-	/* extra penalty for sentences that don't start at <END> or don't stop at <END> */
-	/* extra penalty for sentences that don't start with a capitalized letter */
-	/* extra penalty for incomplete sentences */
-	init_val_fwd = start_penalty(model, sentence->entry[0].string);
-	init_val_rev = end_penalty(model, sentence->entry[widx-1].string );
-        entropy -= sqrt(init_val_fwd);
-        entropy -= sqrt(init_val_rev);
-	}
-#if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
-fprintf(stderr, "####[Corrected] =%6.4f\n", (double) entropy
-	);
-#endif
-
-    return entropy;
-}
-
-#endif /* WANT_ANAGRAM */
