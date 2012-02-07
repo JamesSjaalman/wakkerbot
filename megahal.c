@@ -368,15 +368,16 @@
 	/* Assume words with a quality lower than STOP_WORD_TRESHOLD
 	** to be stopwords (and ingnore them)
 	** quality := 1/rel_frequency. Rel_frequency "mannen" == "vrouwen" := 1.5
-	** 10 := very common, 0.1 uncommon
+	** 10 := very common, 0.1 := uncommon, 0.01 := rare, 0.001 := typo
 	*/
 #define STOP_WORD_TRESHOLD 0.5
 	/* Crostab entries with a value smaller than this are ignored
-	** Note: this is scaled by cross_tab_size.
+	** Note: this will be scaled by cross_tab_size. (divided by cross_tab_size).
 	** (after normating the constant is put into the eigen value;
 	** crostabb coefficients are supposed to sum up to 1.0)
+	** The first one is typically around 0.1 -- 0.2
 	*/
-#define CROSS_TAB_FRAC 0.01
+#define CROSS_TAB_FRAC 0.10
 
 	/* suppress whitespace; only store REAL words.
 	** NOTE: changing this setting will require a complete rebuild of megahal's brain.
@@ -431,8 +432,8 @@
 #define MIN_REPLY_SIZE 14
 #define INTENDED_REPLY_SIZE 73
 #define WANT_PARROT_CHECK 13
-#define PARROT_POWER 2.7
-#define OVERSIZE_PENALTY_POWER 1.7
+#define PARROT_POWER 2.9
+#define OVERSIZE_PENALTY_POWER 1.9
 #define UNDERSIZE_PENALTY_POWER 1.2
 #define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
 
@@ -719,7 +720,7 @@ STATIC WordNum seed(MODEL *);
 
 STATIC void show_dict(DICT *);
 STATIC void speak(char *);
-STATIC bool status(char *, ...);
+STATIC void status(char *, ...);
 STATIC void train(MODEL *, char *);
 STATIC void typein(char);
 STATIC void update_context(MODEL *, WordNum symbol);
@@ -1367,7 +1368,7 @@ STATIC bool initialize_status(char *filename)
  *
  *		Purpose:		Print the specified message to the status file.
  */
-STATIC bool status(char *fmt, ...)
+STATIC void status(char *fmt, ...)
 {
     va_list argp;
 
@@ -1425,9 +1426,9 @@ STATIC void log_output(char *output)
     formatted = format_output(output);
 
     bit = strtok(formatted, "\n");
-    if (!bit) (void)status(MY_NAME ": %s\n", formatted);
+    if (!bit) status(MY_NAME ": %s\n", formatted);
     while(bit) {
-	(void)status(MY_NAME ": %s\n", bit);
+	status(MY_NAME ": %s\n", bit);
 	bit = strtok(NULL, "\n");
     }
 }
@@ -1448,9 +1449,9 @@ STATIC void log_input(char *input)
     formatted = format_output(input);
 
     bit = strtok(formatted, "\n");
-    if (!bit) (void)status("User:    %s\n", formatted);
+    if (!bit) status("User:    %s\n", formatted);
     while(bit) {
-	(void)status("User:    %s\n", bit);
+	status("User:    %s\n", bit);
 	bit = strtok(NULL, "\n");
     }
 }
@@ -2129,12 +2130,12 @@ if (!fp) return;
 fprintf(fp, "[ stamp Min=%u Max=%u ]\n", (unsigned)stamp_min, (unsigned)stamp_max);
 
 if (flags & 1) {
-	fprintf(fp, "->forward order=%u\n", (unsigned) model->order);
+	fprintf(fp, "->forward Order=%u\n", (unsigned) model->order);
 	dump_model_recursive(fp, model->forward, model->dict, 0);
 	}
 
 if (flags & 2) {
-	fprintf(fp, "->backward order=%u\n", (unsigned) model->order);
+	fprintf(fp, "->backward Order=%u\n", (unsigned) model->order);
 	dump_model_recursive(fp, model->backward, model->dict, 0);
 	}
 fprintf(fp, "->Eof\n" );
@@ -2372,7 +2373,7 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
  * Since we need to rebuild the hachchains anyway, this is a good place to
  * sort the items (in descending order) to make life easier for babble() .
  * We only sort when the node is growing (newsize>oldsize), assuming ordering is more or less
- * fixed for older nodes. FIXME
+ * fixed for aged nodes. FIXME
  */
     if (old) {
 	    if (newsize > oldsize && tree->branch > 1) {
@@ -2443,9 +2444,10 @@ STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
 /* NOTE: quicksort is probably a bad choice here, since the childnodes are "almost ordered",
  * The sorting does not consume enough CPU to justify a mergesort or insertion sort variant.
  * (qsort ate 10% when training, most of it in the compare function)
- * This is a "one pass bubblesort"; it will _eventually_ get the array sorted.
+ * This is a "one pass bubblesort"; it will /eventually/ get the array sorted.
  * Having the array sorted is not important: babble() will need only a few steps
  * more on an unsorted array.
+ * treeslots_cmp(left,right) returns positive if left < right.
  */
 unsigned idx;
 for (idx = 1; idx < count; idx++) {
@@ -2459,6 +2461,7 @@ for (idx = 1; idx < count; idx++) {
 qsort(slots, count, sizeof *slots, treeslots_cmp);
 #endif
 }
+
 /* Profiling shows that node_hnd() is the biggest CPU consumer
 ** (unless Alzheimer kicks in ;-)
 ** I don't see a way to speed this thing up, apart from maybe making is static.
@@ -2495,7 +2498,6 @@ void initialize_context(MODEL *model)
     for(iord = 0; iord < 2+model->order; iord++) model->context[iord] = NULL;
     if (model->forward) model->forward->stamp = stamp_max;
     if (model->backward) model->backward->stamp = stamp_max;
-
 }
 
 STATIC double word_weight(DICT *dict, STRING word, int want_other)
@@ -2541,9 +2543,9 @@ if (altsym != WORD_NIL) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
 /*		, (double ) dict->entry[i].stats.nnode * dict->size / dict->stats.node */
 
 if (altsym==WORD_NIL) {
-	/* this is to catch and ignore typos
-	** , which have an initial score of 2*(1+glob_order) 
-	** (and will hopefully decay)
+	/* this is to catch and ignore typos.
+	** Typos have an initial score of 2*(1+glob_order) 
+	** (and will decay soon)
 	*/
 #define TRESHOLD (2*(1+glob_order))
 	if (dict->entry[symbol].stats.valuesum <= TRESHOLD) return 0.00099;
@@ -3052,11 +3054,11 @@ STATIC bool load_model(char *filename, MODEL *model)
     memstats.node_cnt = 0;
     memstats.word_cnt = 0;
     kuttje = fread(&model->order, sizeof model->order, 1, fp);
-    status("Loading %s order= %u\n", filename, (unsigned)model->order);
+    status("Loading %s Order= %u\n", filename, (unsigned)model->order);
     if (model->order != glob_order) {
         model->order = glob_order;
         model->context = realloc(  model->context, (2+model->order) *sizeof *model->context);
-        status("Set Order to %u order= %u\n", (unsigned)model->order);
+        status("Set Order to %u\n", (unsigned)model->order);
 	}
     status("Forward\n");
     model->forward = load_tree(fp);
@@ -3069,7 +3071,7 @@ STATIC bool load_model(char *filename, MODEL *model)
     read_dict_from_ascii(model->dict, "megahal.dic" );
 #endif
     refcount = set_dict_count(model);
-    status("Loaded %lu nodes, %u words. Total refcount= %u maxnodes=%lu\n"
+    status("Loaded %lu Nodes, %u Words. Total Refcount= %u Maxnodes=%lu\n"
 	, memstats.node_cnt,memstats.word_cnt, refcount, (unsigned long)ALZHEIMER_NODE_COUNT);
     status( "Stamp Min=%u Max=%u.\n", (unsigned long)stamp_min, (unsigned long)stamp_max);
 
