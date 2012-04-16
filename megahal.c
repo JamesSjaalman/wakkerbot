@@ -298,8 +298,8 @@
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
+#define STATIC static
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
@@ -373,11 +373,11 @@
 #define STOP_WORD_TRESHOLD 0.5
 	/* Crostab entries with a value smaller than this are ignored
 	** Note: this will be scaled by cross_tab_size. (divided by cross_tab_size).
-	** (after normating the constant is put into the eigen value;
+	** (after normalizing, the constant is put into the eigen value;
 	** crostabb coefficients are supposed to sum up to 1.0)
 	** The first one is typically around 0.1 -- 0.2
 	*/
-#define CROSS_TAB_FRAC 0.10
+#define CROSS_TAB_FRAC 0.50
 
 	/* suppress whitespace; only store REAL words.
 	** NOTE: changing this setting will require a complete rebuild of megahal's brain.
@@ -430,8 +430,8 @@
 	** Higher values work towards INTENDED_REPLY_SIZE
 	*/
 #define MIN_REPLY_SIZE 14
-#define INTENDED_REPLY_SIZE 73
-#define WANT_PARROT_CHECK 13
+#define INTENDED_REPLY_SIZE 37
+#define WANT_PARROT_CHECK 9
 #define PARROT_POWER 2.9
 #define OVERSIZE_PENALTY_POWER 1.9
 #define UNDERSIZE_PENALTY_POWER 1.2
@@ -1376,8 +1376,6 @@ STATIC void status(char *fmt, ...)
     vfprintf(statusfp, fmt, argp);
     va_end(argp);
     fflush(statusfp);
-
-    return TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3455,8 +3453,13 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
      */
     make_keywords(model, src);
     fprintf(stderr,"MIN_REPLY_SIZE=%d\n", MIN_REPLY_SIZE);
+    fprintf(stderr,"INTENDED_REPLY_SIZE=%d\n", INTENDED_REPLY_SIZE);
     fprintf(stderr,"STOP_WORD_TRESHOLD=%f\n", STOP_WORD_TRESHOLD);
     fprintf(stderr,"CROSS_TAB_FRAC=%f\n", CROSS_TAB_FRAC);
+    fprintf(stderr,"CROSS_DICT_SIZE_MIN=%d\n", CROSS_DICT_SIZE_MIN);
+    fprintf(stderr,"CROSS_DICT_SIZE_MAX=%d\n", CROSS_DICT_SIZE_MAX);
+    fprintf(stderr,"CROSS_DICT_WORD_DISTANCE=%d\n", CROSS_DICT_WORD_DISTANCE);
+    fprintf(stderr,"WANT_PARROT_CHECK=%d\n", WANT_PARROT_CHECK);
     fprintf(stderr,"PARROT_POWER=%f\n", PARROT_POWER);
     fprintf(stderr,"OVERSIZE_PENALTY_POWER=%f\n", OVERSIZE_PENALTY_POWER);
     fprintf(stderr,"UNDERSIZE_PENALTY_POWER=%f\n", UNDERSIZE_PENALTY_POWER);
@@ -4086,20 +4089,12 @@ STATIC WordNum babble(MODEL *model, struct sentence *src)
      *		Choose a symbol at random from this context.
      *		weighted by ->thevalue
      */
-    // cidx = urnd(node->branch);
-    // credit = urnd( (1+node->childsum)/2);
-    cidx = 0;
     credit = urnd( node->childsum );
-    while(1) {
-	/*
-	 *		If the symbol occurs as a keyword, then use it.  Only use an
-	 *		auxilliary keyword if a normal keyword has already been used.
-	 */
+    for(cidx=0; 1; cidx = (cidx+1) % node->branch) {
 	symbol = node->children[cidx].ptr->symbol;
 	if (credit < node->children[cidx].ptr->thevalue) break;
         /* 20120203 if (node->children[cidx].ptr->thevalue == 0) credit--; */
 	credit -= node->children[cidx].ptr->thevalue;
-	cidx = (cidx+1) % node->branch;
     }
 done:
     // fprintf(stderr, "{+%u}", symbol );
