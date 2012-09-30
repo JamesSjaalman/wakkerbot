@@ -267,7 +267,7 @@
 #include <float.h> /* DBL_EPSILON */
 #include <math.h>
 #include <time.h>
-#include <ctype.h>
+#pragma include <ctype.h>
 
 #if defined(__mac_os)
 #include <types.h>
@@ -298,8 +298,8 @@
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 #define STATIC static
+#define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
@@ -314,7 +314,8 @@
 	** Using a signed char would sign-extend the argument to -128...127,
 	** which causes the ctype[] array to be indexed out of bounds
 	*/
-#define UCPstr ((unsigned char *)str)
+#pragma define UCPstr ((unsigned char *)str)
+#define UCPstr str
 
 	/* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
@@ -430,7 +431,7 @@
 	** Higher values work towards INTENDED_REPLY_SIZE
 	*/
 #define MIN_REPLY_SIZE 14
-#define INTENDED_REPLY_SIZE 37
+#define INTENDED_REPLY_SIZE 17
 #define WANT_PARROT_CHECK 9
 #define PARROT_POWER 2.9
 #define OVERSIZE_PENALTY_POWER 1.9
@@ -780,8 +781,8 @@ STATIC void dump_model_recursive(FILE *fp, TREE *tree, DICT *dict, int indent);
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol);
 STATIC void format_treeslots(struct treeslot *slots , unsigned size);
 STATIC void show_memstat(char *msg);
-STATIC int treeslots_cmp(const void *vl, const void *vr);
 STATIC void treeslots_sort(struct treeslot  *slots , unsigned count);
+STATIC int treeslots_cmp(const void *vl, const void *vr);
 
 STATIC STRING word_dup_lowercase(STRING org);
 STATIC STRING word_dup_initcaps(STRING org);
@@ -1376,6 +1377,8 @@ STATIC void status(char *fmt, ...)
     vfprintf(statusfp, fmt, argp);
     va_end(argp);
     fflush(statusfp);
+
+    return TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2017,7 +2020,7 @@ STATIC MODEL *new_model(int order)
     model = malloc(sizeof *model);
     if (!model) {
 	error("new_model", "Unable to allocate model.");
-	goto fail;
+        return NULL;
     }
 
     model->order = order;
@@ -2026,16 +2029,13 @@ STATIC MODEL *new_model(int order)
     model->context = malloc( (2+order) *sizeof *model->context);
     if (!model->context) {
 	error("new_model", "Unable to allocate context array.");
-	goto fail;
+        return NULL;
     }
     initialize_context(model);
     model->dict = new_dict();
     initialize_dict(model->dict);
 
     return model;
-
-fail:
-    return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2227,7 +2227,7 @@ STATIC void del_symbol_do_free(TREE *tree, WordNum symbol)
     }
     top = --tree->branch;
     memstats.symdel += 1;
-    if (!top || top == this) {;}
+    if ( !top || top == this) {;}
     else {
 	/* unlink top */
 	ip = node_hnd(tree, tree->children[top].ptr->symbol);
@@ -2418,6 +2418,7 @@ STATIC void format_treeslots(struct treeslot  *slots , unsigned size)
 	}
 }
 
+
 STATIC int treeslots_cmp(const void *vl, const void *vr)
 {
 const struct treeslot  *sl=vl;
@@ -2433,20 +2434,19 @@ if (sl->ptr->thevalue > sr->ptr->thevalue ) return -1;
 if (sl->ptr->symbol < sr->ptr->symbol ) return -1;
 if (sl->ptr->symbol > sr->ptr->symbol ) return 1;
 return 0;
-
 }
 
-STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
-{
 #if 1
 /* NOTE: quicksort is probably a bad choice here, since the childnodes are "almost ordered",
  * The sorting does not consume enough CPU to justify a mergesort or insertion sort variant.
  * (qsort ate 10% when training, most of it in the compare function)
  * This is a "one pass bubblesort"; it will /eventually/ get the array sorted.
- * Having the array sorted is not important: babble() will need only a few steps
+ * Having the array sorted is not that important: babble() will need only a few steps
  * more on an unsorted array.
  * treeslots_cmp(left,right) returns positive if left < right.
  */
+STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
+{
 unsigned idx;
 for (idx = 1; idx < count; idx++) {
 	struct treeslot tmp;
@@ -2455,14 +2455,21 @@ for (idx = 1; idx < count; idx++) {
 	slots[idx-1] = slots[idx];
 	slots[idx] = tmp;
 	}
-#else
-qsort(slots, count, sizeof *slots, treeslots_cmp);
-#endif
 }
+
+#else
+
+
+STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
+{
+qsort(slots, count, sizeof *slots, treeslots_cmp);
+}
+
+#endif
 
 /* Profiling shows that node_hnd() is the biggest CPU consumer
 ** (unless Alzheimer kicks in ;-)
-** I don't see a way to speed this thing up, apart from maybe making is static.
+** I don't see a way to speed this thing up, apart from maybe making it static.
 */
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol)
 {
@@ -2543,12 +2550,13 @@ if (altsym != WORD_NIL) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
 if (altsym==WORD_NIL) {
 	/* this is to catch and ignore typos.
 	** Typos have an initial score of 2*(1+glob_order) 
-	** (and will decay soon)
+	** will never get any hits, (and will decay soon)
 	*/
 #define TRESHOLD (2*(1+glob_order))
-	if (dict->entry[symbol].stats.valuesum <= TRESHOLD) return 0.00099;
-	if (dict->entry[symbol].stats.nnode <= TRESHOLD) return 0.00088;
-	if (dict->entry[symbol].stats.valuesum == dict->entry[symbol].stats.nnode) return 0.00777;
+	if (dict->entry[symbol].stats.valuesum < TRESHOLD) return 0.00099;
+	if (dict->entry[symbol].stats.nnode < TRESHOLD) return 0.00088;
+	// 20120224
+	// if (dict->entry[symbol].stats.valuesum == dict->entry[symbol].stats.nnode) return 0.00777;
 #undef TRESHOLD
         return ((double)dict->stats.valuesum / dict->stats.nonzero)
 		/ (0.5 + dict->entry[symbol].stats.valuesum)
@@ -3019,7 +3027,7 @@ STATIC bool load_model(char *filename, MODEL *model)
     }
     while (1) {
 	int rc;
-	if (glob_fd < 0) rc = dup( fileno(fp) );
+	if (glob_fd < 0) { rc = dup( fileno(fp) ); glob_fd = rc; }
 	else rc = dup2( fileno(fp), glob_fd  );
 	if (rc == -1) {
 		rc = errno;
@@ -3027,25 +3035,25 @@ STATIC bool load_model(char *filename, MODEL *model)
 		fclose (fp);
 		return FALSE;
 		}
-	glob_fd = rc;
+		/* F_TLOCK locks, but returns -1 on failure */
 	rc = lockf( glob_fd, F_TLOCK, sizeof cookie );
 	if (!rc) break;
 	rc = errno;
-	warn("load_model", "Unable to lock file `%s' err=%d(%s) ", filename, rc, strerror(rc) );
+	warn("Load_model", "Unable to lock file `%s' err=%d(%s) ", filename, rc, strerror(rc) );
 	sleep (5);
 	}
 
 
     kuttje = fread(cookie, sizeof(char), strlen(COOKIE), fp);
     if (kuttje != strlen(COOKIE) ) {
-	warn("load_model", "Read %u/%u from '%s' : %d (%s)\n"
+	warn("Load_model", "Read %u/%u from '%s' : %d (%s)\n"
 		, (unsigned) kuttje, (unsigned) strlen(COOKIE), filename
 		, errno, strerror(errno)
 		);
 	exit(1);
 	}
     if (memcmp(cookie, COOKIE, strlen(COOKIE)) ) {
-	warn("load_model", "File `%s' is not a MegaHAL brain: coockie='%s' (expected '%s')"
+	warn("Load_model", "File `%s' is not a MegaHAL brain: coockie='%s' (expected '%s')"
 		, filename , cookie,COOKIE);
 	goto fail;
     }
@@ -3085,9 +3093,9 @@ STATIC bool load_model(char *filename, MODEL *model)
 #endif
 
     return TRUE;
+
 fail:
     fclose(fp);
-
     return FALSE;
 }
 
@@ -3182,11 +3190,11 @@ STATIC size_t tokenize(char *str, int *sp)
     switch(*sp) {
     case T_INIT: /* initial */
 #if 0
-	/* if (UCPstr[pos] == '\'' ) { *sp |= 16; return pos; }*/
-	/* if (UCPstr[posi] == '"' ) { *sp |= 32; return pos; }*/
+	/* if (str[pos] == '\'' ) { *sp |= 16; return pos; }*/
+	/* if (str[posi] == '"' ) { *sp |= 32; return pos; }*/
 #endif
-	if (myisalpha(UCPstr[pos])) {*sp = T_WORD; pos++; continue; }
-	if (myisalnum(UCPstr[pos])) {*sp = T_NUM; pos++; continue; }
+	if (myisalpha(str[pos])) {*sp = T_WORD; pos++; continue; }
+	if (myisalnum(str[pos])) {*sp = T_NUM; pos++; continue; }
 	/* if (strspn(str+pos, "-+")) { *sp = T_NUM; pos++; continue; }*/
 	*sp = T_ANY; continue;
 	break;
@@ -3196,50 +3204,50 @@ STATIC size_t tokenize(char *str, int *sp)
         *sp = T_MEUK; continue;
         break;
     case T_WORD: /* inside word */
-	while ( myisalnum(UCPstr[pos]) ) pos++;
-	if (UCPstr[pos] == '\0' ) { *sp = T_INIT;return pos; }
-	if (UCPstr[pos] == '.' ) { *sp = T_WORDDOT; pos++; continue; }
+	while ( myisalnum(str[pos]) ) pos++;
+	if (str[pos] == '\0' ) { *sp = T_INIT;return pos; }
+	if (str[pos] == '.' ) { *sp = T_WORDDOT; pos++; continue; }
 	*sp = T_INIT; return pos;
         break;
     case T_WORDDOT: /* word. */
-	if (myisalpha(UCPstr[pos]) ) { *sp = T_WORDDOTLET; pos++; continue; }
+	if (myisalpha(str[pos]) ) { *sp = T_WORDDOTLET; pos++; continue; }
 	*sp = T_INIT; return pos-1;
         break;
     case T_WORDDOTLET: /* word.A */
-	if (UCPstr[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
-	if (myisalpha(UCPstr[pos]) ) { *sp = T_INIT; return pos-2; }
-	if (myisalnum(UCPstr[pos]) ) { *sp = T_NUM; continue; }
+	if (str[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
+	if (myisalpha(str[pos]) ) { *sp = T_INIT; return pos-2; }
+	if (myisalnum(str[pos]) ) { *sp = T_NUM; continue; }
 	*sp = T_INIT; return pos-2;
         break;
     case T_AFKODOT: /* A.B. */
-        if (myisalpha(UCPstr[pos]) ) { *sp = T_AFKO; pos++; continue; }
+        if (myisalpha(str[pos]) ) { *sp = T_AFKO; pos++; continue; }
         *sp = T_INIT; return pos >=3? pos: pos -2;
         break;
     case T_AFKO: /* word.A.B */
-	if (UCPstr[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
-	/* if (myisalpha(UCPstr[pos]) ) { pos++; continue; }*/
-	if (myisalpha(UCPstr[pos]) ) { *sp = T_INIT; return pos - 2; }
+	if (str[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
+	/* if (myisalpha(str[pos]) ) { pos++; continue; }*/
+	if (myisalpha(str[pos]) ) { *sp = T_INIT; return pos - 2; }
 	*sp = T_INIT; return pos-1;
         break;
     case T_NUM: /* number */
-	if ( myisalnum(UCPstr[pos]) ) { pos++; continue; }
+	if ( myisalnum(str[pos]) ) { pos++; continue; }
 	if (strspn(str+pos, ".,")) { *sp = T_NUMDOT; pos++; continue; }
 	*sp = T_INIT; return pos;
         break;
     case T_NUMDOT: /* number[.,] */
-	if (myisalpha(UCPstr[pos])) { *sp = T_NUMDOTLET; pos++; continue; }
-	if (myisalnum(UCPstr[pos])) { *sp = T_NUM; pos++; continue; }
+	if (myisalpha(str[pos])) { *sp = T_NUMDOTLET; pos++; continue; }
+	if (myisalnum(str[pos])) { *sp = T_NUM; pos++; continue; }
 	if (strspn(str+pos, "-+")) { *sp = T_NUM; pos++; continue; }
 	*sp = T_INIT; return pos-1;
         break;
     case T_NUMDOTLET: /* number[.,][a-z] */
-	if (myisalpha(UCPstr[pos])) { *sp = T_INIT; return pos-2; }
-	if (myisalnum(UCPstr[pos])) { *sp = T_NUM; pos++; continue; }
+	if (myisalpha(str[pos])) { *sp = T_INIT; return pos-2; }
+	if (myisalnum(str[pos])) { *sp = T_NUM; pos++; continue; }
 	*sp = T_INIT; return pos-2;
         break;
     case T_MEUK: /* inside meuk */
-	if (myisalnum(UCPstr[pos])) {*sp = T_INIT; return pos; }
-	if (myiswhite(UCPstr[pos])) {*sp = T_INIT; return pos; }
+	if (myisalnum(str[pos])) {*sp = T_INIT; return pos; }
+	if (myiswhite(str[pos])) {*sp = T_INIT; return pos; }
 	if (strspn(str+pos, ".,?!" )) { if (!pos) *sp = T_PUNCT; else { *sp = T_INIT; return pos; }}
 	if (strspn(str+pos, "@'\"" )) { *sp = T_INIT; return pos ? pos : 1; }
 	if (strspn(str+pos, ":;" )) { *sp = T_INIT; return pos ? pos : 1; }
@@ -3294,11 +3302,15 @@ return 0;
 
 STATIC int myisalpha(int ch)
 {
+#if 0
 int ret = isalpha(ch);
 if (ret) return ret;
+#else
+if (myislower(ch) || myisupper(ch)) return 1;
+#endif
 	/* don't parse, just assume valid utf8*/
-if (ch == -1) return 0;
 if (ch & 0x80) return 1;
+// if (ch == -1) return 0;
 return 0;
 }
 
@@ -4089,12 +4101,20 @@ STATIC WordNum babble(MODEL *model, struct sentence *src)
      *		Choose a symbol at random from this context.
      *		weighted by ->thevalue
      */
+    // cidx = urnd(node->branch);
+    // credit = urnd( (1+node->childsum)/2);
+    cidx = 0;
     credit = urnd( node->childsum );
-    for(cidx=0; 1; cidx = (cidx+1) % node->branch) {
+    while(1) {
+	/*
+	 *		If the symbol occurs as a keyword, then use it.  Only use an
+	 *		auxilliary keyword if a normal keyword has already been used.
+	 */
 	symbol = node->children[cidx].ptr->symbol;
 	if (credit < node->children[cidx].ptr->thevalue) break;
         /* 20120203 if (node->children[cidx].ptr->thevalue == 0) credit--; */
 	credit -= node->children[cidx].ptr->thevalue;
+	cidx = (cidx+1) % node->branch;
     }
 done:
     // fprintf(stderr, "{+%u}", symbol );
@@ -4472,22 +4492,22 @@ void die(int sig)
  */
 unsigned int urnd(unsigned int range)
 {
-    static bool flag = FALSE;
+    static int flag = 0;
 
-    if (flag == FALSE) {
+    if (!flag) {
 #if defined(__mac_os) || defined(DOS)
 	srand(time(NULL));
 #else
 	srand48(time(NULL));
 #endif
+    flag = 1;
     }
-    flag = TRUE;
 #if defined(__mac_os) || defined(DOS)
     return rand()%range;
 #else
 if (range <= 1) return 0;
 while(1)	{
-    unsigned val, box;
+    BigThing val, box;
 #if WANT_RDTSC_RANDOM
     val = rdtsc_rand();
 #else
@@ -4843,7 +4863,7 @@ void load_personality(MODEL **model)
 
     close( glob_fd  ); glob_fd = -1;
     sprintf(filename, "%s%smegahal.brn", glob_directory, SEP);
-    if (load_model(filename, *model) == FALSE) {
+    if ( load_model(filename, *model) == FALSE) {
 	sprintf(filename, "%s%smegahal.trn", glob_directory, SEP);
 	train(*model, filename);
     }
