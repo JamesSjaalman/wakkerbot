@@ -3,21 +3,26 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <getopt.h>
+
 #if !defined(AMIGA) && !defined(__mac_os)
 #include <malloc.h>
 #endif
+
 #include <string.h>
 #include <signal.h>
 #include <math.h>
 #include <time.h>
 #include <ctype.h>
+
 #if defined(__mac_os)
 #include <types.h>
 #include <Speech.h>
 #else
 #include <sys/types.h>
 #endif
+
 #include "megahal.h"
+
 #if defined(DEBUG)
 #include "debug.h"
 #endif
@@ -31,13 +36,16 @@
 /* extern errorfp;
 extern statusfp;
   */
-/* extern noprompt;
-extern nowrap;
-extern nobanner;
-extern typing_delay;
-extern speech;
-extern quiet;
-  */
+/*
+extern bool noprompt;
+extern bool nowrap;
+extern bool nobanner;
+extern bool typing_delay;
+extern bool speech;
+*/
+int my_learn_only=0;
+int mynogreet=0;
+ 
 static struct option long_options[] = {
     {"no-prompt", 0, NULL, 'p'},
     {"no-wrap", 0, NULL, 'w'},
@@ -50,13 +58,15 @@ static struct option long_options[] = {
 void usage()
 {
     puts("usage: megahal [-[pqrgwbh]]\n" \
-	 "\t-h : show usage\n" \
-	 "\t-p : inhibit prompts\n" \
-	 "\t-q : quiet mode (no replies) enabled at start\n" \
+	 "\t-h --help: show usage\n" \
+	 "\t-p --no-prompt:  inhibit prompts\n" \
+	 "\t-q : quiet mode (learn mode, no replies) enabled at start\n" \
 	 "\t-r : inhibit progress display\n" \
 	 "\t-g : inhibit initial greeting\n" \
-	 "\t-b : inhibit banner display at startup\n" \
-         "\t-d : sets the directory where your megahal files are\n");
+	 "\t-b --no-banner: inhibit banner display at startup\n" \
+	 "\t-t <value>: set timeout to <value>\n" \
+         "\t-d --directory <dir>: sets the directory where your megahal files are to <dir>\n");
+    show_config(stdout);
 }
 
 /*===========================================================================*/
@@ -74,22 +84,34 @@ int main(int argc, char **argv)
     char *input=NULL;
     char *output=NULL;
     char *my_directory = NULL;
-    int directory_set;
+    int directory_set = 0;
     int c, option_index = 0;
     
-    directory_set = 0;
 
     while(1) {
-	if((c = getopt_long(argc, argv, "hpwbd:", long_options,
+	if((c = getopt_long(argc, argv, "hpqrgbd:t:", long_options,
 			    &option_index)) == -1)
 	    break;
 	switch(c) {
+	case 'q':
+		my_learn_only = 1;
+	    megahal_setquiet();
+		break;
+	case 'g':
+		mynogreet = 1;
+	    break;
 	case 'p':
 	    megahal_setnoprompt();
 	    break;
 	case 'w':
 	    megahal_setnowrap();
 	    break;
+	case 'r':
+	    megahal_setnoprogres();
+	    break;
+        case 't':
+            megahal_settimeout (optarg);
+            break;
         case 'd':
             megahal_setdirectory (optarg);
             directory_set = 1;
@@ -103,15 +125,11 @@ int main(int argc, char **argv)
 	}
     }
 
-    if (directory_set == 0)
-    {
-        if ((my_directory = getenv("MEGAHAL_DIR")))
-        {
+    if (!directory_set ) {
+        if ((my_directory = getenv("MEGAHAL_DIR"))) {
             megahal_setdirectory (my_directory);
             directory_set = 1;
-        }
-        else
-        {
+        } else {
             struct stat dir_stat;
 
             my_directory = getenv ("HOME");
@@ -169,27 +187,42 @@ int main(int argc, char **argv)
     /*
      *		Load the default MegaHAL personality.
      */
-    output = megahal_initial_greeting();
-    megahal_output(output);
+    if (!mynogreet ) {
+    	output = megahal_initial_greeting();
+    	megahal_output(output);
+	}
     /*
      *		Read input, formulate a reply and display it as output
      */
     while(1) {
 
 	input = megahal_input("> ");
-	
+	if (!input) break;
 	/*
 	 *		If the input was a command, then execute it
 	 */
+#if 0
+	switch (megahal_command(input) ) {
+	case 0: break;
+	case 2: goto quit;
+	case 1: /* goto quit; */
+	default: continue;
+		}
+#endif
 
-	if (megahal_command(input) != 0)
-	    continue;
+	if (my_learn_only) {
+		megahal_learn_no_reply(input, 1);
+	} else	{
+		output = megahal_do_reply(input, 1);
+		if (output) {
+			megahal_output(output);
+			fprintf(stdout, "%s\n", output);
+			}
+		}
 
-	output = megahal_do_reply(input, 1);
-
-	megahal_output(output);
     }
+quit:
 
-    megahal_cleanup();
+    if (my_learn_only) megahal_cleanup();
     exit(0);
 }
