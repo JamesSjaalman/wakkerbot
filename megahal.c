@@ -1,5 +1,4 @@
 /*===========================================================================*/
-
 /*
  *  Copyright (C) 1998 Jason Hutchens
  *
@@ -259,6 +258,7 @@
 #include <malloc.h>
 #endif
 
+#include <ctype.h> /* isspace() */
 #include <string.h>
 #include <strings.h> /* strncasecmp */
 #include <errno.h>
@@ -267,7 +267,6 @@
 #include <float.h> /* DBL_EPSILON */
 #include <math.h>
 #include <time.h>
-#pragma include <ctype.h>
 
 #if defined(__mac_os)
 #include <types.h>
@@ -298,8 +297,8 @@
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
+#define STATIC static
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
@@ -337,6 +336,8 @@
 	 */
 #define WANT_DUMP_MODEL 0
 
+	/* Use keyword weights when evaluating the replies */
+#define WANT_KEYWORD_WEIGHTS 1
 /*
 ** Real SWITCHES. Note: these are not independent. Some combinations might be impossible
 */
@@ -345,40 +346,6 @@
 	** using the new value of ORDER_WANTED. Be carefull.
 	*/
 #define ORDER_WANTED 5
-	/* The crossdict is a cross-table containing a keyword-keyword adjacency matrix.
-	** this matrix is evaluated by a power-iteration algoritm, which basically
-	** yields the first eigenvector and -value.
-	** The matrix is fed with pairs of "n-adjacent" words, plus a distance.
-	** The matrix has a fixed size; if a new insertion would make it bigger than
-	** (CROSS_DICT_SIZE) the weakest keywords are removed.
-	**
-	** Only "rare" words (with "less than average" frequency of occurence) are considered
-	** , this is estimated by comparing ((freq(word)/mean_freq) < STOP_WORD_TRESHOLD ).
-	**
-	** Only pairs of words with a (distance <= CROSS_DICT_WORD_DISTANCE) are entered.
-	** Specifying a CROSS_DICT_WORD_DISTANCE of 3 will cause word[x] downto word[x-3] to
-	** be entered into the matrix.
-	*/
-#define CROSS_DICT_SIZE_MIN 21
-#define CROSS_DICT_SIZE_MAX 51
-#define CROSS_DICT_SIZE CROSS_DICT_SIZE_MAX
-#define CROSS_DICT_WORD_DISTANCE 1
-
-	/* Use keyword weights when evaluating the replies */
-#define WANT_KEYWORD_WEIGHTS 1
-	/* Assume words with a quality lower than STOP_WORD_TRESHOLD
-	** to be stopwords (and ingnore them)
-	** quality := 1/rel_frequency. Rel_frequency "mannen" == "vrouwen" := 1.5
-	** 10 := very common, 0.1 := uncommon, 0.01 := rare, 0.001 := typo
-	*/
-#define STOP_WORD_TRESHOLD 0.5
-	/* Crostab entries with a value smaller than this are ignored
-	** Note: this will be scaled by cross_tab_size. (divided by cross_tab_size).
-	** (after normalizing, the constant is put into the eigen value;
-	** crostabb coefficients are supposed to sum up to 1.0)
-	** The first one is typically around 0.1 -- 0.2
-	*/
-#define CROSS_TAB_FRAC 0.50
 
 	/* suppress whitespace; only store REAL words.
 	** NOTE: changing this setting will require a complete rebuild of megahal's brain.
@@ -392,52 +359,10 @@
 	** Highly recommended.
 	*/
 #define WANT_SUPPRESS_WHITESPACE 1
-
-	/*
-	** ALZHEIMER_NODE_COUNT is the number of nodes we intend to maintain.
-	** if the actual number of nodes exceeds this limit, the Alzheimer-functions might be triggered,
-	** and the oldest nodes will be pruned. The timestamp is used as a poor man's LRU.
-	** NOTE: this is the *intended* number. The actual number will fluctuate, and will
-	** sometimes exceed this limit.
-	**
-	** (1/ALZHEIMER_FACTOR) is the chance of Alzheimer hitting the tree, once per reply or lerning step.
-	** Zero to disable.
-	** Alzheimer periodically does a complete treewalk (twice) to find and eliminate nodes
-	** it considers too old.  This is expensive.
-	** ALZHEIMER_FACTOR should be chosen such that Alzheimer hits us once every few minutes.
-	** 100 could be a start.
-	** (with a glob_timeout=DEFAULT_TIMEOUT=10 this would result in avg (1000s/2) between sweeps)
-	** YMMV
-	*/
-#define ALZHEIMER_NODE_COUNT ( 35 * 1000 * 1000)
-#define ALZHEIMER_FACTOR 100
-
 	/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
 
-	/* For TREEs, we use SQRT(n) as the value to increment/decrement with.
-	** NOTE dicts will hardly ever be shrunk; only emptied.
-	*/
-#define DICT_SIZE_INITIAL 4
-#define DICT_SIZE_SHRINK 16
-
-	/* we don't want results with number of tokens < MIN_REPLY_SIZE. (default = 14)
-	** Note: both words and puntuation count as tokens,
-	** whitespace does not count (if WANT_SUPPRESS_WHITESPACE is enabled)
-	** WANT_PARROT_CHECK is the size of the parrot histograms (default = 13)
-	** PARROT_POWER is used in parrot_value := pow(parrot_score, PARROT_POWER) (default = 1.3)
-	** Higher values work towards a flatter histogram
-	** UNDER/OVER_SIZE_PENALTY_POWER is used to penalize under/over-sized replies. (default 1.5,1.4)
-	** Higher values work towards INTENDED_REPLY_SIZE
-	*/
-#define MIN_REPLY_SIZE 14
-#define INTENDED_REPLY_SIZE 17
-#define WANT_PARROT_CHECK 9
-#define PARROT_POWER 2.9
-#define OVERSIZE_PENALTY_POWER 1.9
-#define UNDERSIZE_PENALTY_POWER 1.2
-#define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
-
+#include "megahal.cnf"
 	/* Flags for converting strings to/from latin/utf8
 	** Best is to keep the corpus in utf8.
 	** In this case:
@@ -448,6 +373,8 @@
 #define SCRUTINIZE_L2U 2
 #define SCRUTINIZE_INPUT 0
 #define SCRUTINIZE_OUTPUT SCRUTINIZE_U2L
+
+#define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
 
 #ifdef __mac_os
 #define bool Boolean
@@ -673,7 +600,8 @@ STATIC TREE *find_symbol(TREE *node, WordNum symbol);
 STATIC TREE *find_symbol_add(TREE *, WordNum);
 
 STATIC WordNum find_word(DICT *, STRING);
-STATIC void help(void);
+STATIC void do_help(void);
+void show_config(FILE *fp);
 STATIC void ignore(int);
 STATIC bool initialize_error(char *);
 #ifdef __mac_os
@@ -712,7 +640,7 @@ STATIC void load_word(FILE *, DICT *);
 STATIC MODEL *new_model(int);
 STATIC TREE *node_new(unsigned nchild);
 STATIC STRING new_string(char *str, size_t len);
-STATIC bool print_header(FILE *);
+STATIC void print_header(FILE *);
 bool progress(char *message, unsigned long done, unsigned long todo);
 STATIC void save_dict(FILE *, DICT *);
 STATIC unsigned save_tree(FILE *, TREE *);
@@ -746,8 +674,9 @@ STATIC int myisalpha(int ch);
 STATIC int myisupper(int ch);
 STATIC int myislower(int ch);
 STATIC int myisalnum(int ch);
+STATIC int myisalnum_extra(int ch);
 STATIC int myiswhite(int ch);
-STATIC int word_is_usable(STRING word);
+STATIC int buffer_is_usable(char *buf, unsigned len);
 STATIC int dont_need_white_l(STRING string);
 STATIC int dont_need_white_r(STRING string);
 STATIC int word_is_allcaps(STRING string);
@@ -949,7 +878,7 @@ void megahal_initialize(void)
    megahal_do_reply --
 
    Take string as input, and return allocated string as output.  The
-   user is responsible for freeing this memory.
+   caller is responsible for freeing this memory.
 
   */
 
@@ -957,12 +886,15 @@ char *megahal_do_reply(char *input, int log)
 {
     char *output = NULL;
 
-    if (log != 0)
+    if (log)
 	log_input(input);  /* log input if so desired */
 
     make_words(input, glob_input);
     if (!glob_timeout) learn_from_input(glob_model, glob_input);
-    else output = generate_reply(glob_model, glob_input);
+    else {
+        show_config(stderr);
+	output = generate_reply(glob_model, glob_input);
+	}
     return output;
 }
 
@@ -1035,6 +967,8 @@ void megahal_dumptree(char *path, int flags)
 
 dump_model(glob_model, path, flags);
 }
+
+#if DONT_WANT_THIS
 /*
    megahal_command --
 
@@ -1072,7 +1006,7 @@ int megahal_command(char *input)
 	printf(MY_NAME " speech is now %s.\n", speech?"on":"off");
 	return 1;
     case HELP:
-	help();
+	do_help();
 	return 1;
     case VOICELIST:
 	listvoices();
@@ -1094,6 +1028,7 @@ int megahal_command(char *input)
     }
     return 0;
 }
+#endif
 
 /*
    megahal_cleanup --
@@ -1113,6 +1048,7 @@ void megahal_cleanup(void)
 }
 
 
+#if DONT_WANT_THIS
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -1156,6 +1092,7 @@ STATIC COMMAND_WORDS execute_command(struct sentence *src, unsigned int *positio
 
     return UNKNOWN;
 }
+#endif
 
 /*---------------------------------------------------------------------------*/
 
@@ -1286,7 +1223,8 @@ STATIC bool initialize_error(char *filename)
 	errorfp = stderr;
 	return FALSE;
     }
-    return print_header(errorfp);
+    print_header(errorfp);
+    return TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1359,7 +1297,8 @@ STATIC bool initialize_status(char *filename)
 	statusfp = stdout;
 	return FALSE;
     }
-    return print_header(statusfp);
+    print_header(statusfp);
+    return TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1378,7 +1317,7 @@ STATIC void status(char *fmt, ...)
     va_end(argp);
     fflush(statusfp);
 
-    return TRUE;
+    return ;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1388,7 +1327,7 @@ STATIC void status(char *fmt, ...)
  *
  *		Purpose:		Display a copyright message and timestamp.
  */
-STATIC bool print_header(FILE *fp)
+STATIC void print_header(FILE *fp)
 {
     time_t clock;
     char timestamp[1024];
@@ -1403,7 +1342,6 @@ STATIC bool print_header(FILE *fp)
 	, __DATE__ , __TIME__, timestamp);
     fflush(fp);
 
-    return TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1667,7 +1605,7 @@ return this;
 /*
  *		Function:	Wordcmp
  *
- *		Purpose:		Compare two words, and return an integer indicating whether
+ *		Purpose:		Compare two STRINGS, and return an integer indicating whether
  *						the first word is less than, equal to or greater than the
  *						second word.
  */
@@ -3120,24 +3058,26 @@ STATIC void make_words(char * src, struct sentence * target)
     len = strlen(src);
     if (!len) return;
 
-    for(pos=0; pos < len ; ) {
+    for(pos=0; pos < len ; pos += chunk) {
 
 	chunk = tokenize(src+pos, &state);
         if (!chunk) { /* maybe we should reset state here ... */ pos++; }
         if (chunk > STRLEN_MAX) {
+#if WANT_SUPPRESS_WHITESPACE
+            if (!buffer_is_usable(src+pos,chunk)) continue;
+#endif
             warn( "Make_words", "Truncated too long string(%u) at %s\n", (unsigned) chunk, src+pos);
             chunk = STRLEN_MAX;
             }
         word.length = chunk;
         word.word = src+pos;
 #if WANT_SUPPRESS_WHITESPACE
-        if (word_is_usable(word)) add_word_to_sentence(target, word);
+        if (buffer_is_usable(src+pos,chunk)) add_word_to_sentence(target, word);
 #else
         add_word_to_sentence(target, word);
 #endif
 
         if (pos+chunk >= len) break;
-        pos += chunk;
     }
 
     /*
@@ -3161,12 +3101,12 @@ STATIC void make_words(char * src, struct sentence * target)
  *
  *		Purpose:		Find the length of the token started @ string
  * This tokeniser attempts to respect abbreviations such as R.W.A or R.w.a.
- * Also numeric literals, such as 200.50 are left alone (almost the same for 200,50 or 200.000,00)
+ * Also, numeric literals, such as 200.50 are left alone (almost the same for 200,50 or 200.000,00)
  * Maybe 10e-0.6 should also be recognised.
- * multiple stretches of .,!? are kept intact, multiple stretches of
+ * Multiple stretches of .,!? are kept intact, multiple stretches of
  * other non alphanumerc tokens (@#$%^&*) as well.
- * brackets and braces are always chopped up to 1-character tokens.
- * quoted strings are not respected, but broken up into seperate tokens.
+ * Brackets and braces are always chopped up to 1-character tokens.
+ * Quoted strings are not respected, but broken up into seperate tokens.
  * The quotes are treated as seperate tokens too.
  */
 #define T_INIT 0
@@ -3181,9 +3121,9 @@ STATIC void make_words(char * src, struct sentence * target)
 #define T_NUMDOTLET 9
 #define T_MEUK 10
 #define T_PUNCT 11
+#define T_ATHASH 12
 STATIC size_t tokenize(char *str, int *sp)
 {
-    /* unsigned char *ucp = (unsigned char *) str;*/
     size_t pos ;
 
     for(pos=0; str[pos]; ) {
@@ -3195,6 +3135,7 @@ STATIC size_t tokenize(char *str, int *sp)
 #endif
 	if (myisalpha(str[pos])) {*sp = T_WORD; pos++; continue; }
 	if (myisalnum(str[pos])) {*sp = T_NUM; pos++; continue; }
+	if (strspn(str+pos, "#@")) { *sp = T_ATHASH; pos++; continue; }
 	/* if (strspn(str+pos, "-+")) { *sp = T_NUM; pos++; continue; }*/
 	*sp = T_ANY; continue;
 	break;
@@ -3255,9 +3196,16 @@ STATIC size_t tokenize(char *str, int *sp)
 	pos++; continue; /* collect all garbage */
         break;
     case T_PUNCT: /* punctuation */
+	if (strspn(str+pos, "@#" )) { *sp = T_MEUK; pos++; continue; }
 	pos += strspn(str+pos, ".,?!" ) ;
         *sp = T_INIT; return pos ? pos : 1;
         break;
+    case T_ATHASH: /* @ or # should be followed by an "identifier"  */
+	while ( myisalpha(str[pos]) ) pos++;
+	if (pos  < 2)  { *sp = T_MEUK; continue; }
+        while ( myisalnum_extra(str[pos]) ) {pos++; }
+	*sp = T_INIT;
+	return pos ;
         }
     }
     /* This is ugly. Depending on the state,
@@ -3275,6 +3223,7 @@ STATIC size_t tokenize(char *str, int *sp)
     case T_NUMDOTLET: pos -= 2; break;
     case T_MEUK: break;
     case T_PUNCT: break;
+    case T_ATHASH: break;
     default: break;
     }
     *sp = T_INIT; return pos;
@@ -3300,6 +3249,14 @@ if (ch >= '0' && ch <= '9') return 1;
 return 0;
 }
 
+STATIC int myisalnum_extra(int ch)
+{
+int ret = myisalnum(ch);
+if (ret) return ret;
+if (ch == '_' || ch == '$') return 1;
+return 0;
+}
+
 STATIC int myisalpha(int ch)
 {
 #if 0
@@ -3310,7 +3267,6 @@ if (myislower(ch) || myisupper(ch)) return 1;
 #endif
 	/* don't parse, just assume valid utf8*/
 if (ch & 0x80) return 1;
-// if (ch == -1) return 0;
 return 0;
 }
 
@@ -3337,13 +3293,13 @@ if (nlow || noth) return 0;
 else return 1;
 }
 
-STATIC int word_is_usable(STRING string)
+STATIC int buffer_is_usable(char *buf, unsigned len)
 {
 unsigned idx;
 
-if (string.length < 1) return 1;
+if (len < 1) return 1;
 
-for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
+for(idx = 0; idx < len; idx++) switch( buf[idx] ) {
 	case '\0':
 	case '\n':
 	case '\r':
@@ -3430,6 +3386,22 @@ STATIC void make_greeting(struct sentence *target)
     // if (glob_grt->size > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->size) ].string );
 }
 
+void show_config(FILE *fp)
+{
+    fprintf(fp, "Compiled-in constant settings:\n" );
+    fprintf(fp, "MIN_REPLY_SIZE=%d\n", MIN_REPLY_SIZE);
+    fprintf(fp, "INTENDED_REPLY_SIZE=%d\n", INTENDED_REPLY_SIZE);
+    fprintf(fp, "MAX_REPLY_CHARS=%d\n", MAX_REPLY_CHARS);
+    fprintf(fp, "STOP_WORD_TRESHOLD=%f\n", STOP_WORD_TRESHOLD);
+    fprintf(fp, "CROSS_TAB_FRAC=%f\n", CROSS_TAB_FRAC);
+    fprintf(fp, "CROSS_DICT_SIZE_MIN=%d\n", CROSS_DICT_SIZE_MIN);
+    fprintf(fp, "CROSS_DICT_SIZE_MAX=%d\n", CROSS_DICT_SIZE_MAX);
+    fprintf(fp, "CROSS_DICT_WORD_DISTANCE=%d\n", CROSS_DICT_WORD_DISTANCE);
+    fprintf(fp, "WANT_PARROT_CHECK=%d\n", WANT_PARROT_CHECK);
+    fprintf(fp, "PARROT_POWER=%f\n", PARROT_POWER);
+    fprintf(fp, "OVERSIZE_PENALTY_POWER=%f\n", OVERSIZE_PENALTY_POWER);
+    fprintf(fp, "UNDERSIZE_PENALTY_POWER=%f\n", UNDERSIZE_PENALTY_POWER);
+}
 /*---------------------------------------------------------------------------*/
 /*
  *    Function:   Generate_Reply
@@ -3452,6 +3424,8 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     double penalty1,penalty2;
 #endif
 
+    /* show_config(stderr); */
+
 #if ALZHEIMER_FACTOR
     count = urnd(ALZHEIMER_FACTOR);
     if (count == ALZHEIMER_FACTOR/2) {
@@ -3464,17 +3438,6 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
      *		Create an array of keywords from the words in the user's input
      */
     make_keywords(model, src);
-    fprintf(stderr,"MIN_REPLY_SIZE=%d\n", MIN_REPLY_SIZE);
-    fprintf(stderr,"INTENDED_REPLY_SIZE=%d\n", INTENDED_REPLY_SIZE);
-    fprintf(stderr,"STOP_WORD_TRESHOLD=%f\n", STOP_WORD_TRESHOLD);
-    fprintf(stderr,"CROSS_TAB_FRAC=%f\n", CROSS_TAB_FRAC);
-    fprintf(stderr,"CROSS_DICT_SIZE_MIN=%d\n", CROSS_DICT_SIZE_MIN);
-    fprintf(stderr,"CROSS_DICT_SIZE_MAX=%d\n", CROSS_DICT_SIZE_MAX);
-    fprintf(stderr,"CROSS_DICT_WORD_DISTANCE=%d\n", CROSS_DICT_WORD_DISTANCE);
-    fprintf(stderr,"WANT_PARROT_CHECK=%d\n", WANT_PARROT_CHECK);
-    fprintf(stderr,"PARROT_POWER=%f\n", PARROT_POWER);
-    fprintf(stderr,"OVERSIZE_PENALTY_POWER=%f\n", OVERSIZE_PENALTY_POWER);
-    fprintf(stderr,"UNDERSIZE_PENALTY_POWER=%f\n", UNDERSIZE_PENALTY_POWER);
     output = output_none;
 
     /*
@@ -3499,6 +3462,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 
 	penalty = (2*penalty1*penalty2) / (penalty1+penalty2);
 	penalty *= penalty;
+
 
         surprise = rawsurprise / penalty ;
         if ( (surprise - max_surprise) <= (10*DBL_EPSILON) ) continue;
@@ -3529,8 +3493,9 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	max_surprise = surprise;
 	output = make_output(zeresult);
 #if WANT_DUMP_ALL_REPLIES
-fprintf(stderr, "\n%u %f N=%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
-, count, surprise, (unsigned) zeresult->size
+fprintf(stderr, "\n%u %f N=%u:%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
+, count, surprise
+, (unsigned) zeresult->size, (unsigned int) strlen(output)
 , init_typ_fwd, init_val_fwd, init_val_rev
 , output);
 #endif
@@ -3735,6 +3700,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
     double gfrac, kfrac, weight,term,probability, entropy;
     TREE *node=NULL;
     STRING canonword;
+    unsigned tweetsize=0;
 
     if (sentence->size == 0) return -100000.0;
 
@@ -3748,6 +3714,8 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 
     totcount = 0, entropy = 0.0;
     for (widx = 0; widx < sentence->size; widx++) {
+	tweetsize += 1+sentence->entry[widx].string.length;
+
 	symbol = find_word(model->dict, sentence->entry[widx].string );
 
 	/* Only crosstab-keywords contribute to the scoring
@@ -3904,6 +3872,7 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 		entropy /= pow ((0.0+INTENDED_REPLY_SIZE) / widx , UNDERSIZE_PENALTY_POWER);
 		}
 #endif
+        if (tweetsize >= MAX_REPLY_CHARS) entropy /= 10;
 	init_val_fwd = start_penalty(model, sentence->entry[0].string);
 	init_val_rev = end_penalty(model, sentence->entry[widx-1].string );
         entropy -= sqrt(init_val_fwd);
@@ -4502,10 +4471,12 @@ unsigned int urnd(unsigned int range)
 #endif
     flag = 1;
     }
+
+if (range <= 1) return 0;
 #if defined(__mac_os) || defined(DOS)
     return rand()%range;
 #else
-if (range <= 1) return 0;
+
 while(1)	{
     BigThing val, box;
 #if WANT_RDTSC_RANDOM
@@ -4796,13 +4767,14 @@ bool progress(char *message, unsigned long done, unsigned long todo)
 
 /*---------------------------------------------------------------------------*/
 
-void help(void)
+void do_help(void)
 {
     unsigned int j;
 
-    for(j = 0; j <COUNTOF(commands); j++) {
+    for(j = 0; j < COUNTOF(commands); j++) {
 	printf("#%-7s: %s\n", commands[j].word.word, commands[j].helpstring);
     }
+    show_config(stdout);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4946,7 +4918,7 @@ return hash_mem(string.word, (size_t) string.length);
 STATIC HashVal hash_mem(void *dat, size_t len)
 {
 unsigned char *str = (unsigned char*) dat;
-unsigned val=0;
+HashVal val=0;
 size_t idx;
 
 for(idx=0; idx < len; idx++ )	{
@@ -5518,3 +5490,5 @@ result = ((unsigned long long)nitem * (nitem+2*nslot-1)) / (nslot) ;
 return result;
 }
 /* Eof */
+
+
