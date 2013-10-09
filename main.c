@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -188,8 +189,10 @@ int main(int argc, char **argv)
      *		Load the default MegaHAL personality.
      */
     if (!mynogreet ) {
+#if 0
     	output = megahal_initial_greeting();
     	megahal_output(output);
+#endif
 	}
     /*
      *		Read input, formulate a reply and display it as output
@@ -211,9 +214,9 @@ int main(int argc, char **argv)
 #endif
 
 	if (my_learn_only) {
-		megahal_learn_no_reply(input, 1);
+		megahal_learn_no_reply(input, 0); // No echo
 	} else	{
-		output = megahal_do_reply(input, 1);
+		output = megahal_do_reply(input, 0); // No echo
 		if (output) {
 			megahal_output(output);
 			fprintf(stdout, "%s\n", output);
