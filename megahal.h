@@ -108,19 +108,22 @@ extern void srand48(long);
 
 /* public functions  */
 
+/* extern bool quiet; */
 
-
+void megahal_setquiet (void);
 void megahal_setnoprompt (void);
 void megahal_setnowrap (void);
 void megahal_setnobanner (void);
+void megahal_setnoprogres (void);
 
 void megahal_seterrorfile(char *filename);
 void megahal_setstatusfile(char *filename);
 void megahal_setdirectory (char *dir);
+void megahal_settimeout (char *string);
 
 void megahal_initialize(void);
 
-char *megahal_initial_greeting(void);
+// char *megahal_initial_greeting(void);
 
 int megahal_command(char *input);
 
@@ -128,8 +131,11 @@ char *megahal_do_reply(char *input, int log);
 void megahal_learn_no_reply(char *input, int log);
 void megahal_output(char *output);
 char *megahal_input(char *prompt);
+void megahal_dumpmodel(char *path, int flags);
+void megahal_dumptree(char *path, int flags);
 
 void megahal_cleanup(void);
+void show_config(FILE *fp);
 
 /*===========================================================================*/
 
