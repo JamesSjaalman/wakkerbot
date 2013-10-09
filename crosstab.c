@@ -260,7 +260,6 @@ ptr->total.uniq = 0;
 ptr->total.sum = 0;
 ptr->score = 0.0;
 ptr->table = NULL;
-ptr->table = NULL;
 ptr->index = NULL;
 ptr->scores = NULL;
 ptr->matrix = NULL;
@@ -272,7 +271,9 @@ return ptr;
 void crosstab_free(struct crosstab *ptr)
 {
 if (!ptr) return;
-free (ptr->table);
+#if SHOW_CALLS
+fprintf(stderr, "crosstab_free(%p)\n", ptr);
+#endif
 free (ptr->table);
 free (ptr->index);
 free (ptr->scores);
@@ -287,7 +288,7 @@ unsigned int *up;
 struct crossrow *oldrow;
 
 #if SHOW_CALLS
-fprintf(stderr, "crosstab_init(%u) lusize=%u\n", newsize, LUSIZE(newsize));
+fprintf(stderr, "crosstab_resize(%u) lusize=%u\n", newsize, LUSIZE(newsize));
 #endif
 
 oldsize = ptr->msize;
@@ -300,6 +301,7 @@ ptr->msize = newsize;
 
 memcpy (ptr->table, oldrow, cpysize * sizeof *oldrow);
 row_format_slots( ptr->table , newsize );
+
 for (slot =0 ; slot < cpysize; slot++) {
 	if ( oldrow[slot].hash.key == IDX_NIL) continue;
 	ptr->table[slot].hash.key = oldrow[slot].hash.key ;
