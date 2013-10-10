@@ -1,3 +1,4 @@
+
 /*===========================================================================*/
 /*
  *  Copyright (C) 1998 Jason Hutchens
@@ -95,6 +96,21 @@
  */
 
 /*===========================================================================*/
+
+/* Wakkerbot, based on megahal (c) 2010-2013, Wildplasser
+**					http://www.sourceforge.net/wakkerbot
+**	Modifications/ additions:
+**	-	specialised tokeniser
+**	-	careful handling of Initcaps and bastard strings(such as acronyms and numerics)
+**	-	Hashtables for dictionary and markov-nodes
+**	-	Almost-sorted tables inside the nodes for faster weighted sampling.
+**	-	random generator based on hardware CPU clock
+**	-	keyword extraction based on word<->word neighborship and power-iteration
+**	-	Excessive parametrisation and tuning. Penalties for sentences without Initcaps or a final period.
+**	-	Alzheimer Algorithm for LRU and fast forgetting of infrequent words
+**	-	cruft removal (multi-brain/personality, speech)
+**	
+*/
 
 /*
  *		$Log: megahal.c,v $
@@ -247,16 +263,11 @@
 
 /*===========================================================================*/
 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <unistd.h>
 #include <getopt.h>
-
-#if !defined(AMIGA) && !defined(__mac_os)
-#include <malloc.h>
-#endif
 
 #include <ctype.h> /* isspace() */
 #include <string.h>
@@ -268,12 +279,7 @@
 #include <math.h>
 #include <time.h>
 
-#if defined(__mac_os)
-#include <types.h>
-#include <Speech.h>
-#else
 #include <sys/types.h>
-#endif
 
 #include "megahal.h"
 
@@ -297,8 +303,8 @@
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 #define STATIC static
+#define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
@@ -307,14 +313,22 @@
 	/* define to outcomment old stuff */
 #define DONT_WANT_THIS 0
 
+	/* store precomputed hash values in Dict entries.
+	** This will cost 32 bit / entry and wont save a lot of CPU
+	** (The maximal AVG estimated chainlength is 1.5)
+	** The final stringcompare is needed anyway
+	** , and strings tend to be different (except for the last one ;-).
+	*/
+#define WANT_STORE_HASH 0
+
 	/* this is an ugly hack to cast a string pointer named 'str' to an unsigned char
 	** This is absolutely necessary for the isXXXX() functions which
 	** expect an int in the range 0...255 OR -a (for EOF)
 	** Using a signed char would sign-extend the argument to -128...127,
 	** which causes the ctype[] array to be indexed out of bounds
 	*/
-#pragma define UCPstr ((unsigned char *)str)
-#define UCPstr str
+#pragma define UCP(str) ((unsigned char *)str)
+#define UCP(str) str
 
 	/* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
@@ -327,8 +341,12 @@
 #define WANT_DUMP_KEYWORD_WEIGHTS 0
 
 #define WANT_DUMP_ALZHEIMER_PROGRESS 1 /* 0...4 */
-	/* show replies, every time evaluate_reply() finds a better candidate */
+
+	/* Show replies every time evaluate_reply() finds a better candidate 
+	** (default=1) for building debugging
+	*/
 #define WANT_DUMP_ALL_REPLIES 1
+
 	/* dump tree as ascii when program exits (This will cost a LOT of disk space)
 	** 1 := only dump forward tree
 	** 2 := only dump backward tree
@@ -343,22 +361,10 @@
 */
 	/* The order of the Markov model.
 	** NOTE: if you change this, the (binary) .brn file will be rewritten
-	** using the new value of ORDER_WANTED. Be carefull.
+	** using the new value of ORDER_WANTED. Be careful.
 	*/
 #define ORDER_WANTED 5
 
-	/* suppress whitespace; only store REAL words.
-	** NOTE: changing this setting will require a complete rebuild of megahal's brain.
-	** Without whitespace suppression, stretches of whitespace are just like ordinary
-	** symbols *and references to them are stored in the nodes*.
-	** With suppression of whitespace only "real tokens" (words and punctuation) are
-	** used and stored in the nodes. This allows us to actually create a 5th order
-	** MC (and not a word+white_word_white+word, which effectively is a 3d order).
-	** The downside of this is that we'll have to re-insert the whitespace when
-	** generating the output text.
-	** Highly recommended.
-	*/
-#define WANT_SUPPRESS_WHITESPACE 1
 	/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
 
@@ -374,38 +380,16 @@
 #define SCRUTINIZE_INPUT 0
 #define SCRUTINIZE_OUTPUT SCRUTINIZE_U2L
 
+#if WANT_PARROT_CHECK
 #define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
+#define PARROT_RESURRECT(dum) memset (parrot_hash, 0, sizeof parrot_hash), memset (parrot_hash2, 0, sizeof parrot_hash2)
+#endif /* WANT_PARROT_CHECK */
 
-#ifdef __mac_os
-#define bool Boolean
-#endif
-
-#ifdef DOS
-#define SEP "\\"
-#else
 #define SEP "/"
-#endif
 
-#ifdef AMIGA
-#undef toupper
-#define toupper(x) ToUpper(x)
-#undef tolower
-#define tolower(x) ToLower(x)
-#undef isalpha
-#define isalpha(x) IsAlpha(_AmigaLocale,x)
-#undef isalnum
-#define isalnum(x) IsAlNum(_AmigaLocale,x)
-#undef isdigit
-#define isdigit(x) IsDigit(_AmigaLocale,x)
-#undef isspace
-#define isspace(x) IsSpace(_AmigaLocale,x)
-#endif
-
-#ifndef __mac_os
 #undef FALSE
 #undef TRUE
 typedef enum { FALSE, TRUE } bool;
-#endif
 
 typedef unsigned char StrLen;
 typedef unsigned char StrType;
@@ -425,7 +409,8 @@ BigThing rdtsc_rand(void);
 #define WORD_ERR ((WordNum)0)
 #define WORD_FIN ((WordNum)1)
 #define CHILD_NIL ((ChildIndex)-1)
-#define STAMP_MAX ((Stamp)-1))
+#define STAMP_MAX ((Stamp)-1)
+
 typedef struct {
     StrLen length;
     StrType type;	/* type is not stored in the brainfile but recomputed on loading */
@@ -435,7 +420,9 @@ typedef struct {
 struct	dictslot {
 	WordNum tabl;
 	WordNum link;
-	HashVal hash;
+#if WANT_STORE_HASH
+	HashVal whash;
+#endif /* WANT_STORE_HASH */
 	struct wordstat {
 		UsageCnt nnode;
 		UsageCnt valuesum;
@@ -453,14 +440,6 @@ typedef struct {
 		} stats;
     struct dictslot *entry;
 } DICT;
-
-typedef struct {
-    Count size;
-    struct {
-	STRING from;
-	STRING to;
-	} *pairs;
-} SWAP;
 
 struct treeslot {
     ChildIndex tabl;
@@ -532,20 +511,24 @@ static bool used_key;
 static MODEL *glob_model = NULL;
 	/* Refers to a dup'd fd for the brainfile, used for locking */
 static int glob_fd = -1;
+
 #if 1||CROSS_DICT_SIZE
 #include "crosstab.h"
 unsigned int cross_dict_size=0;
 struct crosstab *glob_crosstab = NULL;
-	/* this is ugly: a copy of model->dict is needed just for formatting the symbols
-	** in the callback for the print-crosstab function
+
+	/* This is ugly: a copy of model->dict is needed just for formatting the symbols
+	** in the callback for the print-crosstab function.
+	** (it should have been a context in the callback function)
 	*/
-static DICT *glob_dict = NULL;
+// static DICT *glob_dict = NULL;
 #endif
 
+#if WANT_EXTRA_MEUK
 static DICT *glob_ban = NULL;
 static DICT *glob_aux = NULL;
 static DICT *glob_grt = NULL;
-/* static SWAP *glob_swp = NULL; */
+#endif /* WANT_EXTRA_MEUK */
 
 static char *glob_directory = NULL;
 static char *last_directory = NULL;
@@ -570,22 +553,8 @@ static COMMAND commands[] = {
 	*/
 };
 
-#ifdef AMIGA
-struct Locale *_AmigaLocale;
-#endif
-
-#ifdef __mac_os
-Boolean gSpeechExists = false;
-SpeechChannel gSpeechChannel = nil;
-#endif
-
 STATIC int resize_tree(TREE *tree, unsigned newsize);
 
-#if DONT_WANT_THIS
-STATIC void add_swap(SWAP *list, char *from, char *to);
-STATIC SWAP *initialize_swap(char *);
-STATIC SWAP *new_swap(void);
-#endif
 STATIC TREE *add_symbol(TREE *, WordNum);
 STATIC WordNum add_word_dodup(DICT *dict, STRING word);
 STATIC size_t word_format(char *buff, STRING string);
@@ -604,23 +573,14 @@ STATIC void do_help(void);
 void show_config(FILE *fp);
 STATIC void ignore(int);
 STATIC bool initialize_error(char *);
-#ifdef __mac_os
-STATIC bool initialize_speech(void);
-#endif
 STATIC bool initialize_status(char *);
 STATIC void listvoices(void);
 STATIC DICT *new_dict(void);
 
 STATIC char *read_input(char * prompt);
 STATIC void save_model(char *, MODEL *);
-#ifdef __mac_os
-STATIC char *strdup(const char *);
-#endif
 STATIC void log_input(char *);
 STATIC void log_output(char *);
-#if defined(DOS) || defined(__mac_os)
-STATIC void usleep(int);
-#endif
 
 STATIC char *format_output(char *);
 STATIC void empty_dict(DICT *dict);
@@ -641,7 +601,7 @@ STATIC MODEL *new_model(int);
 STATIC TREE *node_new(unsigned nchild);
 STATIC STRING new_string(char *str, size_t len);
 STATIC void print_header(FILE *);
-bool progress(char *message, unsigned long done, unsigned long todo);
+void progress(char *message, unsigned long done, unsigned long todo);
 STATIC void save_dict(FILE *, DICT *);
 STATIC unsigned save_tree(FILE *, TREE *);
 STATIC void save_word(FILE *, STRING);
@@ -755,7 +715,7 @@ struct sentence {
 		} *entry;
 	} ;
 struct sentence *glob_input = NULL;
-struct sentence *glob_greets = NULL;
+// struct sentence *glob_greets = NULL;
 STATIC void make_words(char * str, struct sentence * dst);
 STATIC void add_word_to_sentence(struct sentence *dst, STRING word);
 STATIC void learn_from_input(MODEL * mp, struct sentence *src);
@@ -847,12 +807,6 @@ void megahal_initialize(void)
     initialize_status(statusfilename);
     ignore(0);
 
-#ifdef AMIGA
-    _AmigaLocale = OpenLocale(NULL);
-#endif
-#ifdef __mac_os
-    gSpeechExists = initialize_speech();
-#endif
     if (!nobanner)
 	fprintf(stdout,
 		"+------------------------------------------------------------------------+\n"
@@ -869,7 +823,7 @@ void megahal_initialize(void)
 		);
 
     glob_input = sentence_new();
-    glob_greets = sentence_new();
+    // glob_greets = sentence_new();
     change_personality(NULL, 0, &glob_model);
     while (bogus--) urnd(42);
 }
@@ -882,15 +836,15 @@ void megahal_initialize(void)
 
   */
 
-char *megahal_do_reply(char *input, int log)
+char *megahal_do_reply(char *input, int want_log)
 {
     char *output = NULL;
 
-    if (log)
-	log_input(input);  /* log input if so desired */
+    if (want_log) log_input(input);
 
     make_words(input, glob_input);
-    if (!glob_timeout) learn_from_input(glob_model, glob_input);
+    if (glob_input->size < 3) return NULL;
+    if (glob_timeout <=0 ) learn_from_input(glob_model, glob_input);
     else {
         show_config(stderr);
 	output = generate_reply(glob_model, glob_input);
@@ -905,10 +859,9 @@ char *megahal_do_reply(char *input, int log)
 
   */
 
-void megahal_learn_no_reply(char *input, int log)
+void megahal_learn_no_reply(char *input, int want_log)
 {
-    if (log != 0)
-	log_input(input);  /* log input if so desired */
+    if (want_log) log_input(input);
 
     make_words(input, glob_input);
 
@@ -923,6 +876,7 @@ void megahal_learn_no_reply(char *input, int log)
 
   */
 
+#if DONT_WANT_THIS
 char *megahal_initial_greeting(void)
 {
     char *output;
@@ -931,6 +885,7 @@ char *megahal_initial_greeting(void)
     output = generate_reply(glob_model, glob_greets);
     return output;
 }
+#endif
 
 /*
    megahal_output --
@@ -964,9 +919,23 @@ char *megahal_input(char *prompt)
 
 void megahal_dumptree(char *path, int flags)
 {
-
 dump_model(glob_model, path, flags);
 }
+
+
+/*
+   megahal_cleanup --
+
+   Clean up everything. Prepare for exit.
+
+  */
+
+void megahal_cleanup(void)
+{
+    save_model("megahal.brn", glob_model);
+    show_memstat("Cleanup" );
+}
+
 
 #if DONT_WANT_THIS
 /*
@@ -1028,29 +997,6 @@ int megahal_command(char *input)
     }
     return 0;
 }
-#endif
-
-/*
-   megahal_cleanup --
-
-   Clean up everything. Prepare for exit.
-
-  */
-
-void megahal_cleanup(void)
-{
-    save_model("megahal.brn", glob_model);
-
-#ifdef AMIGA
-    CloseLocale(_AmigaLocale);
-#endif
-    show_memstat("Cleanup" );
-}
-
-
-#if DONT_WANT_THIS
-/*---------------------------------------------------------------------------*/
-
 /*
  *		Function:	Execute_Command
  *
@@ -1092,7 +1038,7 @@ STATIC COMMAND_WORDS execute_command(struct sentence *src, unsigned int *positio
 
     return UNKNOWN;
 }
-#endif
+#endif /* DONT_WANT_THIS */
 
 /*---------------------------------------------------------------------------*/
 
@@ -1103,17 +1049,6 @@ STATIC COMMAND_WORDS execute_command(struct sentence *src, unsigned int *positio
  */
 STATIC void exithal(void)
 {
-#ifdef __mac_os
-    /*
-     *		Must be called because it does use some system memory
-     */
-    if (gSpeechChannel) {
-	StopSpeech(gSpeechChannel);
-	DisposeSpeechChannel(gSpeechChannel);
-	gSpeechChannel = nil;
-    }
-#endif
-
 #if (WANT_DUMP_MODEL & 1)
     dump_model(glob_model, "tree.fwd", 1);
 #endif
@@ -1133,7 +1068,7 @@ STATIC void exithal(void)
  *		NOTE: this function returns a static malloc()d string, which is
  *		reused on every invocation, so the caller should *not* free() it.
  *		Also, because the contents of the string change, the caller should not
- *		keep any pointers into the reterned string.
+ *		keep any pointers into the returned string.
  */
 STATIC char *read_input(char *prompt)
 {
@@ -1141,7 +1076,7 @@ STATIC char *read_input(char *prompt)
     static size_t msize=0;
     unsigned seen_eol;
     size_t length;
-    int c;
+    int ch;
 
     seen_eol = 0;
     length = 0;
@@ -1159,8 +1094,7 @@ STATIC char *read_input(char *prompt)
      *		string.
      */
     while(1) {
-
-	c = getc(stdin);
+	ch = getc(stdin);
 
 	/*
 	 *		If the character is a line-feed, then bump the seen_eol variable
@@ -1169,14 +1103,13 @@ STATIC char *read_input(char *prompt)
 	 *		prompt again, and set the character to the space character, as
 	 *		we don't permit linefeeds to appear in the input.
 	 */
-	if (c == EOF) {
-	    if (seen_eol) break; else return NULL;
-		}
-	if (c == EOF || c == '\n') {
-	    if (seen_eol ) break;
+	if (ch == EOF) { if (seen_eol) break; else return NULL; }
+	if (ch == '\r') continue;
+	if (ch == '\n') {
+	    if (seen_eol) break;
 	    if (prompt) { fprintf(stdout, "%s", prompt); fflush(stdout); }
 	    seen_eol += 1;
-	    c = ' ';
+	    ch = ' ';
 	} else {
 	    seen_eol = 0;
 	}
@@ -1185,16 +1118,16 @@ STATIC char *read_input(char *prompt)
 	/* if (seen_eol && !length) return NULL;*/
 
 	if (length +2 >= msize) {
-		input = realloc(input, msize? 2*msize: 16);
-		if (input) msize = msize ? 2 * msize : 16;
+		input = realloc(input, msize? 2*msize: 256);
+		if (input) msize = msize ? 2 * msize : 256;
 		}
 	if (!input) {
 	    error("read_input", "Unable to re-allocate the input string");
 	    return NULL;
 	}
 
-	input[length++] = c;
-	input[length] ='\0';
+	input[length++] = ch;
+	// input[length] ='\0';
     }
 
     while(length > 0 && isspace(input[length-1])) length--;
@@ -1346,11 +1279,6 @@ STATIC void print_header(FILE *fp)
 
 /*---------------------------------------------------------------------------*/
 
-/*
- *    Function:   Write_Output
- *
- *    Purpose:    Display the output string.
- */
 STATIC void log_output(char *output)
 {
     char *formatted;
@@ -1366,19 +1294,13 @@ STATIC void log_output(char *output)
 
     bit = strtok(formatted, "\n");
     if (!bit) status(MY_NAME ": %s\n", formatted);
-    while(bit) {
+    for( ;bit; bit = strtok(NULL, "\n")) {
 	status(MY_NAME ": %s\n", bit);
-	bit = strtok(NULL, "\n");
     }
 }
 
 /*---------------------------------------------------------------------------*/
 
-/*
- *    Function:   Write_Input
- *
- *    Purpose:    Log the user's input
- */
 STATIC void log_input(char *input)
 {
     char *formatted;
@@ -1389,20 +1311,13 @@ STATIC void log_input(char *input)
 
     bit = strtok(formatted, "\n");
     if (!bit) status("User:    %s\n", formatted);
-    while(bit) {
+    for(	;bit; bit = strtok(NULL, "\n")) {
 	status("User:    %s\n", bit);
-	bit = strtok(NULL, "\n");
     }
 }
 
 /*---------------------------------------------------------------------------*/
 
-/*
- *    Function:   Format_Output
- *
- *    Purpose:    Format a string to display nicely on a terminal of a given
- *                width.
- */
 STATIC char *format_output(char *output)
 {
     static char *formatted = NULL;
@@ -1441,19 +1356,12 @@ STATIC char *format_output(char *output)
 
 /*---------------------------------------------------------------------------*/
 
-/*
- *		Function:	Add_Word_Nofuzz
- *
- *		Purpose:		Append a word to a dictionary, and return the identifier assigned to the word.
- *						The index is not searched or updated, and the new word is not dupped, only referenced.
- */
 STATIC void add_word_to_sentence(struct sentence *dst, STRING word)
 {
 
 if (!dst) return ;
 
 if (dst->size >= dst->msize && sentence_grow(dst)) return ;
-
 
 dst->entry[dst->size++].string = word;
 
@@ -1484,7 +1392,9 @@ if (*np == WORD_NIL) {
 	*np = dict->size++;
 	this = new_string(word.word, word.length);
 	dict->entry[*np].string = this;
-	dict->entry[*np].hash = hash_word(this);
+#if WANT_STORE_HASH
+	dict->entry[*np].whash = hash_word(this);
+#endif /* WANT_STORE_HASH */
 	}
 return *np;
 
@@ -1539,7 +1449,11 @@ if (!np || *np == WORD_NIL) {
 	/* move the top element to the vacant slot */
 *np = this;
 dict->entry[this].string = dict->entry[top].string;
-dict->entry[this].hash = dict->entry[top].hash;
+
+#if WANT_STORE_HASH
+dict->entry[this].whash = dict->entry[top].whash;
+#endif /* WANT_STORE_HASH */
+
 dict->entry[this].stats = dict->entry[top].stats;
 	/* dont forget top's offspring */
 dict->entry[this].link = dict->entry[top].link;
@@ -1548,7 +1462,10 @@ dict->entry[top].stats.nnode = 0;
 dict->entry[top].stats.valuesum = 0;
 dict->entry[top].string.word = NULL;
 dict->entry[top].string.length = 0;
-dict->entry[top].hash = 0;
+
+#if WANT_STORE_HASH
+dict->entry[top].whash = 0;
+#endif /* WANT_STORE_HASH */
 
 if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
 
@@ -1809,7 +1726,9 @@ STATIC void format_dictslots(struct dictslot * slots, unsigned size)
     for (idx = 0; idx < size; idx++) {
 	slots[idx].tabl = WORD_NIL;
 	slots[idx].link = WORD_NIL;
-	slots[idx].hash = 0xe;
+#if WANT_STORE_HASH
+	slots[idx].whash = 0xe;
+#endif /* WANT_STORE_HASH */
 	slots[idx].stats.nnode = 0;
 	slots[idx].stats.valuesum = 0;
 	slots[idx].string.length = 0;
@@ -2306,7 +2225,7 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
  * we only have to copy the children's "payload" verbatim,
  * find the place where to append it in the hash-chain, and put it there.
  *
- * Since we need to rebuild the hachchains anyway, this is a good place to
+ * Since we need to rebuild the hash chains anyway, this is a good place to
  * sort the items (in descending order) to make life easier for babble() .
  * We only sort when the node is growing (newsize>oldsize), assuming ordering is more or less
  * fixed for aged nodes. FIXME
@@ -2416,14 +2335,15 @@ unsigned slot;
 
 if (!node->msize) return NULL;
 slot = symbol % node->msize;
-for (ip = &node->children[ slot ].tabl; *ip != CHILD_NIL; ip = &node->children[ *ip ].link ) {
+for (ip = &node->children[ slot ].tabl; *ip != CHILD_NIL; ip = &node->children[ slot ].link ) {
+	slot = *ip;
 #if WANT_MAXIMAL_PARANOIA
-	if (!node->children[ *ip ].ptr) {
+	if (!node->children[ slot ].ptr) {
 		warn ( "Node_hnd", "empty child looking for %u\n", symbol);
 		continue;
 		}
 #endif
-	if (symbol == node->children[ *ip ].ptr->symbol) break;
+	if (symbol == node->children[ slot ].ptr->symbol) return ip;
 	}
 return ip;
 }
@@ -2888,7 +2808,7 @@ STATIC TREE * load_tree(FILE *fp)
     else if ( this.stamp < stamp_min) stamp_min = this.stamp;
 #else
 	/* We allow the timestamp to fold around at 0xffffffff
-	** -->> 0x00000001 wil be *above* 0xffffffff ...
+	** -->> 0x00000001 will be *above* 0xffffffff ...
 	** Current timestamp is 2386300 (2012-01-31) so this will probably never happen.
 	*/
     if (stamp_min == stamp_max) { stamp_min = this.stamp; stamp_max = 1+ this.stamp;}
@@ -3063,26 +2983,21 @@ STATIC void make_words(char * src, struct sentence * target)
 	chunk = tokenize(src+pos, &state);
         if (!chunk) { /* maybe we should reset state here ... */ pos++; }
         if (chunk > STRLEN_MAX) {
-#if WANT_SUPPRESS_WHITESPACE
-            if (!buffer_is_usable(src+pos,chunk)) continue;
-#endif
+            if (!buffer_is_usable(src+pos,chunk)) continue; /* ignore large stretches of WS */
             warn( "Make_words", "Truncated too long string(%u) at %s\n", (unsigned) chunk, src+pos);
             chunk = STRLEN_MAX;
             }
-        word.length = chunk;
-        word.word = src+pos;
-#if WANT_SUPPRESS_WHITESPACE
-        if (buffer_is_usable(src+pos,chunk)) add_word_to_sentence(target, word);
-#else
-        add_word_to_sentence(target, word);
-#endif
+        if (buffer_is_usable(src+pos,chunk)) {
+            word.word = src+pos;
+            word.length = chunk;
+	    add_word_to_sentence(target, word);
+	    }
 
         if (pos+chunk >= len) break;
     }
 
     /*
-     *		If the last word isn't punctuation, then replace it with a
-     *		full-stop character.
+     *		If the last word isn't punctuation, then add a full-stop character.
      */
     if (target->size && myisalnum(target->entry[target->size-1].string.word[0])) {
 		add_word_to_sentence(target, period);
@@ -3259,12 +3174,7 @@ return 0;
 
 STATIC int myisalpha(int ch)
 {
-#if 0
-int ret = isalpha(ch);
-if (ret) return ret;
-#else
 if (myislower(ch) || myisupper(ch)) return 1;
-#endif
 	/* don't parse, just assume valid utf8*/
 if (ch & 0x80) return 1;
 return 0;
@@ -3300,11 +3210,11 @@ unsigned idx;
 if (len < 1) return 1;
 
 for(idx = 0; idx < len; idx++) switch( buf[idx] ) {
-	case '\0':
+	case ' ':
+	case '\t':
 	case '\n':
 	case '\r':
-	case '\t':
-	case ' ': continue;
+	case '\0': continue;
 	default: return 1;
 	}
 return 0;
@@ -3440,11 +3350,6 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     make_keywords(model, src);
     output = output_none;
 
-    /*
-    zeresult = one_reply(model);
-     *		Loop for the specified waiting period, generating and evaluating
-     *		replies
-     */
     max_surprise = -100.0;
     penalty = 0.0;
     count = 0;
@@ -3493,15 +3398,18 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	max_surprise = surprise;
 	output = make_output(zeresult);
 #if WANT_DUMP_ALL_REPLIES
-fprintf(stderr, "\n%u %f N=%u:%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
-, count, surprise
-, (unsigned) zeresult->size, (unsigned int) strlen(output)
-, init_typ_fwd, init_val_fwd, init_val_rev
-, output);
+{
+	fprintf(stderr, "\n%u %f N=%u:%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
+	, count, surprise
+	, (unsigned) zeresult->size, (unsigned int) strlen(output)
+	, init_typ_fwd, init_val_fwd, init_val_rev
+	, output);
+}
 #endif
-	progress(NULL, (time(NULL)-basetime),glob_timeout);
+	progress(NULL, (time(NULL)-basetime), glob_timeout);
     } while(time(NULL)-basetime < glob_timeout);
     progress(NULL, 1, 1);
+
 #if WANT_DUMP_ALL_REPLIES
 	fprintf(stderr, "ReplyProbed=%u cross_dict_size=%u\n"
 	, count, cross_dict_size );
@@ -3533,35 +3441,32 @@ STATIC bool dissimilar(struct sentence *one, struct sentence *two)
 
 /*---------------------------------------------------------------------------*/
 
-/*
- *		Function:	Make_Keywords
- *
- *		Purpose:		Put all the interesting words from the user's input into
- *						a keywords dictionary, which will be used when generating
- *						a reply.
- */
 STATIC void make_keywords(MODEL *model, struct sentence *src)
 {
     unsigned int iwrd;
     WordNum symbol;
 
-#if CROSS_DICT_SIZE
     STRING canonword;
     WordNum canonsym;
+    /* array for retaining the sliding WINDOW[distance] with previous words. */
     WordNum echobox[CROSS_DICT_WORD_DISTANCE] = {0,};
     unsigned rotor,echocount;
     unsigned other;
+
+	// fprintf(stderr, "Make_keywords: Old xdict=%u, src->size =%u\n", cross_dict_size, src->size);
+    if (!src->size) return;
     cross_dict_size = sqrt(src->size);
     if (cross_dict_size < CROSS_DICT_SIZE_MIN) cross_dict_size = CROSS_DICT_SIZE_MIN ;
     if (cross_dict_size > CROSS_DICT_SIZE_MAX) cross_dict_size = CROSS_DICT_SIZE_MAX ;
 
+#if 0
     if (glob_crosstab) crosstab_resize(glob_crosstab,cross_dict_size);
     else glob_crosstab = crosstab_init(cross_dict_size);
-    rotor = echocount = 0;
 #else
-    unsigned int ikey;
+    if (glob_crosstab) crosstab_free(glob_crosstab);
+    glob_crosstab = crosstab_init(cross_dict_size);
 #endif
-
+    rotor = echocount = 0;
 
     for(iwrd = 0; iwrd < src->size; iwrd++) {
 	/*
@@ -3588,7 +3493,6 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
         if (canonsym >= model->dict->size) canonsym = symbol;
 	if (symbol_weight(model->dict, canonsym, 0) < STOP_WORD_TRESHOLD) continue;
 
-#if CROSS_DICT_SIZE
 	for (other = 0; other < echocount; other++ ) {
 		unsigned dist;
 		dist = other > rotor ? (other - rotor) : (other+CROSS_DICT_WORD_DISTANCE -rotor);
@@ -3598,7 +3502,6 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 	if (echocount < COUNTOF(echobox)) echocount++;
 	echobox[rotor] = canonsym;
 	if (++rotor >= COUNTOF(echobox)) rotor =0;
-#endif
 	}
 
 #if CROSS_DICT_SIZE
@@ -3608,15 +3511,9 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 
 /*---------------------------------------------------------------------------*/
 
-/*
- *		Function:	Reply
- *
- *		Purpose:		Generate a dictionary of reply words appropriate to the
- *						given dictionary of keywords.
- */
 STATIC struct sentence *one_reply(MODEL *model)
 {
-    static struct sentence *zereply = NULL;
+    static struct sentence *zereply = NULL; /* NOTE: static variable */
     unsigned int widx;
     WordNum symbol;
 
@@ -3708,8 +3605,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
     model->context[0] = model->forward;
 
 #if WANT_PARROT_CHECK
-    memset (parrot_hash, 0, sizeof parrot_hash);
-    memset (parrot_hash2, 0, sizeof parrot_hash2);
+	PARROT_RESURRECT(0);
 #endif /* WANT_PARROT_CHECK */
 
     totcount = 0, entropy = 0.0;
@@ -3899,11 +3795,9 @@ STATIC char *make_output(struct sentence *src)
     unsigned int widx;
     size_t length;
     char *output_none = "I am utterly speechless!";
-#if WANT_SUPPRESS_WHITESPACE
     char *tags;
     unsigned int sqcnt=0, dqcnt=0, hycnt=0;
     int begin;
-#endif
 
 
     if (src->size == 0) { return output_none; }
@@ -3911,18 +3805,13 @@ STATIC char *make_output(struct sentence *src)
 	** We assume one space between adjacent wordst plus a NUL at the end.
 	*/
     length = 1;
-#if WANT_SUPPRESS_WHITESPACE
     for(widx = 0; widx < src->size; widx++) length += 1+ src->entry[widx].string.length;
-#else
-    for(widx = 0; widx < src->size; widx++) length += src->entry[widx].string.length;
-#endif
     output = realloc(output, length);
     if (!output) {
 	error("make_output", "Unable to reallocate output.");
 	return output_none;
     }
 
-#if WANT_SUPPRESS_WHITESPACE
     tags = malloc(2+src->size);
     if (tags) memset(tags, 0, src->size);
 #define NO_SPACE_L 1
@@ -4006,30 +3895,25 @@ STATIC char *make_output(struct sentence *src)
 		tags[widx] |= NO_SPACE_L;
 		tags[widx] |= NO_SPACE_R;
 		}
-#endif
 
     length = 0;
     for(widx = 0; widx < src->size; widx++) {
-#if WANT_SUPPRESS_WHITESPACE
 	if (!widx) {;}
 	else if (tags[widx] & NO_SPACE_L ) {;}
 	else if (tags[widx-1] & NO_SPACE_R) {;}
 	else output[length++] = ' ';
-#endif
 	memcpy(output+length, src->entry[widx].string.word, src->entry[widx].string.length);
 	length += src->entry[widx].string.length;
 	}
 
     output[length] = '\0';
 
-#if WANT_SUPPRESS_WHITESPACE
     free(tags);
 #undef NO_SPACE_L
 #undef NO_SPACE_R
 #undef IS_SINGLE
 #undef IS_DOUBLE
 #undef IS_HYPHEN
-#endif
 	/* scrutinize_string may or may not reallocate the output string, but we don't care */
     output = scrutinize_string (output, SCRUTINIZE_OUTPUT);
     return output;
@@ -4243,103 +4127,8 @@ case TOKEN_PUNCT:
 return (penalty);
 }
 /*---------------------------------------------------------------------------*/
-#if 0
-/*
- *		Function:	New_Swap
- *
- *		Purpose:		Allocate a new swap structure.
- */
-SWAP *new_swap(void)
-{
-    SWAP *swp;
-
-    swp = malloc(sizeof *swp);
-    if (!swp) {
-	error("new_swap", "Unable to allocate swap");
-	return NULL;
-    }
-    swp->size = 0;
-    swp->pairs = NULL;
-
-    return swp;
-}
-
-/*---------------------------------------------------------------------------*/
 
 /*
- *		Function:	Add_Swap
- *
- *		Purpose:		Add a new entry to the swap structure.
- */
-STATIC void add_swap(SWAP *list, char *from, char *to)
-{
-    list->size += 1;
-
-    list->pairs = realloc(list->pairs, list->size *sizeof *list->pairs);
-    if (!list->pairs) {
-	error("add_swap", "Unable to reallocate pairs");
-	return;
-    }
-
-    list->pairs[list->size-1].from = new_string(from, 0);
-    list->pairs[list->size-1].to = new_string(to, 0);
-}
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Initialize_Swap
- *
- *		Purpose:		Read a swap structure from a file.
- */
-STATIC SWAP *initialize_swap(char *filename)
-{
-    SWAP *list;
-    FILE *fp = NULL;
-    char buffer[1024];
-    char *from;
-    char *to;
-
-    list = new_swap();
-
-    if (!filename) return list;
-
-    fp = fopen(filename, "r");
-    if (!fp) return list;
-
-    while (fgets(buffer, sizeof buffer, fp) ) {
-	if (buffer[0] == '#') continue;
-	from = strtok(buffer, "\t ");
-	to = strtok(NULL, "\t \n#");
-
-	add_swap(list, from, to);
-    }
-
-    fclose(fp);
-    return list;
-}
-
-/*---------------------------------------------------------------------------*/
-
-STATIC void free_swap(SWAP *swap)
-{
-    unsigned int idx;
-
-    if (!swap) return;
-
-    for(idx = 0; idx < swap->size; idx++) {
-	free_string(swap->pairs[idx].from);
-	free_string(swap->pairs[idx].to);
-    }
-    free(swap->pairs);
-    free(swap);
-}
-#endif
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Initialize_List
- *
  *		Purpose:		Read a dictionary from a file.
  */
 STATIC DICT *read_dict(char *filename)
@@ -4379,9 +4168,6 @@ void delay(char *string)
 {
     size_t idx,len;
 
-    /*
-     *		Don't simulate typing if the feature is turned off
-     */
     if (typing_delay == FALSE)	{
 	fprintf(stdout, "%s", string);
 	return;
@@ -4425,6 +4211,7 @@ void typein(char c)
  *		Function:	Ignore
  *
  *		Purpose:		Log the occurrence of a signal, but ignore it.
+ * WP: using printf() and friends from within a signal handler is not a good idea.
  */
 void ignore(int sig)
 {
@@ -4464,18 +4251,11 @@ unsigned int urnd(unsigned int range)
     static int flag = 0;
 
     if (!flag) {
-#if defined(__mac_os) || defined(DOS)
-	srand(time(NULL));
-#else
 	srand48(time(NULL));
-#endif
     flag = 1;
     }
 
 if (range <= 1) return 0;
-#if defined(__mac_os) || defined(DOS)
-    return rand()%range;
-#else
 
 while(1)	{
     BigThing val, box;
@@ -4491,7 +4271,6 @@ while(1)	{
     if ((1+box) *range < range) continue;
     return val % range;
 	}
-#endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4520,135 +4299,12 @@ return val;
 /*---------------------------------------------------------------------------*/
 
 /*
- *		Function:	Usleep
- *
- *		Purpose:		Simulate the Un*x function usleep.  Necessary because
- *						Microsoft provide no similar function.  Performed via
- *						a busy loop, which unnecessarily chews up the CPU.
- *						But Windows '95 isn't properly multitasking anyway, so
- *						no-one will notice.  Modified from a real Microsoft
- *						example, believe it or not!
- */
-#if defined(DOS) || defined(__mac_os)
-void usleep(int period)
-{
-    clock_t goal;
-
-    goal =(clock_t)(period*CLOCKS_PER_SEC)/(clock_t)1000000+clock();
-    while(goal > clock());
-}
-#endif
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Strdup
- *
- *		Purpose:		Provide the strdup() function for Macintosh.
- */
-#ifdef __mac_os
-char *strdup(const char *str)
-{
-    char *rval = malloc(strlen(str)+1);
-
-    if (rval != NULL) strcpy(rval, str);
-
-    return rval;
-}
-#endif
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Initialize_Speech
- *
- *		Purpose:		Initialize speech output.
- */
-#ifdef __mac_os
-bool initialize_speech(void)
-{
-    bool speechExists = false;
-    long response;
-    OSErr err;
-
-    err = Gestalt(gestaltSpeechAttr, &response);
-
-    if (!err) {
-	if (response & (1L << gestaltSpeechMgrPresent)) {
-	    speechExists = true;
-	}
-    }
-    return speechExists;
-}
-#endif
-
-/*---------------------------------------------------------------------------*/
-
-/*
  *		Function:	changevoice
  *
  *		Purpose:		change voice of speech output.
  */
 void changevoice(struct sentence* src, unsigned int position)
 {
-#ifdef __mac_os
-    int i, index;
-    STRING word ={ 1,0, "#" };
-    char buffer[80];
-    VoiceSpec voiceSpec;
-    VoiceDescription info;
-    short count, voiceCount;
-    unsigned char* temp;
-    OSErr err;
-    /*
-     *		If there is less than 4 words, no voice specified.
-     */
-    if (src->size <= 4) return;
-
-    for(i = 0; i < src->size-4; i++)
-	if (!wordcmp(word, src->entry[i].string ) ) {
-
-	    err = CountVoices(&voiceCount);
-	    if (!err && voiceCount) {
-		for (count = 1; count <= voiceCount; count++) {
-		    err = GetIndVoice(count, &voiceSpec);
-		    if (err) continue;
-		    err = GetVoiceDescription(&voiceSpec, &info,
-					      sizeof(VoiceDescription));
-		    if (err) continue;
-
-
-		    for (temp =  info.name; *temp; temp++) {
-			if (*temp == ' ')
-			    *temp = '_';
-		    }
-
-		    /*
-		     *		skip command and get voice name
-		     */
-		    index = i + 3;
-		    memcpy(buffer, src->entry[index].string.word, sizeof buffer);
-		    buffer[(sizeof buffer) -1] = 0;
-		    c2pstr(buffer);
-		    /* compare ignoring case*/
-		    if (EqualString((StringPtr)buffer, info.name, false, false)) {
-			if (gSpeechChannel) {
-			    StopSpeech(gSpeechChannel);
-			    DisposeSpeechChannel(gSpeechChannel);
-			    gSpeechChannel = nil;
-			}
-			err = NewSpeechChannel(&voiceSpec, &gSpeechChannel);
-			if (!err) {
-			    p2cstr((StringPtr)buffer);
-			    printf("Now using %s voice\n", buffer);
-			    c2pstr(buffer);
-			    err = SpeakText(gSpeechChannel, &buffer[1], buffer[0]);
-			}
-		    }
-		}
-	    }
-	}
-#endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4660,33 +4316,6 @@ void changevoice(struct sentence* src, unsigned int position)
  */
 void listvoices(void)
 {
-#ifdef __mac_os
-    VoiceSpec voiceSpec;
-    VoiceDescription info;
-    short count, voiceCount;
-    unsigned char* temp;
-    OSErr err;
-
-    if (gSpeechExists) {
-	err = CountVoices(&voiceCount);
-	if (!err && voiceCount) {
-	    for (count = 1; count <= voiceCount; count++) {
-		err = GetIndVoice(count, &voiceSpec);
-		if (err) continue;
-
-		err = GetVoiceDescription(&voiceSpec, &info,
-					  sizeof(VoiceDescription));
-		if (err) continue;
-
-		p2cstr(info.name);
-		for (temp =  info.name; *temp; temp++)
-		    if (*temp == ' ')
-			*temp = '_';
-		printf("%s\n",info.name);
-	    }
-	}
-    }
-#endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4697,19 +4326,6 @@ void listvoices(void)
 void speak(char *output)
 {
     if (speech == FALSE) return;
-#ifdef __mac_os
-    if (gSpeechExists) {
-	OSErr err;
-
-	if (gSpeechChannel)
-	    err = SpeakText(gSpeechChannel, output, strlen(output));
-	else {
-	    c2pstr(output);
-	    SpeakString((StringPtr)output);
-	    p2cstr((StringPtr)output);
-	}
-    }
-#endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4719,19 +4335,19 @@ void speak(char *output)
  *
  *		Purpose:		Display a progress indicator as a percentage.
  */
-bool progress(char *message, unsigned long done, unsigned long todo)
+void progress(char *message, unsigned long done, unsigned long todo)
 {
     static int last = 0;
     static bool first = FALSE;
 
-    if (noprogres) return FALSE;
+    if (noprogres) return ; //FALSE;
     /*
      *    We have already hit 100%, and a newline has been printed, so nothing
      *    needs to be done.
-     *    WP: avoid div/zero.
+     *    WP: we could avoid div/zero.
      */
     if (!todo) todo = done?done:1;
-    if (done*100/todo == 100 && first == FALSE) return TRUE;
+    if (done*100/todo == 100 && first == FALSE) return ; // TRUE;
 
     /*
      *    Nothing has changed since the last time this function was called,
@@ -4742,7 +4358,7 @@ bool progress(char *message, unsigned long done, unsigned long todo)
 	    fprintf(stderr, "%s: %3lu%%", message, done*100/todo);
 	    first = TRUE;
 	}
-	return TRUE;
+	return ; // TRUE;
     }
 
     /*
@@ -4762,7 +4378,7 @@ bool progress(char *message, unsigned long done, unsigned long todo)
 	fprintf(stderr, "\n");
     }
 
-    return TRUE;
+    return ; // TRUE;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4816,6 +4432,7 @@ void load_personality(MODEL **model)
      *		Free the current personality
      */
     free_model(*model);
+#if WANT_EXTRA_MEUK
     free_words(glob_ban);
     empty_dict(glob_ban);
     free_words(glob_aux);
@@ -4823,6 +4440,7 @@ void load_personality(MODEL **model)
     free_words(glob_grt);
     empty_dict(glob_grt);
     /* free_swap(glob_swp); */
+#endif /* WANT_EXTRA_MEUK */
 
     /*
      *		Create a language model.
@@ -4844,6 +4462,7 @@ void load_personality(MODEL **model)
      *		Read a dictionary containing banned keywords, auxiliary keywords,
      *		greeting keywords and swap keywords
      */
+#if WANT_EXTRA_MEUK
     sprintf(filename, "%s%smegahal.ban", glob_directory, SEP);
     glob_ban = read_dict(filename);
     sprintf(filename, "%s%smegahal.aux", glob_directory, SEP);
@@ -4853,6 +4472,7 @@ void load_personality(MODEL **model)
     /* sprintf(filename, "%s%smegahal.swp", glob_directory, SEP);
     glob_swp = initialize_swap(filename);
 	*/
+#endif /* WANT_EXTRA_MEUK */
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4943,7 +4563,9 @@ hash = hash_word(word);
 slot = hash % dict->msize;
 
 for (np = &dict->entry[slot].tabl ; *np != WORD_NIL ; np = &dict->entry[*np].link ) {
-	if ( dict->entry[*np].hash != hash) continue;
+#if WANT_STORE_HASH
+	if ( dict->entry[*np].whash != hash) continue;
+#endif /* WANT_STORE_HASH */
 	if ( wordcmp(dict->entry[*np].string , word)) continue;
 	break;
 	}
@@ -4977,12 +4599,20 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
 
     for (item =0 ; item < dict->size; item++) {
 		WordNum *np;
-		slot = old[item].hash % dict->msize;
+#if WANT_STORE_HASH
+		slot = old[item].whash % dict->msize;
+#else
+		unsigned hash;
+		hash = hash_word(old[item].string);
+		slot = hash % dict->msize;
+#endif /* WANT_STORE_HASH */
 		for( np = &dict->entry[slot].tabl; np; np = &dict->entry[*np].link ) {
 			if (*np == WORD_NIL) break;
 			}
 		*np = item;
-		dict->entry[item].hash = old[item].hash;
+#if WANT_STORE_HASH
+		dict->entry[item].whash = old[item].whash;
+#endif /* WANT_STORE_HASH */
 		dict->entry[item].stats.nnode = old[item].stats.nnode;
 		dict->entry[item].stats.valuesum = old[item].stats.valuesum;
 		dict->entry[item].string = old[item].string;
@@ -5244,16 +4874,18 @@ return sprintf(buff,"'%*.*s'"
 
 STATIC size_t symbol_format_callback(char *buff, WordNum sym)
 {
-if (! (glob_dict = glob_model->dict)) return sprintf(buff, "<NoDict>" );
-else if (sym >= glob_dict->size) return sprintf(buff, "<%u>", sym );
-else return word_format(buff, glob_dict->entry[sym].string );
+DICT *this_dict = glob_model->dict;
+if ( !this_dict ) return sprintf(buff, "<NoDict>" );
+else if (sym >= this_dict->size) return sprintf(buff, "<%u>", sym );
+else return word_format(buff, this_dict->entry[sym].string );
 }
 
 STATIC double symbol_weight_callback(WordNum sym)
 {
-if (! (glob_dict = glob_model->dict)) return 0.0;
-else if (sym >= glob_dict->size) return -1.0;
-else return symbol_weight(glob_dict, sym, 0 );
+DICT *this_dict = glob_model->dict;
+if ( !this_dict ) return 0.0;
+else if (sym >= this_dict->size) return -1.0;
+else return symbol_weight(this_dict, sym, 0 );
 }
 #endif
 
