@@ -97,7 +97,7 @@
 
 /*===========================================================================*/
 
-/* Wakkerbot, based on megahal (c) 2010-2013, Wildplasser
+/* Wakkerbot, based on megahal (c) 2010-2013, WP 
 **					http://www.sourceforge.net/wakkerbot
 **	Modifications/ additions:
 **	-	specialised tokeniser
@@ -303,8 +303,8 @@
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
+#define STATIC static
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
@@ -327,8 +327,8 @@
 	** Using a signed char would sign-extend the argument to -128...127,
 	** which causes the ctype[] array to be indexed out of bounds
 	*/
-#pragma define UCP(str) ((unsigned char *)str)
-#define UCP(str) str
+#pragma define UCPstr ((unsigned char *)str)
+#define UCPstr str
 
 	/* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
@@ -361,7 +361,7 @@
 */
 	/* The order of the Markov model.
 	** NOTE: if you change this, the (binary) .brn file will be rewritten
-	** using the new value of ORDER_WANTED. Be careful.
+	** using the new value of ORDER_WANTED. Be carefull.
 	*/
 #define ORDER_WANTED 5
 
@@ -431,7 +431,7 @@ struct	dictslot {
 	};
 
 typedef struct {
-    DictSize size;
+    DictSize mused;
     DictSize msize;
     struct dictstat	{
 		UsageSum nnode;
@@ -505,9 +505,6 @@ unsigned parrot_hash[WANT_PARROT_CHECK] = {0,};
 unsigned parrot_hash2[WANT_PARROT_CHECK+1] = {0,};
 #endif /* WANT_PARROT_CHECK */
 
-#if DONT_WANT_THIS
-static bool used_key;
-#endif
 static MODEL *glob_model = NULL;
 	/* Refers to a dup'd fd for the brainfile, used for locking */
 static int glob_fd = -1;
@@ -656,7 +653,7 @@ STATIC void del_word_dofree(DICT *dict, STRING word);
 void free_tree_recursively(TREE *tree);
 STATIC unsigned model_alzheimer(MODEL * model, unsigned maxnodecount);
 STATIC unsigned symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
-static int check_interval(Stamp min, Stamp max, Stamp this);
+STATIC int check_interval(Stamp min, Stamp max, Stamp this);
 #define STAMP_INSIDE 0
 #define STAMP_BELOW -1
 #define STAMP_ABOVE 1
@@ -708,7 +705,7 @@ STATIC size_t hexdump_string(char *buff, STRING string);
 STATIC size_t decode_word(char * buff, STRING src, int type );
 
 struct sentence {
-	unsigned size;
+	unsigned mused;
 	unsigned msize;
 	struct	{
 		STRING string;
@@ -843,7 +840,7 @@ char *megahal_do_reply(char *input, int want_log)
     if (want_log) log_input(input);
 
     make_words(input, glob_input);
-    if (glob_input->size < 3) return NULL;
+    if (glob_input->mused < 3) return NULL;
     if (glob_timeout <=0 ) learn_from_input(glob_model, glob_input);
     else {
         show_config(stderr);
@@ -1011,8 +1008,8 @@ STATIC COMMAND_WORDS execute_command(struct sentence *src, unsigned int *positio
     /*
      *		If there is only one word, then it can't be a command.
      */
-    *position = src->size+1;
-    if (src->size <= 1) return UNKNOWN;
+    *position = src->mused+1;
+    if (src->mused <= 1) return UNKNOWN;
 
     /*
      *		Search through the word array.  If a command prefix is found,
@@ -1021,7 +1018,7 @@ STATIC COMMAND_WORDS execute_command(struct sentence *src, unsigned int *positio
      *		Following word is a number, then change the judge.  Otherwise,
      *		continue the search.
      */
-    for(iwrd = 0; iwrd < src->size-1; iwrd++) {
+    for(iwrd = 0; iwrd < src->mused-1; iwrd++) {
 	/*
 	 *		The command prefix was found.
 	 */
@@ -1361,9 +1358,9 @@ STATIC void add_word_to_sentence(struct sentence *dst, STRING word)
 
 if (!dst) return ;
 
-if (dst->size >= dst->msize && sentence_grow(dst)) return ;
+if (dst->mused >= dst->msize && sentence_grow(dst)) return ;
 
-dst->entry[dst->size++].string = word;
+dst->entry[dst->mused++].string = word;
 
 return ;
 
@@ -1389,7 +1386,7 @@ if (!np) return 0; /* WP: should be WORD_NIL */
 
 if (*np == WORD_NIL) {
 	STRING this;
-	*np = dict->size++;
+	*np = dict->mused++;
 	this = new_string(word.word, word.length);
 	dict->entry[*np].string = this;
 #if WANT_STORE_HASH
@@ -1437,7 +1434,7 @@ dict->entry[this].string.word = NULL;
 dict->entry[this].string.length = 0;
 
 	/* done deleting. now locate the top element */
-top = --dict->size;
+top = --dict->mused;
 if (!top || top == this) return ; /* last man standing */
 
 np = dict_hnd(dict, dict->entry[top].string);
@@ -1467,13 +1464,13 @@ dict->entry[top].string.length = 0;
 dict->entry[top].whash = 0;
 #endif /* WANT_STORE_HASH */
 
-if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
+if (!dict->mused || dict->mused <= dict->msize - DICT_SIZE_SHRINK) {
 
 #if (WANT_DUMP_DELETE_DICT >= 1)
     status("dict(%llu:%llu/%llu) will be shrunk: %u/%u\n"
 	, dict->stats.valuesum, dict->stats.nnode, dict->stats.nonzero, dict->branch, dict->msize);
 #endif
-    resize_dict(dict, dict->size);
+    resize_dict(dict, dict->mused);
     }
 return ;
 }
@@ -1556,7 +1553,7 @@ STATIC void empty_dict(DICT *dict)
     dict->stats.valuesum = 0;
     dict->stats.nnode = 0;
     dict->stats.nonzero = 0;
-    dict->size = 0;
+    dict->mused = 0;
     resize_dict(dict, DICT_SIZE_INITIAL);
 }
 
@@ -1625,7 +1622,7 @@ STATIC unsigned long set_dict_count(MODEL *model)
 {
 unsigned ret=0;
 
-if (!model) return 0;
+if (!model || !model->dict) return 0;
        /* all words are born unrefd */
 if (model->dict) model->dict->stats.nonzero = 0;
 ret += dict_inc_ref_recurse(model->dict, model->forward);
@@ -1639,7 +1636,7 @@ STATIC unsigned long dict_inc_ref_recurse(DICT *dict, TREE *node)
 WordNum symbol;
 unsigned uu,ret=0;
 
-if (!node) return 0;
+if (!dict || !node) return 0;
 symbol = node->symbol;
 
 ret = dict_inc_ref(dict, symbol, 1, node->thevalue);
@@ -1652,7 +1649,7 @@ return ret;
 STATIC unsigned long dict_inc_ref_node(DICT *dict, TREE *node, WordNum symbol)
 {
 
-if (!dict || !node || symbol >= dict->size ) return 0;
+if (!dict || !node || symbol >= dict->mused ) return 0;
 
 if (node->thevalue <= 1) return dict_inc_ref(dict, symbol, 1, 1);
 else return dict_inc_ref(dict, symbol, 0, node->thevalue);
@@ -1662,7 +1659,7 @@ else return dict_inc_ref(dict, symbol, 0, node->thevalue);
 STATIC unsigned long dict_inc_ref(DICT *dict, WordNum symbol, unsigned nnode, unsigned valuesum)
 {
 
-if (!dict || symbol >= dict->size ) return 0;
+if (!dict || symbol >= dict->mused ) return 0;
 
 if (dict->entry[ symbol ].stats.nnode == 0 ) dict->stats.nonzero += 1;
 dict->entry[ symbol ].stats.nnode += nnode;
@@ -1676,7 +1673,7 @@ return dict->entry[ symbol ].stats.valuesum;
 STATIC unsigned long dict_dec_ref(DICT *dict, WordNum symbol, unsigned nnode, unsigned valuesum)
 {
 
-if (!dict || symbol >= dict->size ) return 0;
+if (!dict || symbol >= dict->mused ) return 0;
 
 dict->entry[ symbol ].stats.nnode -= nnode;
 if (dict->entry[ symbol ].stats.nnode == 0 ) dict->stats.nonzero -= 1;
@@ -1712,7 +1709,7 @@ STATIC DICT *new_dict(void)
 	}
     dict->msize = DICT_SIZE_INITIAL;
     format_dictslots(dict->entry, dict->msize);
-    dict->size = 0;
+    dict->mused = 0;
     dict->stats.nnode = 0;
     dict->stats.valuesum = 0;
 
@@ -1747,11 +1744,11 @@ STATIC void save_dict(FILE *fp, DICT *dict)
 {
     unsigned int iwrd;
 
-    fwrite(&dict->size, sizeof dict->size, 1, fp);
+    fwrite(&dict->mused, sizeof dict->mused, 1, fp);
     progress("Saving dictionary", 0, 1);
-    for(iwrd = 0; iwrd < dict->size; iwrd++) {
+    for(iwrd = 0; iwrd < dict->mused; iwrd++) {
 	save_word(fp, dict->entry[iwrd].string );
-	progress(NULL, iwrd, dict->size);
+	progress(NULL, iwrd, dict->mused);
     }
     progress(NULL, 1, 1);
     memstats.word_cnt = iwrd;
@@ -1772,7 +1769,7 @@ STATIC void load_dict(FILE *fp, DICT *dict)
 
 	/* Avoid a lot of resizing by pre-allocating size+INITSIZE items. */
     kuttje = fread(&size, sizeof size, 1, fp);
-    resize_dict(dict, dict->msize+size);
+    resize_dict(dict, dict->mused+size+2 );
     status("Load_dictSize=%u Initial_dictSize=%u\n", size, dict->msize);
     progress("Loading dictionary", 0, 1);
     for(iwrd = 0; iwrd < size; iwrd++) {
@@ -1780,6 +1777,8 @@ STATIC void load_dict(FILE *fp, DICT *dict)
 	progress(NULL, iwrd, size);
     }
     progress(NULL, 1, 1);
+	// resize_dict will sort the entries, hottest-first
+    resize_dict(dict, size + sqrt(size) / 2); // 20131011
     memstats.word_cnt = size;
 }
 
@@ -2007,7 +2006,7 @@ STRING str;
 if (!tree) return;
 
 sym = tree->symbol;
-if (sym < dict->size){
+if (sym < dict->mused){
 	str = dict->entry[sym].string ;
 	nnode = dict->entry[sym].stats.nnode;
 	valuesum = dict->entry[sym].stats.valuesum;
@@ -2380,7 +2379,7 @@ STATIC double symbol_weight(DICT *dict, WordNum symbol, int want_other)
 STRING alt;
 WordNum *np, altsym;
 
-if (!dict || symbol >= dict->size) return 0.0;
+if (!dict || symbol >= dict->mused) return 0.0;
 
 if (want_other) {
 	alt = word_dup_othercase(dict->entry[symbol].string);
@@ -2391,19 +2390,19 @@ else altsym = WORD_NIL;
 
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 2)
 fprintf(stderr, "Symbol %u/%u:%u ('%*.*s') %u/%llu\n"
-        , symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
+        , symbol, (unsigned)dict->mused, (unsigned)dict->stats.nonzero
 	, (int)dict->entry[symbol].string.length, (int)dict->entry[symbol].string.length, (int)dict->entry[symbol].string.word
 	, (unsigned)dict->entry[symbol].stats.valuesum
 	, (unsigned long long)dict->stats.valuesum
 	);
 if (altsym != WORD_NIL) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
-        , symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
+        , symbol, (unsigned)dict->mused, (unsigned)dict->stats.nonzero
 	, (int)dict->entry[altsym].string.length, (int)dict->entry[altsym].string.length, (int)dict->entry[altsym].string.word
 	, (unsigned)dict->entry[altsym].stats.valuesum
 	, (unsigned long long)dict->stats.valuesum
 	);
 #endif
-/*		, (double ) dict->entry[i].stats.nnode * dict->size / dict->stats.node */
+/*		, (double ) dict->entry[i].stats.nnode * dict->mused / dict->stats.node */
 
 if (altsym==WORD_NIL) {
 	/* this is to catch and ignore typos.
@@ -2528,7 +2527,7 @@ STATIC void learn_from_input(MODEL *model, struct sentence *words)
      *		We only learn from inputs which are long enough
      *		We need N+1 words to feed a N-ary model.
      */
-    if (words->size <= model->order) return;
+    if (words->mused <= model->order) return;
     stamp_max++;
 
 #if ALZHEIMER_FACTOR
@@ -2546,7 +2545,7 @@ STATIC void learn_from_input(MODEL *model, struct sentence *words)
      */
     initialize_context(model);
     model->context[0] = model->forward;
-    for(widx = 0; widx < words->size; widx++) {
+    for(widx = 0; widx < words->mused; widx++) {
 	/*
 	 *		Add the symbol to the model's dictionary if necessary, and then
 	 *		update the forward model accordingly.
@@ -2567,7 +2566,7 @@ STATIC void learn_from_input(MODEL *model, struct sentence *words)
      */
     initialize_context(model);
     model->context[0] = model->backward;
-    for(widx = words->size; widx-- > 0; ) {
+    for(widx = words->mused; widx-- > 0; ) {
 	/*
 	 *		Find the symbol in the model's dictionary, and then update
 	 *		the backward model accordingly.
@@ -2610,7 +2609,7 @@ STATIC void train(MODEL *model, char *filename)
     rewind(fp);
 
     if (!exercise) exercise = sentence_new();
-    else exercise->size = 0;
+    else exercise->mused = 0;
     
 
     progress("Training from file", 0, 1);
@@ -2654,8 +2653,8 @@ void show_dict(DICT *dict)
 fprintf(fp, "#Nnode\tnValue\tR(Nfrac/Vfrac)\tWord\t");
 fprintf(fp, "# TotStats= %llu %llu Words= %lu/%lu Nonzero=%lu\n"
 	, (unsigned long long) dict->stats.nnode, (unsigned long long) dict->stats.valuesum
-	, (unsigned long) dict->size, (unsigned long) dict->msize, (unsigned long) dict->stats.nonzero );
-    for(iwrd = 0; iwrd < dict->size; iwrd++) {
+	, (unsigned long) dict->mused, (unsigned long) dict->msize, (unsigned long) dict->stats.nonzero );
+    for(iwrd = 0; iwrd < dict->mused; iwrd++) {
 	    fprintf(fp, "%lu\t%lu\t(%6.4e / %6.4e)\t'%*.*s'"
 		, (unsigned long) dict->entry[iwrd].stats.nnode, (unsigned long) dict->entry[iwrd].stats.valuesum
 		, (double ) dict->entry[iwrd].stats.nnode * dict->stats.nonzero / dict->stats.nnode
@@ -2690,7 +2689,7 @@ void read_dict_from_ascii(DICT *dict, char *name)
 
     fp = fopen( name, "r");
     if (!fp) {
-	warn("read_dict", "Unable to open file");
+	warn("read_dict_from_ascii", "Unable to open file `%s'", name);
 	return;
     }
 
@@ -2706,7 +2705,7 @@ while (fgets(buff, sizeof buff, fp)) {
         word.type = word_classify(word);
         add_word_dodup(dict, word);
     }
-memstats.word_cnt = dict->size;
+memstats.word_cnt = dict->mused;
 
     fclose(fp);
 }
@@ -2973,7 +2972,7 @@ STATIC void make_words(char * src, struct sentence * target)
     static STRING period = {1,0, "." }  ;
     int state = 0; /* FIXME: this could be made static to allow for multi-line strings */
 
-    target->size = 0;
+    target->mused = 0;
 
     len = strlen(src);
     if (!len) return;
@@ -2981,9 +2980,9 @@ STATIC void make_words(char * src, struct sentence * target)
     for(pos=0; pos < len ; pos += chunk) {
 
 	chunk = tokenize(src+pos, &state);
-        if (!chunk) { /* maybe we should reset state here ... */ pos++; }
+        if (!chunk) { /* maybe we should reset state here ... */ pos++; continue; }
         if (chunk > STRLEN_MAX) {
-            if (!buffer_is_usable(src+pos,chunk)) continue; /* ignore large stretches of WS */
+            if (!buffer_is_usable(src+pos,chunk)) { continue; } /* ignore large stretches of WS */
             warn( "Make_words", "Truncated too long string(%u) at %s\n", (unsigned) chunk, src+pos);
             chunk = STRLEN_MAX;
             }
@@ -2993,19 +2992,19 @@ STATIC void make_words(char * src, struct sentence * target)
 	    add_word_to_sentence(target, word);
 	    }
 
-        if (pos+chunk >= len) break;
+        // if (pos+chunk >= len) break;
     }
 
     /*
      *		If the last word isn't punctuation, then add a full-stop character.
      */
-    if (target->size && myisalnum(target->entry[target->size-1].string.word[0])) {
+    if (target->mused && myisalnum(target->entry[target->mused-1].string.word[0])) {
 		add_word_to_sentence(target, period);
     }
-    else if (target->size
-		&& target->entry[target->size-1].string.length
-		 && !strchr(".!?", target->entry[target->size-1].string.word[ target->entry[target->size-1].string.length-1] )) {
-	target->entry[target->size-1].string = period;
+    else if (target->mused
+		&& target->entry[target->mused-1].string.length
+		 && !strchr(".!?", target->entry[target->mused-1].string.word[ target->entry[target->mused-1].string.length-1] )) {
+	target->entry[target->mused-1].string = period;
     }
 
     return;
@@ -3291,9 +3290,9 @@ return 0;
 STATIC void make_greeting(struct sentence *target)
 {
     // unsigned int iwrd;
-    // for(iwrd = 0; iwrd < target->size; iwrd++) free(target->entry[iwrd].string.word);
-    target->size = 0;
-    // if (glob_grt->size > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->size) ].string );
+    // for(iwrd = 0; iwrd < target->mused; iwrd++) free(target->entry[iwrd].string.word);
+    target->mused = 0;
+    // if (glob_grt->mused > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->mused) ].string );
 }
 
 void show_config(FILE *fp)
@@ -3401,7 +3400,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 {
 	fprintf(stderr, "\n%u %f N=%u:%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
 	, count, surprise
-	, (unsigned) zeresult->size, (unsigned int) strlen(output)
+	, (unsigned) zeresult->mused, (unsigned int) strlen(output)
 	, init_typ_fwd, init_val_fwd, init_val_rev
 	, output);
 }
@@ -3433,8 +3432,8 @@ STATIC bool dissimilar(struct sentence *one, struct sentence *two)
 {
     unsigned int iwrd;
 
-    if (one->size != two->size) return TRUE;
-    for(iwrd = 0; iwrd < one->size; iwrd++)
+    if (one->mused != two->mused) return TRUE;
+    for(iwrd = 0; iwrd < one->mused; iwrd++)
 	if (wordcmp(one->entry[iwrd].string , two->entry[iwrd].string ) ) return TRUE;
     return FALSE;
 }
@@ -3453,9 +3452,9 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
     unsigned rotor,echocount;
     unsigned other;
 
-	// fprintf(stderr, "Make_keywords: Old xdict=%u, src->size =%u\n", cross_dict_size, src->size);
-    if (!src->size) return;
-    cross_dict_size = sqrt(src->size);
+	// fprintf(stderr, "Make_keywords: Old xdict=%u, src->mused =%u\n", cross_dict_size, src->mused);
+    if (!src->mused) return;
+    cross_dict_size = sqrt(src->mused);
     if (cross_dict_size < CROSS_DICT_SIZE_MIN) cross_dict_size = CROSS_DICT_SIZE_MIN ;
     if (cross_dict_size > CROSS_DICT_SIZE_MAX) cross_dict_size = CROSS_DICT_SIZE_MAX ;
 
@@ -3468,7 +3467,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 #endif
     rotor = echocount = 0;
 
-    for(iwrd = 0; iwrd < src->size; iwrd++) {
+    for(iwrd = 0; iwrd < src->mused; iwrd++) {
 	/*
 	 *		Find the symbol ID of the word.  If it doesn't exist in
 	 *		the model, or if it begins with a non-alphanumeric
@@ -3481,7 +3480,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
         if (symbol == WORD_NIL) continue;
         // if (symbol == WORD_ERR) continue;
         // if (symbol == WORD_FIN) continue;
-        if (symbol >= model->dict->size) continue;
+        if (symbol >= model->dict->mused) continue;
 
 		/* we may or may not like frequent words */
         // if (model->dict->entry[symbol].stats.nnode > model->dict->stats.nnode / model->dict->stats.nonzero ) continue;
@@ -3490,7 +3489,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 	// if (symbol_weight(model->dict, symbol, 0) < STOP_WORD_TRESHOLD) continue;
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
-        if (canonsym >= model->dict->size) canonsym = symbol;
+        if (canonsym >= model->dict->mused) canonsym = symbol;
 	if (symbol_weight(model->dict, canonsym, 0) < STOP_WORD_TRESHOLD) continue;
 
 	for (other = 0; other < echocount; other++ ) {
@@ -3518,16 +3517,13 @@ STATIC struct sentence *one_reply(MODEL *model)
     WordNum symbol;
 
     if (!zereply) zereply = sentence_new();
-    else zereply->size = 0;
+    else zereply->mused = 0;
 
     /*
      *		Start off by making sure that the model's context is empty.
      */
     initialize_context(model);
     model->context[0] = model->forward;
-#if DONT_WANT_THIS
-    used_key = FALSE;
-#endif
 
     /*
      *		Generate the reply in the forward direction.
@@ -3554,7 +3550,7 @@ STATIC struct sentence *one_reply(MODEL *model)
      *		dictionary so that we can generate backwards to reach the
      *		beginning of the string.
      */
-    for(widx = MIN(zereply->size, 1+model->order); widx-- > 0; ) {
+    for(widx = MIN(zereply->mused, 1+model->order); widx-- > 0; ) {
 	symbol = find_word(model->dict, zereply->entry[ widx ].string );
 	update_context(model, symbol);
     }
@@ -3599,7 +3595,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
     STRING canonword;
     unsigned tweetsize=0;
 
-    if (sentence->size == 0) return -100000.0;
+    if (sentence->mused == 0) return -100000.0;
 
     initialize_context(model);
     model->context[0] = model->forward;
@@ -3609,7 +3605,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 #endif /* WANT_PARROT_CHECK */
 
     totcount = 0, entropy = 0.0;
-    for (widx = 0; widx < sentence->size; widx++) {
+    for (widx = 0; widx < sentence->mused; widx++) {
 	tweetsize += 1+sentence->entry[widx].string.length;
 
 	symbol = find_word(model->dict, sentence->entry[widx].string );
@@ -3618,7 +3614,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	*/
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
-        if (canonsym >= model->dict->size) canonsym = symbol;
+        if (canonsym >= model->dict->mused) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
 	if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update1;
 	probability = 0.0;
@@ -3682,12 +3678,12 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
     initialize_context(model);
     model->context[0] = model->backward;
 
-    for(widx = sentence->size; widx-- > 0; ) {
+    for(widx = sentence->mused; widx-- > 0; ) {
 	symbol = find_word(model->dict, sentence->entry[widx].string );
 
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
-        if (canonsym >= model->dict->size) canonsym = symbol;
+        if (canonsym >= model->dict->mused) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
 	if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update2;
         probability = 0.0;
@@ -3758,7 +3754,7 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 	/* extra penalty for sentences that don't start at <END> or don't stop at <END> */
 	/* extra penalty for sentences that don't start with a capitalized letter */
 	/* extra penalty for incomplete sentences */
-    widx = sentence->size;
+    widx = sentence->mused;
     if (widx && widx != INTENDED_REPLY_SIZE) {
 #if 1
 	if (widx > INTENDED_REPLY_SIZE) {
@@ -3800,20 +3796,20 @@ STATIC char *make_output(struct sentence *src)
     int begin;
 
 
-    if (src->size == 0) { return output_none; }
+    if (src->mused == 0) { return output_none; }
 	/* calculate the space we'll need.
 	** We assume one space between adjacent wordst plus a NUL at the end.
 	*/
     length = 1;
-    for(widx = 0; widx < src->size; widx++) length += 1+ src->entry[widx].string.length;
+    for(widx = 0; widx < src->mused; widx++) length += 1+ src->entry[widx].string.length;
     output = realloc(output, length);
     if (!output) {
 	error("make_output", "Unable to reallocate output.");
 	return output_none;
     }
 
-    tags = malloc(2+src->size);
-    if (tags) memset(tags, 0, src->size);
+    tags = malloc(2+src->mused);
+    if (tags) memset(tags, 0, src->mused);
 #define NO_SPACE_L 1
 #define NO_SPACE_R 2
 #define IS_SINGLE 4
@@ -3821,21 +3817,21 @@ STATIC char *make_output(struct sentence *src)
 #define IS_HYPHEN 16
 
 	/* do we want a white before or after the token at [widx] ? */
-    for(widx = 0; widx < src->size; widx++) {
+    for(widx = 0; widx < src->mused; widx++) {
 	if (!widx		|| dont_need_white_l(src->entry[widx].string)) tags[widx] |= NO_SPACE_L;
-	if (widx == src->size-1	|| dont_need_white_r(src->entry[widx].string)) tags[widx] |= NO_SPACE_R;
+	if (widx == src->mused-1	|| dont_need_white_r(src->entry[widx].string)) tags[widx] |= NO_SPACE_R;
 	if (src->entry[widx].string.length <= 1 && src->entry[widx].string.word[0] == '\'' ) { sqcnt++; tags[widx] |= IS_SINGLE; }
 	if (src->entry[widx].string.length <= 1 && src->entry[widx].string.word[0] == '"' ) { dqcnt++; tags[widx] |= IS_DOUBLE; }
 	if (src->entry[widx].string.length <= 1 && src->entry[widx].string.word[0] == '-' ) { hycnt++; tags[widx] |= IS_HYPHEN; }
 	}
 
 	/* First detect o'Hara and don't */
-    if (sqcnt >0) for(widx = 0; widx < src->size; widx++) {
+    if (sqcnt >0) for(widx = 0; widx < src->mused; widx++) {
 	if ( !(tags[widx] & IS_SINGLE)) continue;
 #if 0
 	 fprintf(stderr, "Single:"); dump_word(stderr, src->entry[widx].string);
 	if (widx) { fprintf(stderr, "left:"); dump_word(stderr, src->entry[widx-1].string); fputc('\n', stderr); }
-	if (widx <src->size-1) { fprintf(stderr, "Right:"); dump_word(stderr, src->entry[widx+1].string); fputc('\n', stderr); }
+	if (widx <src->mused-1) { fprintf(stderr, "Right:"); dump_word(stderr, src->entry[widx+1].string); fputc('\n', stderr); }
 #endif
 	/* if the word to the left is absent or 1char we dont want a white inbetween */
 	if (!widx || src->entry[widx-1].string.length <2) {
@@ -3845,7 +3841,7 @@ STATIC char *make_output(struct sentence *src)
 		sqcnt--;
 		}
 	/* if the word to the right is absent or 1char we dont want a white inbetween */
-	if (widx == src->size-1 || src->entry[widx+1].string.length <2) {
+	if (widx == src->mused-1 || src->entry[widx+1].string.length <2) {
 		tags[widx] |= NO_SPACE_L;
 		tags[widx] |= NO_SPACE_R;
 		tags[widx] &= ~IS_SINGLE;
@@ -3853,11 +3849,11 @@ STATIC char *make_output(struct sentence *src)
 	}
 
 	/* Try to match pairs of single quotes. This is rude: we don't care about nesting. */
-    if (sqcnt >1) for(begin= -1,widx = 0; widx < src->size; widx++) {
+    if (sqcnt >1) for(begin= -1,widx = 0; widx < src->mused; widx++) {
 		if (!(tags[widx] & IS_SINGLE)) continue;
 		if (begin < 0) {begin = widx; continue; }
 		tags[begin] |= NO_SPACE_R; tags[begin] &= ~NO_SPACE_L; if (begin) tags[begin-1] &= ~NO_SPACE_R;
-		tags[widx] |= NO_SPACE_L; tags[widx] &= ~NO_SPACE_R; if (begin < src->size-1) tags[begin+1] &= ~NO_SPACE_L;
+		tags[widx] |= NO_SPACE_L; tags[widx] &= ~NO_SPACE_R; if (begin < src->mused-1) tags[begin+1] &= ~NO_SPACE_L;
 		tags[begin] &= ~IS_SINGLE;
 		tags[widx] &= ~IS_SINGLE;
 		begin = -1;
@@ -3865,7 +3861,7 @@ STATIC char *make_output(struct sentence *src)
 		}
 
 	/* idem: double quotes */
-    if (dqcnt >1) for(begin= -1,widx = 0; widx < src->size; widx++) {
+    if (dqcnt >1) for(begin= -1,widx = 0; widx < src->mused; widx++) {
 		if (!(tags[widx] & IS_DOUBLE)) continue;
 		if (begin < 0) {begin = widx; continue; }
 		tags[begin] |= NO_SPACE_R;
@@ -3876,7 +3872,7 @@ STATIC char *make_output(struct sentence *src)
 		dqcnt -= 2;
 		}
 	/* Idem: hyphens  */
-    if (hycnt >1) for(begin= -1,widx = 0; widx < src->size; widx++) {
+    if (hycnt >1) for(begin= -1,widx = 0; widx < src->mused; widx++) {
 		if (!(tags[widx] & IS_HYPHEN)) continue;
 		if (begin < 0) {begin = widx; continue; }
 		tags[begin] |= NO_SPACE_R;
@@ -3890,14 +3886,14 @@ STATIC char *make_output(struct sentence *src)
 	** if there are any unmached quotes or hyphens left,
 	**  they don't want whitespace around them. Rude, again.
 	*/
-    if (sqcnt+dqcnt+hycnt) for(widx = 0; widx < src->size; widx++) {
+    if (sqcnt+dqcnt+hycnt) for(widx = 0; widx < src->mused; widx++) {
 		if (!(tags[widx] & (IS_SINGLE | IS_DOUBLE | IS_HYPHEN))) continue;
 		tags[widx] |= NO_SPACE_L;
 		tags[widx] |= NO_SPACE_R;
 		}
 
     length = 0;
-    for(widx = 0; widx < src->size; widx++) {
+    for(widx = 0; widx < src->mused; widx++) {
 	if (!widx) {;}
 	else if (tags[widx] & NO_SPACE_L ) {;}
 	else if (tags[widx-1] & NO_SPACE_R) {;}
@@ -3987,15 +3983,15 @@ STATIC WordNum seed(MODEL *model)
 
     WordNum symbol;
 	symbol = crosstab_get(glob_crosstab, urnd (cross_dict_size) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/2)) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/4)) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/8)) );
-	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/16)) );
-	if (symbol >= model->dict->size) symbol
+	if (symbol >= model->dict->mused) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/2)) );
+	if (symbol >= model->dict->mused) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/4)) );
+	if (symbol >= model->dict->mused) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/8)) );
+	if (symbol >= model->dict->mused) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/16)) );
+	if (symbol >= model->dict->mused) symbol
 		 = (model->context[0]->branch) 
 		? model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol
 		: WORD_NIL;
-	if (symbol >= model->dict->size) symbol = urnd(model->dict->size);
+	if (symbol >= model->dict->mused) symbol = urnd(model->dict->mused);
 #if 0
 	else {
 		STRING altword;
@@ -4493,7 +4489,7 @@ void change_personality(struct sentence *command, unsigned int position, MODEL *
 	last_directory = strdup(glob_directory);
     }
 
-    if ( !command || position+2 >= command->size ) {
+    if ( !command || position+2 >= command->mused ) {
 	/* no dir set, so we leave it to whatever was set above */
     } else {
         glob_directory = realloc(glob_directory, command->entry[position+2].string.length+1);
@@ -4516,7 +4512,7 @@ STATIC void free_words(DICT *words)
     if ( !words ) return;
 
     if (words->entry != NULL)
-	for(iwrd = 0; iwrd < words->size; iwrd++) free_string(words->entry[iwrd].string);
+	for(iwrd = 0; iwrd < words->mused; iwrd++) free_string(words->entry[iwrd].string);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4557,7 +4553,7 @@ unsigned hash,slot;
  * If the seeked element is not present, *np will point
  * to the place where it is to be inserted. (the slot after the last used item.)
  */
-if (dict->size >= dict->msize && grow_dict(dict)) return NULL;
+if (dict->mused >= dict->msize && grow_dict(dict)) return NULL;
 
 hash = hash_word(word);
 slot = hash % dict->msize;
@@ -4576,7 +4572,7 @@ STATIC int grow_dict(DICT *dict)
 {
     unsigned newsize;
 
-    newsize = dict->size ? dict->size + sqrt(1+dict->size) : DICT_SIZE_INITIAL;
+    newsize = dict->mused ? dict->mused + sqrt(1+dict->mused) : DICT_SIZE_INITIAL;
     return resize_dict(dict, newsize);
 }
 
@@ -4587,7 +4583,7 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
     WordNum item,slot;
 
     old = dict->entry ;
-    while (newsize < dict->size) newsize += 2;
+    while (newsize < dict->mused) newsize += 2;
     dict->entry = malloc (newsize * sizeof *dict->entry);
     if (!dict->entry) {
 	error("resize_dict", "Unable to allocate dict->slots.");
@@ -4597,7 +4593,12 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
     dict->msize = newsize;
     format_dictslots(dict->entry, dict->msize);
 
-    for (item =0 ; item < dict->size; item++) {
+	/* When we get here, dict->entry contains the new slots (with empty hashtable)
+	** and *old* contains the old entries (including hashtable)
+	** dict->msize contains the new size, and dict->mused the number of valid elements.
+	** item is the *index* in both the old and new table.
+	*/
+    for (item =0 ; item < dict->mused; item++) {
 		WordNum *np;
 #if WANT_STORE_HASH
 		slot = old[item].whash % dict->msize;
@@ -4606,10 +4607,16 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
 		hash = hash_word(old[item].string);
 		slot = hash % dict->msize;
 #endif /* WANT_STORE_HASH */
+
+			/* Find insertion point */
 		for( np = &dict->entry[slot].tabl; np; np = &dict->entry[*np].link ) {
 			if (*np == WORD_NIL) break;
+			if (dict->entry[*np].stats.valuesum <= old[item].stats.valuesum) break; /* 20131011 : keep LL sorted */
 			}
+
+		dict->entry[item].link = *np;	/* 20131011 */
 		*np = item;
+
 #if WANT_STORE_HASH
 		dict->entry[item].whash = old[item].whash;
 #endif /* WANT_STORE_HASH */
@@ -4625,7 +4632,7 @@ STATIC struct sentence * sentence_new(void)
 {
 struct sentence *new;
 new = malloc (sizeof *new);
-new->size = new->msize = 0;
+new->mused = new->msize = 0;
 new->entry= NULL;
 return new;
 }
@@ -4633,7 +4640,7 @@ STATIC int sentence_grow(struct sentence *ptr)
 {
     unsigned newsize;
 
-    newsize = ptr->size ? ptr->size + (1+ptr->size)/2 : 64;
+    newsize = ptr->mused ? ptr->mused + (1+ptr->mused)/2 : 64;
     return sentence_resize(ptr, newsize);
 }
 
@@ -4657,7 +4664,7 @@ STATIC int sentence_resize(struct sentence *ptr, unsigned newsize)
 STATIC void sentence_reverse(struct sentence *ptr)
 {
     unsigned bot,top;
-    for (bot = 0, top = ptr->size? ptr->size-1: 0; bot < top; bot++, top--) {
+    for (bot = 0, top = ptr->mused? ptr->mused-1: 0; bot < top; bot++, top--) {
 	STRING tmp ;
 	tmp = ptr->entry[bot].string;
 	ptr->entry[bot].string = ptr->entry[top].string;
@@ -4835,7 +4842,7 @@ return count;
 **	-1 := this above interval (but wrapped)
 ** The two impossible cases return -2.
 */
-static int check_interval(Stamp min, Stamp max, Stamp this)
+STATIC int check_interval(Stamp min, Stamp max, Stamp this)
 {
 switch (4 *(max >= min)
 	+2 *(this >= min)
@@ -4856,7 +4863,6 @@ switch (4 *(max >= min)
 return -2;
 }
 
-
 STATIC void dump_word(FILE *fp, STRING word)
 {
 
@@ -4876,7 +4882,7 @@ STATIC size_t symbol_format_callback(char *buff, WordNum sym)
 {
 DICT *this_dict = glob_model->dict;
 if ( !this_dict ) return sprintf(buff, "<NoDict>" );
-else if (sym >= this_dict->size) return sprintf(buff, "<%u>", sym );
+else if (sym >= this_dict->mused) return sprintf(buff, "<%u>", sym );
 else return word_format(buff, this_dict->entry[sym].string );
 }
 
@@ -4884,7 +4890,7 @@ STATIC double symbol_weight_callback(WordNum sym)
 {
 DICT *this_dict = glob_model->dict;
 if ( !this_dict ) return 0.0;
-else if (sym >= this_dict->size) return -1.0;
+else if (sym >= this_dict->mused) return -1.0;
 else return symbol_weight(this_dict, sym, 0 );
 }
 #endif
@@ -5124,3 +5130,8 @@ return result;
 /* Eof */
 
 
+
+int do_check_interval(Stamp min, Stamp max, Stamp this)
+{
+return check_interval(min, max, this);
+}
