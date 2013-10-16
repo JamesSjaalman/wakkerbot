@@ -431,7 +431,7 @@ struct	dictslot {
 	};
 
 typedef struct {
-    DictSize mused;
+    DictSize size;
     DictSize msize;
     struct dictstat	{
 		UsageSum nnode;
@@ -505,6 +505,9 @@ unsigned parrot_hash[WANT_PARROT_CHECK] = {0,};
 unsigned parrot_hash2[WANT_PARROT_CHECK+1] = {0,};
 #endif /* WANT_PARROT_CHECK */
 
+#if DONT_WANT_THIS
+static bool used_key;
+#endif
 static MODEL *glob_model = NULL;
 	/* Refers to a dup'd fd for the brainfile, used for locking */
 static int glob_fd = -1;
@@ -931,6 +934,7 @@ void megahal_cleanup(void)
 {
     save_model("megahal.brn", glob_model);
     show_memstat("Cleanup" );
+    exithal();
 }
 
 
@@ -1386,7 +1390,7 @@ if (!np) return 0; /* WP: should be WORD_NIL */
 
 if (*np == WORD_NIL) {
 	STRING this;
-	*np = dict->mused++;
+	*np = dict->size++;
 	this = new_string(word.word, word.length);
 	dict->entry[*np].string = this;
 #if WANT_STORE_HASH
@@ -1434,7 +1438,7 @@ dict->entry[this].string.word = NULL;
 dict->entry[this].string.length = 0;
 
 	/* done deleting. now locate the top element */
-top = --dict->mused;
+top = --dict->size;
 if (!top || top == this) return ; /* last man standing */
 
 np = dict_hnd(dict, dict->entry[top].string);
@@ -1464,13 +1468,13 @@ dict->entry[top].string.length = 0;
 dict->entry[top].whash = 0;
 #endif /* WANT_STORE_HASH */
 
-if (!dict->mused || dict->mused <= dict->msize - DICT_SIZE_SHRINK) {
+if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
 
 #if (WANT_DUMP_DELETE_DICT >= 1)
     status("dict(%llu:%llu/%llu) will be shrunk: %u/%u\n"
 	, dict->stats.valuesum, dict->stats.nnode, dict->stats.nonzero, dict->branch, dict->msize);
 #endif
-    resize_dict(dict, dict->mused);
+    resize_dict(dict, dict->size);
     }
 return ;
 }
@@ -1553,7 +1557,7 @@ STATIC void empty_dict(DICT *dict)
     dict->stats.valuesum = 0;
     dict->stats.nnode = 0;
     dict->stats.nonzero = 0;
-    dict->mused = 0;
+    dict->size = 0;
     resize_dict(dict, DICT_SIZE_INITIAL);
 }
 
@@ -1622,7 +1626,7 @@ STATIC unsigned long set_dict_count(MODEL *model)
 {
 unsigned ret=0;
 
-if (!model || !model->dict) return 0;
+if (!model) return 0;
        /* all words are born unrefd */
 if (model->dict) model->dict->stats.nonzero = 0;
 ret += dict_inc_ref_recurse(model->dict, model->forward);
@@ -1636,7 +1640,7 @@ STATIC unsigned long dict_inc_ref_recurse(DICT *dict, TREE *node)
 WordNum symbol;
 unsigned uu,ret=0;
 
-if (!dict || !node) return 0;
+if (!node) return 0;
 symbol = node->symbol;
 
 ret = dict_inc_ref(dict, symbol, 1, node->thevalue);
@@ -1649,7 +1653,7 @@ return ret;
 STATIC unsigned long dict_inc_ref_node(DICT *dict, TREE *node, WordNum symbol)
 {
 
-if (!dict || !node || symbol >= dict->mused ) return 0;
+if (!dict || !node || symbol >= dict->size ) return 0;
 
 if (node->thevalue <= 1) return dict_inc_ref(dict, symbol, 1, 1);
 else return dict_inc_ref(dict, symbol, 0, node->thevalue);
@@ -1659,7 +1663,7 @@ else return dict_inc_ref(dict, symbol, 0, node->thevalue);
 STATIC unsigned long dict_inc_ref(DICT *dict, WordNum symbol, unsigned nnode, unsigned valuesum)
 {
 
-if (!dict || symbol >= dict->mused ) return 0;
+if (!dict || symbol >= dict->size ) return 0;
 
 if (dict->entry[ symbol ].stats.nnode == 0 ) dict->stats.nonzero += 1;
 dict->entry[ symbol ].stats.nnode += nnode;
@@ -1673,7 +1677,7 @@ return dict->entry[ symbol ].stats.valuesum;
 STATIC unsigned long dict_dec_ref(DICT *dict, WordNum symbol, unsigned nnode, unsigned valuesum)
 {
 
-if (!dict || symbol >= dict->mused ) return 0;
+if (!dict || symbol >= dict->size ) return 0;
 
 dict->entry[ symbol ].stats.nnode -= nnode;
 if (dict->entry[ symbol ].stats.nnode == 0 ) dict->stats.nonzero -= 1;
@@ -1709,7 +1713,7 @@ STATIC DICT *new_dict(void)
 	}
     dict->msize = DICT_SIZE_INITIAL;
     format_dictslots(dict->entry, dict->msize);
-    dict->mused = 0;
+    dict->size = 0;
     dict->stats.nnode = 0;
     dict->stats.valuesum = 0;
 
@@ -1744,11 +1748,11 @@ STATIC void save_dict(FILE *fp, DICT *dict)
 {
     unsigned int iwrd;
 
-    fwrite(&dict->mused, sizeof dict->mused, 1, fp);
+    fwrite(&dict->size, sizeof dict->size, 1, fp);
     progress("Saving dictionary", 0, 1);
-    for(iwrd = 0; iwrd < dict->mused; iwrd++) {
+    for(iwrd = 0; iwrd < dict->size; iwrd++) {
 	save_word(fp, dict->entry[iwrd].string );
-	progress(NULL, iwrd, dict->mused);
+	progress(NULL, iwrd, dict->size);
     }
     progress(NULL, 1, 1);
     memstats.word_cnt = iwrd;
@@ -1769,7 +1773,8 @@ STATIC void load_dict(FILE *fp, DICT *dict)
 
 	/* Avoid a lot of resizing by pre-allocating size+INITSIZE items. */
     kuttje = fread(&size, sizeof size, 1, fp);
-    resize_dict(dict, dict->mused+size+2 );
+    // resize_dict(dict, dict->msize+size + sqrt(size) / 2); // 20131011
+    resize_dict(dict, dict->msize+size );
     status("Load_dictSize=%u Initial_dictSize=%u\n", size, dict->msize);
     progress("Loading dictionary", 0, 1);
     for(iwrd = 0; iwrd < size; iwrd++) {
@@ -1777,8 +1782,6 @@ STATIC void load_dict(FILE *fp, DICT *dict)
 	progress(NULL, iwrd, size);
     }
     progress(NULL, 1, 1);
-	// resize_dict will sort the entries, hottest-first
-    resize_dict(dict, size + sqrt(size) / 2); // 20131011
     memstats.word_cnt = size;
 }
 
@@ -2006,7 +2009,7 @@ STRING str;
 if (!tree) return;
 
 sym = tree->symbol;
-if (sym < dict->mused){
+if (sym < dict->size){
 	str = dict->entry[sym].string ;
 	nnode = dict->entry[sym].stats.nnode;
 	valuesum = dict->entry[sym].stats.valuesum;
@@ -2293,23 +2296,29 @@ return 0;
 }
 
 #if 1
-/* NOTE: quicksort is probably a bad choice here, since the childnodes are "almost ordered",
+/* NOTE: quicksort is a bad choice here, since the childnodes are "almost ordered",
  * The sorting does not consume enough CPU to justify a mergesort or insertion sort variant.
- * (qsort ate 10% when training, most of it in the compare function)
- * This is a "one pass bubblesort"; it will /eventually/ get the array sorted.
- * Having the array sorted is not that important: babble() will need only a few steps
- * more on an unsorted array.
- * treeslots_cmp(left,right) returns positive if left < right.
+ * (when training, qsort ate 10% CPU, most of it in the compare function)
+ * This is a "one pass bubblesort":
+ * It will /eventually/ get the array sorted.
+ * Having the array sorted is not that important: babble() may need only a few steps
+ * extra on an unsorted array.
+ * treeslots_cmp(left,right) returns positive if left < right (which is the intended order)
+ * NOTE 2013-10-14 we start at the top of the array, since that is where the new entries emerge.
  */
 STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
 {
 unsigned idx;
+#if SORT_UP_WOULD_BE_OPTIMAL
 for (idx = 1; idx < count; idx++) {
+#else
+for (idx = count; --idx > 0; ) {
+#endif
 	struct treeslot tmp;
 	if (treeslots_cmp( &slots[idx-1], &slots[idx]) <= 0) continue;
-	tmp = slots[idx-1];
-	slots[idx-1] = slots[idx];
-	slots[idx] = tmp;
+	tmp = slots[idx];
+	slots[idx] = slots[idx-1];
+	slots[idx-1] = tmp;
 	}
 }
 
@@ -2334,15 +2343,15 @@ unsigned slot;
 
 if (!node->msize) return NULL;
 slot = symbol % node->msize;
-for (ip = &node->children[ slot ].tabl; *ip != CHILD_NIL; ip = &node->children[ slot ].link ) {
-	slot = *ip;
+for (ip = &node->children[ slot ].tabl; *ip != CHILD_NIL; ip = &node->children[ *ip ].link ) {
 #if WANT_MAXIMAL_PARANOIA
-	if (!node->children[ slot ].ptr) {
+	slot = *ip;
+	if (!node->children[ *ip ].ptr) {
 		warn ( "Node_hnd", "empty child looking for %u\n", symbol);
 		continue;
 		}
 #endif
-	if (symbol == node->children[ slot ].ptr->symbol) return ip;
+	if (symbol == node->children[ *ip ].ptr->symbol) return ip;
 	}
 return ip;
 }
@@ -2379,7 +2388,7 @@ STATIC double symbol_weight(DICT *dict, WordNum symbol, int want_other)
 STRING alt;
 WordNum *np, altsym;
 
-if (!dict || symbol >= dict->mused) return 0.0;
+if (!dict || symbol >= dict->size) return 0.0;
 
 if (want_other) {
 	alt = word_dup_othercase(dict->entry[symbol].string);
@@ -2390,19 +2399,19 @@ else altsym = WORD_NIL;
 
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 2)
 fprintf(stderr, "Symbol %u/%u:%u ('%*.*s') %u/%llu\n"
-        , symbol, (unsigned)dict->mused, (unsigned)dict->stats.nonzero
+        , symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
 	, (int)dict->entry[symbol].string.length, (int)dict->entry[symbol].string.length, (int)dict->entry[symbol].string.word
 	, (unsigned)dict->entry[symbol].stats.valuesum
 	, (unsigned long long)dict->stats.valuesum
 	);
 if (altsym != WORD_NIL) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
-        , symbol, (unsigned)dict->mused, (unsigned)dict->stats.nonzero
+        , symbol, (unsigned)dict->size, (unsigned)dict->stats.nonzero
 	, (int)dict->entry[altsym].string.length, (int)dict->entry[altsym].string.length, (int)dict->entry[altsym].string.word
 	, (unsigned)dict->entry[altsym].stats.valuesum
 	, (unsigned long long)dict->stats.valuesum
 	);
 #endif
-/*		, (double ) dict->entry[i].stats.nnode * dict->mused / dict->stats.node */
+/*		, (double ) dict->entry[i].stats.nnode * dict->size / dict->stats.node */
 
 if (altsym==WORD_NIL) {
 	/* this is to catch and ignore typos.
@@ -2653,8 +2662,8 @@ void show_dict(DICT *dict)
 fprintf(fp, "#Nnode\tnValue\tR(Nfrac/Vfrac)\tWord\t");
 fprintf(fp, "# TotStats= %llu %llu Words= %lu/%lu Nonzero=%lu\n"
 	, (unsigned long long) dict->stats.nnode, (unsigned long long) dict->stats.valuesum
-	, (unsigned long) dict->mused, (unsigned long) dict->msize, (unsigned long) dict->stats.nonzero );
-    for(iwrd = 0; iwrd < dict->mused; iwrd++) {
+	, (unsigned long) dict->size, (unsigned long) dict->msize, (unsigned long) dict->stats.nonzero );
+    for(iwrd = 0; iwrd < dict->size; iwrd++) {
 	    fprintf(fp, "%lu\t%lu\t(%6.4e / %6.4e)\t'%*.*s'"
 		, (unsigned long) dict->entry[iwrd].stats.nnode, (unsigned long) dict->entry[iwrd].stats.valuesum
 		, (double ) dict->entry[iwrd].stats.nnode * dict->stats.nonzero / dict->stats.nnode
@@ -2705,7 +2714,7 @@ while (fgets(buff, sizeof buff, fp)) {
         word.type = word_classify(word);
         add_word_dodup(dict, word);
     }
-memstats.word_cnt = dict->mused;
+memstats.word_cnt = dict->size;
 
     fclose(fp);
 }
@@ -3452,7 +3461,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
     unsigned rotor,echocount;
     unsigned other;
 
-	// fprintf(stderr, "Make_keywords: Old xdict=%u, src->mused =%u\n", cross_dict_size, src->mused);
+	fprintf(stderr, "Make_keywords: Old xdict=%u, src->mused =%u\n", cross_dict_size, src->mused);
     if (!src->mused) return;
     cross_dict_size = sqrt(src->mused);
     if (cross_dict_size < CROSS_DICT_SIZE_MIN) cross_dict_size = CROSS_DICT_SIZE_MIN ;
@@ -3480,7 +3489,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
         if (symbol == WORD_NIL) continue;
         // if (symbol == WORD_ERR) continue;
         // if (symbol == WORD_FIN) continue;
-        if (symbol >= model->dict->mused) continue;
+        if (symbol >= model->dict->size) continue;
 
 		/* we may or may not like frequent words */
         // if (model->dict->entry[symbol].stats.nnode > model->dict->stats.nnode / model->dict->stats.nonzero ) continue;
@@ -3489,7 +3498,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 	// if (symbol_weight(model->dict, symbol, 0) < STOP_WORD_TRESHOLD) continue;
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
-        if (canonsym >= model->dict->mused) canonsym = symbol;
+        if (canonsym >= model->dict->size) canonsym = symbol;
 	if (symbol_weight(model->dict, canonsym, 0) < STOP_WORD_TRESHOLD) continue;
 
 	for (other = 0; other < echocount; other++ ) {
@@ -3524,6 +3533,9 @@ STATIC struct sentence *one_reply(MODEL *model)
      */
     initialize_context(model);
     model->context[0] = model->forward;
+#if DONT_WANT_THIS
+    used_key = FALSE;
+#endif
 
     /*
      *		Generate the reply in the forward direction.
@@ -3614,7 +3626,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	*/
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
-        if (canonsym >= model->dict->mused) canonsym = symbol;
+        if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
 	if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update1;
 	probability = 0.0;
@@ -3683,7 +3695,7 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
 
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
-        if (canonsym >= model->dict->mused) canonsym = symbol;
+        if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
 	if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update2;
         probability = 0.0;
@@ -3983,15 +3995,15 @@ STATIC WordNum seed(MODEL *model)
 
     WordNum symbol;
 	symbol = crosstab_get(glob_crosstab, urnd (cross_dict_size) );
-	if (symbol >= model->dict->mused) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/2)) );
-	if (symbol >= model->dict->mused) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/4)) );
-	if (symbol >= model->dict->mused) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/8)) );
-	if (symbol >= model->dict->mused) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/16)) );
-	if (symbol >= model->dict->mused) symbol
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/2)) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/4)) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/8)) );
+	if (symbol >= model->dict->size) symbol = crosstab_get(glob_crosstab, urnd( (cross_dict_size/16)) );
+	if (symbol >= model->dict->size) symbol
 		 = (model->context[0]->branch) 
 		? model->context[0]->children[ urnd(model->context[0]->branch) ].ptr->symbol
 		: WORD_NIL;
-	if (symbol >= model->dict->mused) symbol = urnd(model->dict->mused);
+	if (symbol >= model->dict->size) symbol = urnd(model->dict->size);
 #if 0
 	else {
 		STRING altword;
@@ -4512,7 +4524,7 @@ STATIC void free_words(DICT *words)
     if ( !words ) return;
 
     if (words->entry != NULL)
-	for(iwrd = 0; iwrd < words->mused; iwrd++) free_string(words->entry[iwrd].string);
+	for(iwrd = 0; iwrd < words->size; iwrd++) free_string(words->entry[iwrd].string);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4553,7 +4565,7 @@ unsigned hash,slot;
  * If the seeked element is not present, *np will point
  * to the place where it is to be inserted. (the slot after the last used item.)
  */
-if (dict->mused >= dict->msize && grow_dict(dict)) return NULL;
+if (dict->size >= dict->msize && grow_dict(dict)) return NULL;
 
 hash = hash_word(word);
 slot = hash % dict->msize;
@@ -4572,7 +4584,7 @@ STATIC int grow_dict(DICT *dict)
 {
     unsigned newsize;
 
-    newsize = dict->mused ? dict->mused + sqrt(1+dict->mused) : DICT_SIZE_INITIAL;
+    newsize = dict->size ? dict->size + sqrt(1+dict->size) : DICT_SIZE_INITIAL;
     return resize_dict(dict, newsize);
 }
 
@@ -4583,7 +4595,7 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
     WordNum item,slot;
 
     old = dict->entry ;
-    while (newsize < dict->mused) newsize += 2;
+    while (newsize < dict->size) newsize += 2;
     dict->entry = malloc (newsize * sizeof *dict->entry);
     if (!dict->entry) {
 	error("resize_dict", "Unable to allocate dict->slots.");
@@ -4595,10 +4607,10 @@ STATIC int resize_dict(DICT *dict, unsigned newsize)
 
 	/* When we get here, dict->entry contains the new slots (with empty hashtable)
 	** and *old* contains the old entries (including hashtable)
-	** dict->msize contains the new size, and dict->mused the number of valid elements.
+	** dict->msize contains the new size, and dict->size the number of valid elements.
 	** item is the *index* in both the old and new table.
 	*/
-    for (item =0 ; item < dict->mused; item++) {
+    for (item =0 ; item < dict->size; item++) {
 		WordNum *np;
 #if WANT_STORE_HASH
 		slot = old[item].whash % dict->msize;
@@ -4882,7 +4894,7 @@ STATIC size_t symbol_format_callback(char *buff, WordNum sym)
 {
 DICT *this_dict = glob_model->dict;
 if ( !this_dict ) return sprintf(buff, "<NoDict>" );
-else if (sym >= this_dict->mused) return sprintf(buff, "<%u>", sym );
+else if (sym >= this_dict->size) return sprintf(buff, "<%u>", sym );
 else return word_format(buff, this_dict->entry[sym].string );
 }
 
@@ -4890,7 +4902,7 @@ STATIC double symbol_weight_callback(WordNum sym)
 {
 DICT *this_dict = glob_model->dict;
 if ( !this_dict ) return 0.0;
-else if (sym >= this_dict->mused) return -1.0;
+else if (sym >= this_dict->size) return -1.0;
 else return symbol_weight(this_dict, sym, 0 );
 }
 #endif
