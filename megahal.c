@@ -710,6 +710,7 @@ STATIC size_t decode_word(char * buff, STRING src, int type );
 struct sentence {
 	unsigned mused;
 	unsigned msize;
+	unsigned kwhit;
 	struct	{
 		STRING string;
 		} *entry;
@@ -2218,8 +2219,10 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
     if (tree->children && tree->msize) format_treeslots(tree->children, tree->msize);
 
 #if WANT_DUMP_REHASH_TREE
-	fprintf(stderr, "Old=%p:%u New=%p:%u Tree_resize(%u/%u) %u\n"
-	, (void*) old, (void*) tree->children, newsize, tree->branch,  tree->msize);
+	fprintf(stderr, "Old=%p:%u New=%p:%u Tree_resize(%u/%u)\n"
+	, (void*) old, oldsize
+	, (void*) tree->children, newsize
+	, tree->branch,  tree->msize);
 #endif /* WANT_DUMP_REHASH_TREE */
 
 /* Now rebuild the hash table.
@@ -3029,8 +3032,8 @@ STATIC void make_words(char * src, struct sentence * target)
  * Multiple stretches of .,!? are kept intact, multiple stretches of
  * other non alphanumerc tokens (@#$%^&*) as well.
  * Brackets and braces are always chopped up to 1-character tokens.
- * Quoted strings are not respected, but broken up into seperate tokens.
- * The quotes are treated as seperate tokens too.
+ * Quoted strings are not respected, but broken up into separate tokens.
+ * The quotes are treated as separate tokens too.
  */
 #define T_INIT 0
 #define T_ANY 1
@@ -3085,11 +3088,10 @@ STATIC size_t tokenize(char *str, int *sp)
         break;
     case T_AFKODOT: /* A.B. */
         if (myisalpha(str[pos]) ) { *sp = T_AFKO; pos++; continue; }
-        *sp = T_INIT; return pos >=3? pos: pos -2;
+        *sp = T_INIT; return pos >= 3 ? pos : pos -2;
         break;
     case T_AFKO: /* word.A.B */
 	if (str[pos] == '.') { *sp = T_AFKODOT; pos++; continue; }
-	/* if (myisalpha(str[pos]) ) { pos++; continue; }*/
 	if (myisalpha(str[pos]) ) { *sp = T_INIT; return pos - 2; }
 	*sp = T_INIT; return pos-1;
         break;
@@ -3132,7 +3134,7 @@ STATIC size_t tokenize(char *str, int *sp)
         }
     }
     /* This is ugly. Depending on the state,
-    ** we need to know how many lookahead chars we took */
+    ** we need to know how many lookahead chars we consumed */
     switch (*sp) {
     case T_INIT: break;
     case T_ANY: break;
@@ -3407,9 +3409,9 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	output = make_output(zeresult);
 #if WANT_DUMP_ALL_REPLIES
 {
-	fprintf(stderr, "\n%u %f N=%u:%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
+	fprintf(stderr, "\n%u %f N=%u:%u/%u (Typ=%d Fwd=%f Rev=%f):\n\t%s\n"
 	, count, surprise
-	, (unsigned) zeresult->mused, (unsigned int) strlen(output)
+	, (unsigned) zeresult->mused, (unsigned int) strlen(output), zeresult->kwhit
 	, init_typ_fwd, init_val_fwd, init_val_rev
 	, output);
 }
@@ -3600,7 +3602,7 @@ STATIC struct sentence *one_reply(MODEL *model)
  */
 STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 {
-    unsigned int widx, iord, count, totcount ;
+    unsigned int widx, iord, count, totcount, kwhit;
     WordNum symbol, canonsym;
     double gfrac, kfrac, weight,term,probability, entropy;
     TREE *node=NULL;
@@ -3616,7 +3618,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	PARROT_RESURRECT(0);
 #endif /* WANT_PARROT_CHECK */
 
-    totcount = 0, entropy = 0.0;
+    kwhit = totcount = 0, entropy = 0.0;
     for (widx = 0; widx < sentence->mused; widx++) {
 	tweetsize += 1+sentence->entry[widx].string.length;
 
@@ -3636,9 +3638,10 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
             if ( !model->context[iord] ) continue;
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
-            count++;
+            if (!count++) kwhit++;
 		/* too unique: don't count them */
-            if (node->thevalue < 2) continue; 
+            /* if (node->thevalue < 2) continue; 20131207 */
+            if (node->thevalue < 1) continue; 
             probability += (0.1+node->thevalue) / (0.1 + model->context[iord]->childsum);
             }
         if (!count) goto update1;
@@ -3657,7 +3660,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 fprintf(stderr, "#### '%*.*s'\n"
 "Valsum=%9lu/%9llu Nnode=%9lu/%9llu\n"
 "Gfrac=%6.4e Kfrac=%6.4e W=%6.4e\n"
-"Prob=%6.4e/Cnt=%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
+"Prob=%6.4e/Cnt=%u/%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
         , (int) sentence->entry[widx].string.length
         , (int) sentence->entry[widx].string.length
         , sentence->entry[widx].string.word
@@ -3666,7 +3669,7 @@ fprintf(stderr, "#### '%*.*s'\n"
         , (unsigned long) model->dict->entry[symbol].stats.nnode
         , (unsigned long long) model->dict->stats.nnode
         , gfrac, kfrac, weight
-        , probability , (unsigned) count
+        , probability , count, kwhit
         , (double) term
         , (double) weight * log( term )
         , (double) entropy
@@ -3705,8 +3708,9 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
             if ( !model->context[iord] ) continue;
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
-            count++;
-            if (node->thevalue < 2) continue; /* Too unique */
+            if (!count++) kwhit++;
+            /* if (node->thevalue < 2) continue; Too unique */
+            if (node->thevalue < 1) continue; /* Too unique */
             probability += (0.1+node->thevalue) / (0.1 + model->context[iord]->childsum);
         }
 
@@ -3726,7 +3730,7 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
 fprintf(stderr, "#### Rev '%*.*s'\n"
 "Valsum=%9lu/%9llu Nnode=%9lu/%9llu\n"
 "Gfrac=%6.4e Kfrac=%6.4e W=%6.4e\n"
-"Prob=%6.4e/Cnt=%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
+"Prob=%6.4e/Cnt=%u/%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
         , (int) sentence->entry[widx].string.length
         , (int) sentence->entry[widx].string.length
         , sentence->entry[widx].string.word
@@ -3735,7 +3739,7 @@ fprintf(stderr, "#### Rev '%*.*s'\n"
         , (unsigned long) model->dict->entry[symbol].stats.nnode
         , (unsigned long long) model->dict->stats.nnode
         , gfrac, kfrac, weight
-        , probability , (unsigned) count
+        , probability , count, kwhit
         , (double) term
         , (double) weight * log( term )
         , (double) entropy
@@ -3786,7 +3790,7 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 fprintf(stderr, "####[Corrected] =%6.4f\n", (double) entropy
 	);
 #endif
-
+    sentence->kwhit = kwhit;
     return entropy;
 }
 
@@ -4645,6 +4649,7 @@ STATIC struct sentence * sentence_new(void)
 struct sentence *new;
 new = malloc (sizeof *new);
 new->mused = new->msize = 0;
+new->kwhit = 0;
 new->entry= NULL;
 return new;
 }
