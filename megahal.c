@@ -367,6 +367,7 @@
 
 	/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
+#define WANT_DOUBLE_PARROT 1
 
 #include "megahal.cnf"
 	/* Flags for converting strings to/from latin/utf8
@@ -739,6 +740,7 @@ STATIC char *make_output(struct sentence *src);
 	/* The lean statistics department.
 	*/
 STATIC double penalize_parrot(unsigned arr[], unsigned siz);
+STATIC double penalize_two_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1);
 STATIC double fact2 (unsigned expected, unsigned seen);
 STATIC unsigned long long dragon_denominator2(unsigned long nslot, unsigned long nitem);
 
@@ -3317,6 +3319,9 @@ void show_config(FILE *fp)
     fprintf(fp, "CROSS_DICT_SIZE_MIN=%d\n", CROSS_DICT_SIZE_MIN);
     fprintf(fp, "CROSS_DICT_SIZE_MAX=%d\n", CROSS_DICT_SIZE_MAX);
     fprintf(fp, "CROSS_DICT_WORD_DISTANCE=%d\n", CROSS_DICT_WORD_DISTANCE);
+#if WANT_DOUBLE_PARROT
+    fprintf(fp, "WANT_TWO_PARROTS=yes\n");
+#endif
     fprintf(fp, "WANT_PARROT_CHECK=%d\n", WANT_PARROT_CHECK);
     fprintf(fp, "PARROT_POWER=%f\n", PARROT_POWER);
     fprintf(fp, "OVERSIZE_PENALTY_POWER=%f\n", OVERSIZE_PENALTY_POWER);
@@ -3371,12 +3376,16 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	count++;
 #if WANT_PARROT_CHECK
 	/* I'm not dead yet ... */
+#if !WANT_DOUBLE_PARROT
 	penalty1 = penalize_parrot(parrot_hash, COUNTOF(parrot_hash) );
 	// if (penalty1 < 1.0) continue;
 	penalty2 = penalize_parrot(parrot_hash2, COUNTOF(parrot_hash2) );
 
 	penalty = (2*penalty1*penalty2) / (penalty1+penalty2);
 	penalty *= penalty;
+#else
+	penalty = penalize_two_parrots(parrot_hash, parrot_hash2, COUNTOF(parrot_hash) );
+#endif
 
 
         surprise = rawsurprise / penalty ;
@@ -3398,10 +3407,16 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { fprintf(stderr, " %u", parrot_hash2[ pidx] ); }
     fprintf(stderr, "}\n" );
 
+#if WANT_DOUBLE_PARROT
+    fprintf(stderr, "Penal= %f Raw=%f, Max=%f, Surp=%f"
+    , penalty, rawsurprise, max_surprise, surprise);
+
+#else
     fprintf(stderr, "Penal={%f %f} :: %f Raw=%f, Max=%f, Surp=%f"
     , penalty1,penalty2
     , penalty, rawsurprise, max_surprise, surprise);
 
+#endif /* WANT_DOUBLE_PARROT */
 }
 #endif /* WANT_PARROT_CHECK */
 
@@ -4274,7 +4289,7 @@ while(1)	{
 #if WANT_RDTSC_RANDOM
     val = rdtsc_rand();
 #else
-    val =  lrand48();
+    val = lrand48();
 #endif
 /* we need this to avoid oversampling of the lower values.
  * Oversampling the lower values becomes more of a problem if (UNSIGNED_MAX/range) gets smaller
@@ -5081,6 +5096,7 @@ return ret;
 }
 
 #if WANT_PARROT_CHECK
+#if !WANT_DOUBLE_PARROT
 STATIC double penalize_parrot(unsigned arr[], unsigned siz)
 {
 unsigned idx;
@@ -5119,6 +5135,61 @@ if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
 
 return penalty;
 }
+
+#else
+int cmp_unsigned_desc(void *vl, void *vr)
+{
+unsigned *ul = vl;
+unsigned *ur = vr;
+if (*ul < *ur) return 1;
+if (*ul > *ur) return -1;
+return 0;
+}
+
+STATIC double penalize_two_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1)
+{
+unsigned idx;
+unsigned ssq,sum;
+double calc,penalty;
+unsigned long long red_dragon;
+
+qsort ( arr1, siz1, sizeof arr1[0], cmp_unsigned_desc);
+qsort ( arr2, siz1+1, sizeof arr2[0], cmp_unsigned_desc);
+
+sum=ssq=0;
+for (idx=0; idx < siz1 ; idx++) { 
+    sum += arr1[idx] + arr2[idx] ;
+    ssq += arr1[idx] * arr2[idx] ;
+    }
+sum += arr2[idx] ;
+sum /= 2;
+if (sum <= 2) return 0.0;
+
+
+/* Formula from hashtable-site www.strchr.com/hash_functions/
+**     Sum ( chainlen * (chainlen+1)) / 2    ## Chainlen := number of items/slot
+**     ------------------------------
+**          (n/2m)* (n+2m -1)
+**
+** N= nitem; m=nslot
+** for ease of computation, 2*nominator and 2*denominator are used here.
+** The result is a ratio that should be ~1 for perfect hashing/spread.
+** I penalize higher ratios by raising to a higher power (around 1.5)
+*/
+
+red_dragon = dragon_denominator2( siz1, sum);
+
+penalty = pow ( (double)ssq/red_dragon, PARROT_POWER );
+
+/* fprintf(stderr, "Parrot2: Sum=%u Siz=%u Ssq= %lu/%llu := %f\n" , sum, siz1, ssq, red_dragon, penalty ); */
+
+if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
+if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
+
+
+return penalty;
+}
+#endif
 
 STATIC double fact2 (unsigned expected,unsigned seen) 
 {
