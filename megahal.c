@@ -1,4 +1,3 @@
-
 /*===========================================================================*/
 /*
  *  Copyright (C) 1998 Jason Hutchens
@@ -5137,7 +5136,7 @@ return penalty;
 }
 
 #else
-int cmp_unsigned_desc(void *vl, void *vr)
+static int cmp_unsigned_desc(void *vl, void *vr)
 {
 unsigned *ul = vl;
 unsigned *ur = vr;
