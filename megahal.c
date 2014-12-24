@@ -265,7 +265,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#include <unistd.h>
+
+#pragma define _BSD_SOURCE 1
+#pragma define _XOPEN_SOURCE
+#define __USE_MISC
+#include <unistd.h>	// lockf()
+#undef __USE_MISC
+#pragma undef _XOPEN_SOURCE
+#pragma undef _BSD_SOURCE
+
 #include <getopt.h>
 
 #include <ctype.h> /* isspace() */
@@ -280,18 +288,16 @@
 
 #include <sys/types.h>
 
+	/* _POSIX */
+extern int fileno(FILE *fp);
+extern char *strdup(const char *src);
+void srand48(long int seedval);
+
 #include "megahal.h"
 
 #if defined(DEBUG)
 #include "debug.h"
 #endif
-
-
-#define P_THINK 40
-#define D_KEY 100000
-#define V_KEY 50000
-#define D_THINK 500000
-#define V_THINK 250000
 
 #define MIN(a,b) ((a)<(b))?(a):(b)
 
@@ -309,25 +315,13 @@
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
 #define WAKKER_INF (1E+40)
 
-	/* define to outcomment old stuff */
-#define DONT_WANT_THIS 0
-
-	/* store precomputed hash values in Dict entries.
-	** This will cost 32 bit / entry and wont save a lot of CPU
+	/* Store precomputed hash values in Dict entries.
+	** This will cost 32 bit / entry but wont save a lot of CPU
 	** (The maximal AVG estimated chainlength is 1.5)
 	** The final stringcompare is needed anyway
 	** , and strings tend to be different (except for the last one ;-).
 	*/
 #define WANT_STORE_HASH 0
-
-	/* this is an ugly hack to cast a string pointer named 'str' to an unsigned char
-	** This is absolutely necessary for the isXXXX() functions which
-	** expect an int in the range 0...255 OR -a (for EOF)
-	** Using a signed char would sign-extend the argument to -128...127,
-	** which causes the ctype[] array to be indexed out of bounds
-	*/
-#pragma define UCPstr ((unsigned char *)str)
-#define UCPstr str
 
 	/* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
@@ -366,7 +360,6 @@
 
 	/* improved random generator, using noise from the CPU clock (only works on intel/gcc) */
 #define WANT_RDTSC_RANDOM 1
-#define WANT_DOUBLE_PARROT 1
 
 #include "megahal.cnf"
 	/* Flags for converting strings to/from latin/utf8
@@ -490,13 +483,11 @@ static int glob_width = 45;
 static int glob_order = ORDER_WANTED;
 static int glob_timeout = DEFAULT_TIMEOUT;
 
-static bool typing_delay = FALSE;
-static bool noprompt = FALSE;
-static bool noprogres = FALSE;
-static bool speech = FALSE;
-static bool nowrap = FALSE;
-static bool nobanner = FALSE;
-static bool quiet = FALSE;
+static int noprompt = 0;
+static int noprogres = 0;
+static int nowrap = 0;
+static int nobanner = 0;
+static int quiet = FALSE;
 static FILE *errorfp;
 static FILE *statusfp;
 
@@ -505,9 +496,6 @@ unsigned parrot_hash[WANT_PARROT_CHECK] = {0,};
 unsigned parrot_hash2[WANT_PARROT_CHECK+1] = {0,};
 #endif /* WANT_PARROT_CHECK */
 
-#if DONT_WANT_THIS
-static bool used_key;
-#endif
 static MODEL *glob_model = NULL;
 	/* Refers to a dup'd fd for the brainfile, used for locking */
 static int glob_fd = -1;
@@ -524,34 +512,10 @@ struct crosstab *glob_crosstab = NULL;
 // static DICT *glob_dict = NULL;
 #endif
 
-#if WANT_EXTRA_MEUK
-static DICT *glob_ban = NULL;
-static DICT *glob_aux = NULL;
-static DICT *glob_grt = NULL;
-#endif /* WANT_EXTRA_MEUK */
-
 static char *glob_directory = NULL;
 static char *last_directory = NULL;
 
 static Stamp stamp_min = 0, stamp_max=0;
-
-static COMMAND commands[] = {
-    { { 4,0, "QUIT" }, "quits the program and saves MegaHAL's brain", QUIT },
-    { { 4,0, "EXIT" }, "exits the program *without* saving MegaHAL's brain", EXIT },
-    { { 4,0, "SAVE" }, "saves the current MegaHAL brain", SAVE },
-    { { 5,0, "DELAY" }, "toggles MegaHAL's typing delay (off by default)", DELAY },
-    { { 6,0, "SPEECH" }, "toggles MegaHAL's speech (off by default)", SPEECH },
-    { { 6,0, "VOICES" }, "list available voices for speech", VOICELIST },
-    { { 5,0, "VOICE" }, "switches to voice specified", VOICE },
-    { { 5,0, "BRAIN" }, "change to another MegaHAL personality", BRAIN },
-    { { 4,0, "HELP" }, "displays this message", HELP },
-    { { 5,0, "QUIET" }, "toggles MegaHAL's responses (on by default)",QUIET},
-    /*
-      { { 5,0, "STATS" }, "Display stats", STATS},
-      { { 5,0, "STATS-SESSION" }, "Display stats for this session only",STATS_SESSION},
-      { { 5,0, "STATS-ALL" },"Display stats for the whole lifetime",STATS-ALL},
-	*/
-};
 
 STATIC int resize_tree(TREE *tree, unsigned newsize);
 
@@ -561,20 +525,16 @@ STATIC size_t word_format(char *buff, STRING string);
 
 STATIC size_t tokenize(char *string, int *sp);
 
-STATIC void delay(char *);
-STATIC void die(int);
 STATIC void error(char *, char *, ...);
 STATIC void exithal(void);
 STATIC TREE *find_symbol(TREE *node, WordNum symbol);
 STATIC TREE *find_symbol_add(TREE *, WordNum);
 
 STATIC WordNum find_word(DICT *, STRING);
-STATIC void do_help(void);
 void show_config(FILE *fp);
 STATIC void ignore(int);
-STATIC bool initialize_error(char *);
-STATIC bool initialize_status(char *);
-STATIC void listvoices(void);
+STATIC void initialize_error(char *);
+STATIC void initialize_status(char *);
 STATIC DICT *new_dict(void);
 
 STATIC char *read_input(char * prompt);
@@ -586,12 +546,11 @@ STATIC char *format_output(char *);
 STATIC void empty_dict(DICT *dict);
 STATIC void free_model(MODEL *);
 STATIC void free_tree(TREE *);
-STATIC void free_string(STRING word);
-STATIC void free_words(DICT *words);
 
 STATIC void initialize_context(MODEL *);
 STATIC void initialize_dict(DICT *);
-STATIC DICT *read_dict(char *filename);
+
+
 STATIC void load_dict(FILE *, DICT *);
 STATIC bool load_model(char *path, MODEL *mp);
 STATIC void load_personality(MODEL **);
@@ -608,13 +567,11 @@ STATIC void save_word(FILE *, STRING);
 STATIC WordNum seed(MODEL *);
 
 STATIC void show_dict(DICT *);
-STATIC void speak(char *);
 STATIC void status(char *, ...);
 STATIC void train(MODEL *, char *);
-STATIC void typein(char);
 STATIC void update_context(MODEL *, WordNum symbol);
 STATIC void update_model(MODEL *model, WordNum symbol);
-STATIC bool warn(char *, char *, ...);
+STATIC void warn(char *, char *, ...);
 STATIC int wordcmp(STRING one, STRING two);
 unsigned int urnd(unsigned int range);
 
@@ -639,7 +596,7 @@ STATIC int myiswhite(int ch);
 STATIC int buffer_is_usable(char *buf, unsigned len);
 STATIC int dont_need_white_l(STRING string);
 STATIC int dont_need_white_r(STRING string);
-STATIC int word_is_allcaps(STRING string);
+int word_is_allcaps(STRING string);
 STATIC int word_has_highbit(STRING string);
 STATIC int word_classify(STRING org);
 #define TOKEN_LOWER 1
@@ -652,7 +609,7 @@ STATIC int word_classify(STRING org);
 #define TOKEN_MISC 8
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
-STATIC void del_word_dofree(DICT *dict, STRING word);
+void del_word_dofree(DICT *dict, STRING word);
 void free_tree_recursively(TREE *tree);
 STATIC unsigned model_alzheimer(MODEL * model, unsigned maxnodecount);
 STATIC unsigned symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
@@ -662,6 +619,7 @@ STATIC int check_interval(Stamp min, Stamp max, Stamp this);
 #define STAMP_ABOVE 1
 
 void read_dict_from_ascii(DICT *dict, char *name);
+
 static DICT *alz_dict = NULL;
 
 STATIC void dump_model(MODEL * model, char *path, int flags);
@@ -722,49 +680,45 @@ STATIC void add_word_to_sentence(struct sentence *dst, STRING word);
 STATIC void learn_from_input(MODEL * mp, struct sentence *src);
 STATIC char *generate_reply(MODEL *mp, struct sentence *src);
 STATIC double evaluate_reply(MODEL *model, struct sentence *sentence);
-STATIC void make_greeting(struct sentence *dst);
 STATIC struct sentence * sentence_new(void);
 STATIC int sentence_grow(struct sentence *ptr);
 STATIC int sentence_resize(struct sentence *ptr, unsigned newsize);
 STATIC void sentence_reverse(struct sentence *ptr);
 STATIC struct sentence *one_reply(MODEL *);
-STATIC COMMAND_WORDS execute_command(struct sentence *, unsigned int *position);
-STATIC void changevoice(struct sentence *, unsigned int);
 STATIC void change_personality(struct sentence *, unsigned int, MODEL **);
 STATIC void make_keywords(MODEL *mp, struct sentence *src);
-STATIC bool dissimilar(struct sentence *one, struct sentence *two);
+STATIC int dissimilar(struct sentence *one, struct sentence *two);
 STATIC WordNum babble(MODEL *model, struct sentence *words);
 STATIC char *make_output(struct sentence *src);
 
 	/* The lean statistics department.
 	*/
-STATIC double penalize_parrot(unsigned arr[], unsigned siz);
 STATIC double penalize_two_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1);
 STATIC double fact2 (unsigned expected, unsigned seen);
 STATIC unsigned long long dragon_denominator2(unsigned long nslot, unsigned long nitem);
 
 void megahal_setquiet(void)
 {
-    quiet = TRUE;
+    quiet = 1;
 }
 
 void megahal_setnoprompt(void)
 {
-    noprompt = TRUE;
+    noprompt = 1;
 }
 
 void megahal_setnoprogres(void)
 {
-    noprogres = TRUE;
+    noprogres = 1;
 }
 
 void megahal_setnowrap (void)
 {
-    nowrap = TRUE;
+    nowrap = 1;
 }
 void megahal_setnobanner (void)
 {
-    nobanner = TRUE;
+    nobanner = 1;
 }
 
 void megahal_seterrorfile(char *filename)
@@ -871,25 +825,6 @@ void megahal_learn_no_reply(char *input, int want_log)
 }
 
 /*
-   megahal_initial_greeting --
-
-   This function returns an initial greeting.  It can be used to start
-   Megahal conversations, but it isn't necessary.
-
-  */
-
-#if DONT_WANT_THIS
-char *megahal_initial_greeting(void)
-{
-    char *output;
-
-    make_greeting(glob_greets);
-    output = generate_reply(glob_model, glob_greets);
-    return output;
-}
-#endif
-
-/*
    megahal_output --
 
    This function pretty prints output.
@@ -939,109 +874,6 @@ void megahal_cleanup(void)
     exithal();
 }
 
-
-#if DONT_WANT_THIS
-/*
-   megahal_command --
-
-   Check to see if input is a megahal command, and if so, act upon it.
-
-   Returns 1 if it is a command, 0 if it is not.
-
-  */
-
-int megahal_command(char *input)
-{
-    unsigned int position = 0;
-    char *output;
-
-    make_words(input,glob_input);
-    switch(execute_command(glob_input, &position)) {
-    case EXIT:
-	exithal();
-	return 1;
-	break;
-    case QUIT:
-	save_model("megahal.brn", glob_model);
-	exithal();
-	return 2;
-	break;
-    case SAVE:
-	save_model("megahal.brn", glob_model);
-	break;
-    case DELAY:
-	typing_delay = !typing_delay;
-	printf(MY_NAME " typing is now %s.\n", typing_delay?"on":"off");
-	return 1;
-    case SPEECH:
-	speech = !speech;
-	printf(MY_NAME " speech is now %s.\n", speech?"on":"off");
-	return 1;
-    case HELP:
-	do_help();
-	return 1;
-    case VOICELIST:
-	listvoices();
-	return 1;
-    case VOICE:
-	changevoice(glob_input, position);
-	return 1;
-    case BRAIN:
-	change_personality(glob_input, position, &glob_model);
-	make_greeting(glob_greets);
-	output = generate_reply(glob_model, glob_greets);
-	log_output(output);
-	return 1;
-    case QUIET:
-	quiet = !quiet;
-	return 1;
-    default:
-	return 0;
-    }
-    return 0;
-}
-/*
- *		Function:	Execute_Command
- *
- *		Purpose:		Detect whether the user has typed a command, and
- *						execute the corresponding function.
- */
-STATIC COMMAND_WORDS execute_command(struct sentence *src, unsigned int *position)
-{
-    unsigned int iwrd;
-    unsigned int j;
-
-    /*
-     *		If there is only one word, then it can't be a command.
-     */
-    *position = src->mused+1;
-    if (src->mused <= 1) return UNKNOWN;
-
-    /*
-     *		Search through the word array.  If a command prefix is found,
-     *		then try to match the following word with a command word.  If
-     *		a match is found, then return a command identifier.  If the
-     *		Following word is a number, then change the judge.  Otherwise,
-     *		continue the search.
-     */
-    for(iwrd = 0; iwrd < src->mused-1; iwrd++) {
-	/*
-	 *		The command prefix was found.
-	 */
-	if (src->entry[iwrd].string.word[src->entry[iwrd].string.length - 1] != '#') continue;
-	    /*
-	     *		Look for a command word.
-	     */
-	for(j = 0; j < COUNTOF(commands); j++)
-	if (!strncasecmp(commands[j].word.word, src->entry[iwrd + 1].string.word, src->entry[iwrd + 1].string.length) ) {
-	    *position = iwrd + 1;
-	    return commands[j].command;
-		}
-	}
-
-    return UNKNOWN;
-}
-#endif /* DONT_WANT_THIS */
 
 /*---------------------------------------------------------------------------*/
 
@@ -1148,19 +980,19 @@ STATIC char *read_input(char *prompt)
  *
  *		Purpose:		Close the current error file pointer, and open a new one.
  */
-STATIC bool initialize_error(char *filename)
+STATIC void initialize_error(char *filename)
 {
     if (errorfp != stderr) fclose(errorfp);
 
-    if (!filename) return TRUE;
+    if (!filename) return ;
 
     errorfp = fopen(filename, "a");
     if (!errorfp) {
 	errorfp = stderr;
-	return FALSE;
+	return ;
     }
     print_header(errorfp);
-    return TRUE;
+    return ;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1189,7 +1021,7 @@ STATIC void error(char *title, char *fmt, ...)
 
 /*---------------------------------------------------------------------------*/
 
-STATIC bool warn(char *title, char *fmt, ...)
+STATIC void warn(char *title, char *fmt, ...)
 {
     va_list argp;
 
@@ -1202,7 +1034,7 @@ STATIC bool warn(char *title, char *fmt, ...)
 
     fprintf(stderr, MY_NAME " emitted a warning; check the error log.\n");
 
-    return TRUE;
+    return ;
 }
 
 STATIC void show_memstat(char *msg)
@@ -1224,17 +1056,18 @@ status ("Memstat %s: {wordcnt=%u nodecnt=%u alloc=%u free=%u alzheimer=%u symdel
  *
  *		Purpose:		Close the current status file pointer, and open a new one.
  */
-STATIC bool initialize_status(char *filename)
+STATIC void initialize_status(char *filename)
 {
     if (statusfp != stdout) fclose(statusfp);
-    if (!filename) return FALSE;
+    if (!filename) return ;
+
     statusfp = fopen(filename, "a");
     if (!statusfp) {
 	statusfp = stdout;
-	return FALSE;
+	return ;
     }
     print_header(statusfp);
-    return TRUE;
+    return ;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1287,7 +1120,7 @@ STATIC void log_output(char *output)
     char *formatted;
     char *bit;
 
-    speak(output);
+    // speak(output);
 
     // glob_width = 75;
     // formatted = format_output(output);
@@ -1411,7 +1244,7 @@ return *np;
 ** the symbols to be stable after a deletion.
 ** --> the symbols (WordNums) should NOT be considered stable.
 */
-STATIC void del_word_dofree(DICT *dict, STRING word)
+void del_word_dofree(DICT *dict, STRING word)
 {
 WordNum *np,this,top;
 
@@ -3001,6 +2834,7 @@ STATIC void make_words(char * src, struct sentence * target)
             }
         if (buffer_is_usable(src+pos,chunk)) {
             word.word = src+pos;
+            word.type = 0;
             word.length = chunk;
 	    add_word_to_sentence(target, word);
 	    }
@@ -3201,7 +3035,7 @@ if (ch == '\f') return 1;
 return 0;
 }
 
-STATIC int word_is_allcaps(STRING string)
+int word_is_allcaps(STRING string)
 {
 unsigned idx, nupp=0, nlow=0, noth=0;
 
@@ -3292,21 +3126,6 @@ for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
 	}
 return 0;
 }
-/*---------------------------------------------------------------------------*/
-/*
- *		Function:	Make_Greeting
- *
- *		Purpose:		Put some special words into the dictionary so that the
- *						program will respond as if to a new judge.
- */
-STATIC void make_greeting(struct sentence *target)
-{
-    // unsigned int iwrd;
-    // for(iwrd = 0; iwrd < target->mused; iwrd++) free(target->entry[iwrd].string.word);
-    target->mused = 0;
-    // if (glob_grt->mused > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->mused) ].string );
-}
-
 void show_config(FILE *fp)
 {
     fprintf(fp, "Compiled-in constant settings:\n" );
@@ -3318,9 +3137,7 @@ void show_config(FILE *fp)
     fprintf(fp, "CROSS_DICT_SIZE_MIN=%d\n", CROSS_DICT_SIZE_MIN);
     fprintf(fp, "CROSS_DICT_SIZE_MAX=%d\n", CROSS_DICT_SIZE_MAX);
     fprintf(fp, "CROSS_DICT_WORD_DISTANCE=%d\n", CROSS_DICT_WORD_DISTANCE);
-#if WANT_DOUBLE_PARROT
     fprintf(fp, "WANT_TWO_PARROTS=yes\n");
-#endif
     fprintf(fp, "WANT_PARROT_CHECK=%d\n", WANT_PARROT_CHECK);
     fprintf(fp, "PARROT_POWER=%f\n", PARROT_POWER);
     fprintf(fp, "OVERSIZE_PENALTY_POWER=%f\n", OVERSIZE_PENALTY_POWER);
@@ -3344,9 +3161,6 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     unsigned count;
     int basetime;
     double penalty;
-#if WANT_PARROT_CHECK
-    double penalty1,penalty2;
-#endif
 
     /* show_config(stderr); */
 
@@ -3375,17 +3189,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	count++;
 #if WANT_PARROT_CHECK
 	/* I'm not dead yet ... */
-#if !WANT_DOUBLE_PARROT
-	penalty1 = penalize_parrot(parrot_hash, COUNTOF(parrot_hash) );
-	// if (penalty1 < 1.0) continue;
-	penalty2 = penalize_parrot(parrot_hash2, COUNTOF(parrot_hash2) );
-
-	penalty = (2*penalty1*penalty2) / (penalty1+penalty2);
-	penalty *= penalty;
-#else
 	penalty = penalize_two_parrots(parrot_hash, parrot_hash2, COUNTOF(parrot_hash) );
-#endif
-
 
         surprise = rawsurprise / penalty ;
         if ( (surprise - max_surprise) <= (10*DBL_EPSILON) ) continue;
@@ -3398,24 +3202,16 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 {
     unsigned pidx;
     fprintf(stderr, "\nParrot1={" );
-    for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, " %u", parrot_hash[ pidx] ); }
+    for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, " %u", parrot_hash[pidx] ); }
     fprintf(stderr, "}\n" );
-    /* fprintf(stderr, "} Sum=%u Ssq=%u Exp=%f Rat=%f\n" , sum1, ssq1, calc1, penalty1 ); */
 
     fprintf(stderr, "Parrot2={" );
-    for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { fprintf(stderr, " %u", parrot_hash2[ pidx] ); }
+    for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { fprintf(stderr, " %u", parrot_hash2[pidx] ); }
     fprintf(stderr, "}\n" );
 
-#if WANT_DOUBLE_PARROT
     fprintf(stderr, "Penal= %f Raw=%f, Max=%f, Surp=%f"
     , penalty, rawsurprise, max_surprise, surprise);
 
-#else
-    fprintf(stderr, "Penal={%f %f} :: %f Raw=%f, Max=%f, Surp=%f"
-    , penalty1,penalty2
-    , penalty, rawsurprise, max_surprise, surprise);
-
-#endif /* WANT_DOUBLE_PARROT */
 }
 #endif /* WANT_PARROT_CHECK */
 
@@ -3453,14 +3249,14 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
  *		Purpose:		Return TRUE or FALSE depending on whether the dictionaries
  *						are the same or not.
  */
-STATIC bool dissimilar(struct sentence *one, struct sentence *two)
+STATIC int dissimilar(struct sentence *one, struct sentence *two)
 {
     unsigned int iwrd;
 
     if (one->mused != two->mused) return TRUE;
     for(iwrd = 0; iwrd < one->mused; iwrd++)
-	if (wordcmp(one->entry[iwrd].string , two->entry[iwrd].string ) ) return TRUE;
-    return FALSE;
+	if (wordcmp(one->entry[iwrd].string , two->entry[iwrd].string ) ) return 1;
+    return 0;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3483,15 +3279,10 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
     if (cross_dict_size < CROSS_DICT_SIZE_MIN) cross_dict_size = CROSS_DICT_SIZE_MIN ;
     if (cross_dict_size > CROSS_DICT_SIZE_MAX) cross_dict_size = CROSS_DICT_SIZE_MAX ;
 
-#if 0
-    if (glob_crosstab) crosstab_resize(glob_crosstab,cross_dict_size);
-    else glob_crosstab = crosstab_init(cross_dict_size);
-#else
     if (glob_crosstab) crosstab_free(glob_crosstab);
     glob_crosstab = crosstab_init(cross_dict_size);
-#endif
-    rotor = echocount = 0;
 
+    rotor = echocount = 0;
     for(iwrd = 0; iwrd < src->mused; iwrd++) {
 	/*
 	 *		Find the symbol ID of the word.  If it doesn't exist in
@@ -3549,17 +3340,11 @@ STATIC struct sentence *one_reply(MODEL *model)
      */
     initialize_context(model);
     model->context[0] = model->forward;
-#if DONT_WANT_THIS
-    used_key = FALSE;
-#endif
 
     /*
      *		Generate the reply in the forward direction.
      */
     for (symbol = seed(model); symbol > WORD_FIN ; symbol = babble(model, zereply) ) {
-	/*
-	 *		Append the symbol to the reply dictionary.
-	 */
 	add_word_to_sentence(zereply, model->dict->entry[symbol].string );
 	/*
 	 *		Extend the current context of the model with the current symbol.
@@ -3568,16 +3353,14 @@ STATIC struct sentence *one_reply(MODEL *model)
     }
 
     /*
+     *		Re-create the context of the model from the current reply
+     *		sentence so that we can generate backwards to reach the
+     *		beginning of the string.
      *		Start off by making sure that the model's context is empty.
      */
     initialize_context(model);
     model->context[0] = model->backward;
 
-    /*
-     *		Re-create the context of the model from the current reply
-     *		dictionary so that we can generate backwards to reach the
-     *		beginning of the string.
-     */
     for(widx = MIN(zereply->mused, 1+model->order); widx-- > 0; ) {
 	symbol = find_word(model->dict, zereply->entry[ widx ].string );
 	update_context(model, symbol);
@@ -3588,17 +3371,11 @@ STATIC struct sentence *one_reply(MODEL *model)
      */
     sentence_reverse(zereply);
     while(1) {
-	/*
-	 *		Get a random symbol from the current context.
-	 */
 	symbol = babble(model, zereply);
 	if (symbol <= WORD_FIN) break;
 
 	add_word_to_sentence(zereply, model->dict->entry[symbol].string );
 
-	/*
-	 *		Extend the current context of the model with the current symbol.
-	 */
 	update_context(model, symbol);
     }
     sentence_reverse(zereply);
@@ -4155,85 +3932,6 @@ return (penalty);
 /*---------------------------------------------------------------------------*/
 
 /*
- *		Purpose:		Read a dictionary from a file.
- */
-STATIC DICT *read_dict(char *filename)
-{
-    DICT *this;
-    FILE *fp = NULL;
-    static char buffer[1024];
-    static STRING word ={0,0,buffer};
-
-    this = new_dict();
-
-    if (!filename) return this;
-
-    fp = fopen(filename, "r");
-    if ( !fp ) return this;
-
-    while( fgets(buffer, sizeof buffer, fp) ) {
-        size_t len;
-	if (buffer[0] == '#') continue;
-        word.length = len = strcspn (buffer, "\t \n#" );
-        if (!len) continue;
-	add_word_dodup(this, word);
-    }
-
-    fclose(fp);
-    return this;
-}
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Delay
- *
- *		Purpose:		Display the string to stdout as if it was typed by a human.
- */
-void delay(char *string)
-{
-    size_t idx,len;
-
-    if (typing_delay == FALSE)	{
-	fprintf(stdout, "%s", string);
-	return;
-    }
-
-    /*
-     *		Display the entire string, one character at a time
-     */
-    len = strlen(string);
-    for(idx = 0; idx < len-1; idx++) typein(string[idx]);
-    usleep((D_THINK+urnd(V_THINK)-urnd(V_THINK))/2);
-    typein(string[idx]);
-}
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Typein
- *
- *		Purpose:		Display a character to stdout as if it was typed by a human.
- */
-void typein(char c)
-{
-    /*
-     *		Standard keyboard delay
-     */
-    usleep(D_KEY+urnd(V_KEY)-urnd(V_KEY));
-    fprintf(stdout, "%c", c);
-    fflush(stdout);
-
-    /*
-     *		A random thinking delay
-     */
-    if ( !myisalnum(c) &&  urnd(100) < P_THINK)
-	usleep(D_THINK+urnd(V_THINK)-urnd(V_THINK));
-}
-
-/*---------------------------------------------------------------------------*/
-
-/*
  *		Function:	Ignore
  *
  *		Purpose:		Log the occurrence of a signal, but ignore it.
@@ -4321,39 +4019,6 @@ val ^= (val >> 15) ^ (val << 14) ^ 9 ;
 
 return val;
 }
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	changevoice
- *
- *		Purpose:		change voice of speech output.
- */
-void changevoice(struct sentence* src, unsigned int position)
-{
-}
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	listvoices
- *
- *		Purpose:		Display the names of voices for speech output.
- */
-void listvoices(void)
-{
-}
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Speak
- */
-void speak(char *output)
-{
-    if (speech == FALSE) return;
-}
-
 /*---------------------------------------------------------------------------*/
 
 /*
@@ -4364,7 +4029,7 @@ void speak(char *output)
 void progress(char *message, unsigned long done, unsigned long todo)
 {
     static int last = 0;
-    static bool first = FALSE;
+    static char first = 0;
 
     if (noprogres) return ; //FALSE;
     /*
@@ -4373,16 +4038,16 @@ void progress(char *message, unsigned long done, unsigned long todo)
      *    WP: we could avoid div/zero.
      */
     if (!todo) todo = done?done:1;
-    if (done*100/todo == 100 && first == FALSE) return ; // TRUE;
+    if (done*100/todo == 100 && !first ) return ; // TRUE;
 
     /*
      *    Nothing has changed since the last time this function was called,
      *    so do nothing, unless it's the first time!
      */
     if (done*100/todo == last) {
-	if (done == 0 &&first == FALSE) {
+	if (done == 0 && !first ) {
 	    fprintf(stderr, "%s: %3lu%%", message, done*100/todo);
-	    first = TRUE;
+	    first = 1;
 	}
 	return ; // TRUE;
     }
@@ -4399,24 +4064,12 @@ void progress(char *message, unsigned long done, unsigned long todo)
      *    We have hit 100%, so reset static variables and print a newline.
      */
     if (last == 100) {
-	first = FALSE;
+	first = 0;
 	last = 0;
 	fprintf(stderr, "\n");
     }
 
     return ; // TRUE;
-}
-
-/*---------------------------------------------------------------------------*/
-
-void do_help(void)
-{
-    unsigned int j;
-
-    for(j = 0; j < COUNTOF(commands); j++) {
-	printf("#%-7s: %s\n", commands[j].word.word, commands[j].helpstring);
-    }
-    show_config(stdout);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4458,15 +4111,6 @@ void load_personality(MODEL **model)
      *		Free the current personality
      */
     free_model(*model);
-#if WANT_EXTRA_MEUK
-    free_words(glob_ban);
-    empty_dict(glob_ban);
-    free_words(glob_aux);
-    empty_dict(glob_aux);
-    free_words(glob_grt);
-    empty_dict(glob_grt);
-    /* free_swap(glob_swp); */
-#endif /* WANT_EXTRA_MEUK */
 
     /*
      *		Create a language model.
@@ -4484,21 +4128,6 @@ void load_personality(MODEL **model)
 	train(*model, filename);
     }
 
-    /*
-     *		Read a dictionary containing banned keywords, auxiliary keywords,
-     *		greeting keywords and swap keywords
-     */
-#if WANT_EXTRA_MEUK
-    sprintf(filename, "%s%smegahal.ban", glob_directory, SEP);
-    glob_ban = read_dict(filename);
-    sprintf(filename, "%s%smegahal.aux", glob_directory, SEP);
-    glob_aux = read_dict(filename);
-    sprintf(filename, "%s%smegahal.grt", glob_directory, SEP);
-    glob_grt = read_dict(filename);
-    /* sprintf(filename, "%s%smegahal.swp", glob_directory, SEP);
-    glob_swp = initialize_swap(filename);
-	*/
-#endif /* WANT_EXTRA_MEUK */
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4534,26 +4163,6 @@ void change_personality(struct sentence *command, unsigned int position, MODEL *
 }
 
 /*---------------------------------------------------------------------------*/
-
-STATIC void free_words(DICT *words)
-{
-    unsigned int iwrd;
-
-    if ( !words ) return;
-
-    if (words->entry != NULL)
-	for(iwrd = 0; iwrd < words->size; iwrd++) free_string(words->entry[iwrd].string);
-}
-
-/*---------------------------------------------------------------------------*/
-
-STATIC void free_string(STRING word)
-{
-    free(word.word);
-    word.word = NULL;
-    word.length = 0;
-}
-
 
 
 STATIC HashVal hash_word(STRING string)
@@ -5095,47 +4704,8 @@ return ret;
 }
 
 #if WANT_PARROT_CHECK
-#if !WANT_DOUBLE_PARROT
-STATIC double penalize_parrot(unsigned arr[], unsigned siz)
-{
-unsigned idx;
-unsigned ssq,sum;
-double calc,penalty;
-unsigned long long red_dragon;
 
-sum=ssq=0;
-for (idx=0; idx < siz ; idx++) { 
-    sum += arr[idx] ;
-    ssq += arr[idx] * (1+arr[idx]) ;
-    }
-if (sum <= 1) return 0.0;
-
-
-/* Formula from hashtable-site www.strchr.com/hash_functions/
-**     Sum ( chainlen * (chainlen+1)) / 2    ## Chainlen := number of items/slot
-**     ------------------------------
-**          (n/2m)* (n+2m -1)
-**
-** N= nitem; m=nslot
-** for ease of computation, 2*nominator and 2*denominator are used here.
-** The result is a ratio that should be ~1 for perfect hashing/spread.
-** I penalize higher ratios by raising to a higher power (around 1.5)
-*/
-
-red_dragon = dragon_denominator2( siz, sum);
-
-penalty = pow ( (double)ssq/red_dragon, PARROT_POWER );
-
-/* fprintf(stderr, "Sum=%u Siz=%u Ssq= %lu/%llu := %f\n" , sum, siz, ssq, red_dragon, penalty ); */
-
-if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
-if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
-
-
-return penalty;
-}
-
-#else
+#if USE_QSORT
 static int cmp_unsigned_desc(void *vl, void *vr)
 {
 unsigned *ul = vl;
@@ -5144,17 +4714,41 @@ if (*ul < *ur) return 1;
 if (*ul > *ur) return -1;
 return 0;
 }
+#else
+
+STATIC inline void meuksort(unsigned arr[], unsigned siz);
+STATIC inline void meuksort(unsigned arr[], unsigned siz)
+{
+unsigned bot,idx, best,max;
+
+for (bot=0; bot < siz; bot++) {
+	max = arr[best=bot];
+	for (idx=bot+1; idx < siz; idx++ ) {
+		if (arr[idx] <= max) continue;
+		max = arr[best=idx];
+		}
+	if (best == bot) continue;
+	arr[best] = arr[bot];
+	arr[bot] = max;
+	}
+}
+#endif /* USE_QSORT */
 
 STATIC double penalize_two_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1)
 {
 unsigned idx;
 unsigned ssq,sum;
-double calc,penalty;
+double penalty;
 unsigned long long red_dragon;
 
+#if USE_QSORT
 qsort ( arr1, siz1, sizeof arr1[0], cmp_unsigned_desc);
 qsort ( arr2, siz1+1, sizeof arr2[0], cmp_unsigned_desc);
 
+#else /* USE_QSORT */
+meuksort ( arr1, siz1);
+meuksort ( arr2, siz1+1);
+#endif /* USE_QSORT */
 sum=ssq=0;
 for (idx=0; idx < siz1 ; idx++) { 
     sum += arr1[idx] + arr2[idx] ;
@@ -5188,7 +4782,7 @@ if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
 
 return penalty;
 }
-#endif
+#endif /* WANT_PARROT_CHECK */
 
 STATIC double fact2 (unsigned expected,unsigned seen) 
 {
@@ -5203,7 +4797,6 @@ for (val =1; seen > expected; seen--) {
 /* if (expected) val/= expected; */
 return val;
 }
-#endif
 
 /* expected value for ssq when dividing nitems over nslots */
 STATIC unsigned long long dragon_denominator2(unsigned long nslot, unsigned long nitem)
@@ -5214,11 +4807,204 @@ result = ((unsigned long long)nitem * (nitem+2*nslot-1)) / (nslot) ;
 /* fprintf (stderr, "Denominator (%lu,%lu) := %llu\n" , nslot, nitem, result); */
 return result;
 }
-/* Eof */
-
-
 
 int do_check_interval(Stamp min, Stamp max, Stamp this)
 {
 return check_interval(min, max, this);
 }
+/* Eof */
+
+#if WANT_BAGGER
+DICT *read_dict(char *filename);
+/*---------------------------------------------------------------------------*/
+
+/*
+ *		Purpose:		Read a dictionary from a file.
+ */
+DICT *read_dict(char *filename)
+{
+    DICT *this;
+    FILE *fp = NULL;
+    static char buffer[1024];
+    static STRING word ={0,0,buffer};
+
+    this = new_dict();
+
+    if (!filename) return this;
+
+    fp = fopen(filename, "r");
+    if ( !fp ) return this;
+
+    while( fgets(buffer, sizeof buffer, fp) ) {
+        size_t len;
+	if (buffer[0] == '#') continue;
+        word.length = len = strcspn (buffer, "\t \n#" );
+        if (!len) continue;
+	add_word_dodup(this, word);
+    }
+
+    fclose(fp);
+    return this;
+}
+
+/*---------------------------------------------------------------------------*/
+
+/*
+ *		Function:	Delay
+ *
+ *		Purpose:		Display the string to stdout as if it was typed by a human.
+ */
+void delay(char *string)
+{
+    size_t idx,len;
+
+    if (typing_delay == FALSE)	{
+	fprintf(stdout, "%s", string);
+	return;
+    }
+
+    /*
+     *		Display the entire string, one character at a time
+     */
+    len = strlen(string);
+    for(idx = 0; idx < len-1; idx++) typein(string[idx]);
+    usleep((D_THINK+urnd(V_THINK)-urnd(V_THINK))/2);
+    typein(string[idx]);
+}
+
+/*---------------------------------------------------------------------------*/
+
+/*
+ *		Function:	Typein
+ *
+ *		Purpose:		Display a character to stdout as if it was typed by a human.
+ */
+void typein(char c)
+{
+    /*
+     *		Standard keyboard delay
+     */
+    usleep(D_KEY+urnd(V_KEY)-urnd(V_KEY));
+    fprintf(stdout, "%c", c);
+    fflush(stdout);
+
+    /*
+     *		A random thinking delay
+     */
+    if ( !myisalnum(c) &&  urnd(100) < P_THINK)
+	usleep(D_THINK+urnd(V_THINK)-urnd(V_THINK));
+}
+
+STATIC void delay(char *);
+STATIC void die(int);
+static bool typing_delay = FALSE;
+STATIC void do_help(void);
+/*---------------------------------------------------------------------------*/
+
+void do_help(void)
+{
+    unsigned int j;
+
+    for(j = 0; j < COUNTOF(commands); j++) {
+	printf("#%-7s: %s\n", commands[j].word.word, commands[j].helpstring);
+    }
+    show_config(stdout);
+}
+
+static COMMAND commands[] = {
+    { { 4,0, "QUIT" }, "quits the program and saves MegaHAL's brain", QUIT },
+    { { 4,0, "EXIT" }, "exits the program *without* saving MegaHAL's brain", EXIT },
+    { { 4,0, "SAVE" }, "saves the current MegaHAL brain", SAVE },
+    { { 5,0, "DELAY" }, "toggles MegaHAL's typing delay (off by default)", DELAY },
+    { { 6,0, "SPEECH" }, "toggles MegaHAL's speech (off by default)", SPEECH },
+    { { 6,0, "VOICES" }, "list available voices for speech", VOICELIST },
+    { { 5,0, "VOICE" }, "switches to voice specified", VOICE },
+    { { 5,0, "BRAIN" }, "change to another MegaHAL personality", BRAIN },
+    { { 4,0, "HELP" }, "displays this message", HELP },
+    { { 5,0, "QUIET" }, "toggles MegaHAL's responses (on by default)",QUIET},
+    /*
+      { { 5,0, "STATS" }, "Display stats", STATS},
+      { { 5,0, "STATS-SESSION" }, "Display stats for this session only",STATS_SESSION},
+      { { 5,0, "STATS-ALL" },"Display stats for the whole lifetime",STATS-ALL},
+	*/
+};
+
+STATIC void listvoices(void);
+
+/*---------------------------------------------------------------------------*/
+
+/*
+ *		Function:	changevoice
+ *
+ *		Purpose:		change voice of speech output.
+ */
+void changevoice(struct sentence* src, unsigned int position)
+{
+}
+
+/*---------------------------------------------------------------------------*/
+
+/*
+ *		Function:	listvoices
+ *
+ *		Purpose:		Display the names of voices for speech output.
+ */
+void listvoices(void)
+{
+}
+
+/*---------------------------------------------------------------------------*/
+
+/*
+ *		Function:	Speak
+ */
+void speak(char *output)
+{
+    if (speech == FALSE) return;
+}
+
+STATIC void speak(char *);
+static bool speech = FALSE;
+STATIC void free_words(DICT *words);
+/*---------------------------------------------------------------------------*/
+
+STATIC void free_words(DICT *words)
+{
+    unsigned int iwrd;
+
+    if ( !words ) return;
+
+    if (words->entry != NULL)
+	for(iwrd = 0; iwrd < words->size; iwrd++) free_string(words->entry[iwrd].string);
+}
+
+STATIC void free_string(STRING word);
+STATIC void free_string(STRING word)
+{
+    free(word.word);
+    word.word = NULL;
+    word.length = 0;
+}
+
+
+STATIC void typein(char);
+
+STATIC void changevoice(struct sentence *, unsigned int);
+STATIC COMMAND_WORDS execute_command(struct sentence *, unsigned int *position);
+#define P_THINK 40
+#define D_KEY 100000
+#define V_KEY 50000
+#define D_THINK 500000
+#define V_THINK 250000
+
+STATIC void make_greeting(struct sentence *dst);
+
+STATIC void make_greeting(struct sentence *target)
+{
+    // unsigned int iwrd;
+    // for(iwrd = 0; iwrd < target->mused; iwrd++) free(target->entry[iwrd].string.word);
+    target->mused = 0;
+    // if (glob_grt->mused > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->mused) ].string );
+}
+
+#endif /* BAGGER */
