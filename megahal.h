@@ -55,9 +55,6 @@
 
 /*===========================================================================*/
 
-
-/*===========================================================================*/
-
 #ifdef SUNOS
 extern double drand48(void);
 extern void srand48(long);
@@ -114,7 +111,7 @@ void megahal_setquiet (void);
 void megahal_setnoprompt (void);
 void megahal_setnowrap (void);
 void megahal_setnobanner (void);
-void megahal_setnoprogres (void);
+void megahal_setnoprogress (void);
 
 void megahal_seterrorfile(char *filename);
 void megahal_setstatusfile(char *filename);
