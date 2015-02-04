@@ -12,10 +12,10 @@
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 	/* settings for the power-iteration:
-	** :: the minimal amount the eigenvalue may to vary before we
-	** call it convergiance;
+	** :: the minimal amount the eigenvalue may vary before we
+	** call it convergence;
 	** :: the maximal number of iterations we allow 
-	** if convergiance is not reached.
+	** if convergence is not reached.
 	 */
 #define PITER_FRAC_LIMIT 0.1
 #define PITER_ITER_MAX 100
@@ -111,6 +111,7 @@ unsigned int slot, *up;
 	/* search hashtable to find element */
 up = crosstab_hnd(ptr, num);
 slot = *up;
+	/* if entry exists: return it */
 if (slot != IDX_NIL) return slot;
 
 slot = cross_alloc_slot(ptr);
@@ -161,7 +162,7 @@ if (ptr->table[slot].hash.key == IDX_NIL ) return;
 ptr->total.sum -= ptr->table[slot].payload.sum;
 	/* the row/columns totals for all indices (including ourself) */
 for (xy=0; xy < ptr->msize; xy++ ) {
-	if (ptr->table[xy].hash.key == IDX_NIL ) continue;
+	if (ptr->table[xy].hash.key == IDX_NIL) continue;
 	zzz = XY2ZZ(slot,xy);
 	if (ptr->matrix[zzz] > 0) {
 		ptr->table[xy].payload.sum -= ptr->matrix[zzz];
@@ -296,25 +297,32 @@ cpysize = oldsize < newsize ? oldsize : newsize;
 
 oldrow = ptr->table;
 ptr->table = malloc (newsize * sizeof *ptr->table);
-	/* we must set the correct size, because crosstab_hnd() relies on it */
+	/* we must first set the correct size, because crosstab_hnd() relies on it */
 ptr->msize = newsize;
 
 memcpy (ptr->table, oldrow, cpysize * sizeof *oldrow);
 row_format_slots( ptr->table , newsize );
 
 for (slot =0 ; slot < cpysize; slot++) {
-	if ( oldrow[slot].hash.key == IDX_NIL) continue;
 	ptr->table[slot].hash.key = oldrow[slot].hash.key ;
+	if (oldrow[slot].hash.key == IDX_NIL) continue;
 	up = crosstab_hnd(ptr, oldrow[slot].hash.key );
 	*up = slot;
 	}
 for ( ; slot < newsize; slot++) {
 	ptr->table[slot].hash.key = IDX_NIL;
 	}
-free (oldrow);
 
 	/* find end of freelist */
-for (up = &ptr->freelist; *up != IDX_NIL; up = &ptr->table[*up].hash.link) {;}
+	/* FIXME: freelist could point beyibd the new size */
+for (up = &ptr->freelist; *up != IDX_NIL; ) {
+	unsigned int num;
+	num = *up;
+	*up = oldrow[num].hash.link;
+	if (num < cpysize) up = &ptr->table[num].hash.link;
+	}
+
+free (oldrow);
 	/* append new slots to freelist */
 for (slot = oldsize; slot < newsize; slot++) {
 	*up = slot;
@@ -340,9 +348,9 @@ for (slot=LUSIZE(oldsize); slot < LUSIZE(newsize); slot++ ) {
 return ;
 }
 
-	/* perform power-iteration and keep the result vector in ->scores.
+	/* Perform power-iteration and keep the result vector in ->scores.
 	** the eigenvalue is put in ptr->score.
-	 */
+	*/
 static void crosstab_recalc(struct crosstab * ptr)
 {
 unsigned slot,iter;
@@ -371,6 +379,35 @@ for (iter =0; iter < PITER_ITER_MAX; iter++) {
 return;
 }
 
+	/* Perform one sweep of the power-iteration
+	** , using "vec" as input (which is modified by this function).
+	** Return value is the resulting (normalised) eigenvalue
+	*/
+double iterding(double *vec, unsigned int *mx, unsigned int cnt)
+{
+unsigned int i,j,zz;
+double *tmp, sum;
+
+tmp = malloc (cnt * sizeof *tmp);
+
+for (i=0; i < cnt; i++) {
+	tmp[i] = 0;
+	}
+sum = 0;
+for (i=0; i < cnt; i++) {
+	for (j=0; j < cnt; j++) {
+		zz = XY2ZZ(i, j) ;
+		tmp [ i ] += vec [ j ] * mx [ zz ];
+		}
+	sum += tmp [ i ];
+	}
+for (i=0; i < cnt; i++) {
+	vec [ i ] = tmp[ i ] / sum;
+	}
+free (tmp);
+return sum;
+}
+
 	/* find the weakest elements and put them on the freelist */
 void crosstab_reduce(struct crosstab * ptr, unsigned int newsize)
 {
@@ -397,7 +434,7 @@ crosstab_recalc(ptr);
 	*/
 index_doubles(ptr->index, ptr->scores, ptr->msize);
 
-#if ( SHOW_ITER >= 2)
+#if (SHOW_ITER >= 2)
 {	unsigned idx,slot;
 fprintf(stderr, "NewIdx " );
 for (slot=0; slot < ptr->msize; slot++ ) {
@@ -717,35 +754,6 @@ for (idx=0; idx < ptr->msize; idx++ ) {
 	}
 crosstab_bin_dump(ptr);
 }
-	/* Perform one sweep of the power-iteration
-	** , using "vec" as input (which is modified by this function).
-	** Return value is the resulting (normalised) eigenvalue
-	*/
-double iterding(double *vec, unsigned int *mx, unsigned int cnt)
-{
-unsigned int i,j,zz;
-double *tmp, sum;
-
-tmp = malloc (cnt * sizeof *tmp);
-
-for (i=0; i < cnt; i++) {
-	tmp[i] = 0;
-	}
-sum = 0;
-for (i=0; i < cnt; i++) {
-	for (j=0; j < cnt; j++) {
-		zz = XY2ZZ(i, j) ;
-		tmp [ i ] += vec [ j ] * mx [ zz ];
-		}
-	sum += tmp [ i ];
-	}
-for (i=0; i < cnt; i++) {
-	vec [ i ] = tmp[ i ] / sum;
-	}
-free (tmp);
-return sum;
-}
-
 	/* we need this ugly global to supply 
 	** qsort() with a hidden 3rd argument
 	 */
