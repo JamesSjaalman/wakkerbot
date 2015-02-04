@@ -1,3 +1,4 @@
+
 /*===========================================================================*/
 /*
  *  Copyright (C) 1998 Jason Hutchens
@@ -269,16 +270,15 @@
 #pragma define _BSD_SOURCE 1
 #pragma define _XOPEN_SOURCE
 #define __USE_MISC
-#include <unistd.h>	// lockf()
+#include <unistd.h>    // lockf()
 #undef __USE_MISC
-#pragma undef _XOPEN_SOURCE
-#pragma undef _BSD_SOURCE
 
 #include <getopt.h>
 
 #include <ctype.h> /* isspace() */
 #include <string.h>
 #include <strings.h> /* strncasecmp */
+extern char *strdup(const char *);
 #include <errno.h>
 #include <signal.h>
 
@@ -288,16 +288,18 @@
 
 #include <sys/types.h>
 
-	/* _POSIX */
-extern int fileno(FILE *fp);
-extern char *strdup(const char *src);
-void srand48(long int seedval);
-
 #include "megahal.h"
 
 #if defined(DEBUG)
 #include "debug.h"
 #endif
+
+
+#define P_THINK 40
+#define D_KEY 100000
+#define V_KEY 50000
+#define D_THINK 500000
+#define V_THINK 250000
 
 #define MIN(a,b) ((a)<(b))?(a):(b)
 
@@ -315,13 +317,25 @@ void srand48(long int seedval);
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
 #define WAKKER_INF (1E+40)
 
-	/* Store precomputed hash values in Dict entries.
-	** This will cost 32 bit / entry but wont save a lot of CPU
+	/* define to outcomment old stuff */
+#define DONT_WANT_THIS 0
+
+	/* store precomputed hash values in Dict entries.
+	** This will cost 32 bit / entry and wont save a lot of CPU
 	** (The maximal AVG estimated chainlength is 1.5)
 	** The final stringcompare is needed anyway
 	** , and strings tend to be different (except for the last one ;-).
 	*/
 #define WANT_STORE_HASH 0
+
+	/* this is an ugly hack to cast a string pointer named 'str' to an unsigned char
+	** This is absolutely necessary for the isXXXX() functions which
+	** expect an int in the range 0...255 OR -a (for EOF)
+	** Using a signed char would sign-extend the argument to -128...127,
+	** which causes the ctype[] array to be indexed out of bounds
+	*/
+#undef UCPstr ((unsigned char *)str)
+#define UCPstr str
 
 	/* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
@@ -347,11 +361,11 @@ void srand48(long int seedval);
 	 */
 #define WANT_DUMP_MODEL 0
 
-	/* Use keyword weights when evaluating the replies */
-#define WANT_KEYWORD_WEIGHTS 1
 /*
 ** Real SWITCHES. Note: these are not independent. Some combinations might be impossible
 */
+	/* Use keyword weights when evaluating the replies */
+#define WANT_KEYWORD_WEIGHTS 1
 	/* The order of the Markov model.
 	** NOTE: if you change this, the (binary) .brn file will be rewritten
 	** using the new value of ORDER_WANTED. Be carefull.
@@ -362,6 +376,11 @@ void srand48(long int seedval);
 #define WANT_RDTSC_RANDOM 1
 
 #include "megahal.cnf"
+
+	/* add some copy cat detection */
+#ifndef WANT_PARROT_CHECK
+#define WANT_PARROT_CHECK 11
+#endif
 	/* Flags for converting strings to/from latin/utf8
 	** Best is to keep the corpus in utf8.
 	** In this case:
@@ -372,6 +391,7 @@ void srand48(long int seedval);
 #define SCRUTINIZE_L2U 2
 #define SCRUTINIZE_INPUT 0
 #define SCRUTINIZE_OUTPUT SCRUTINIZE_U2L
+#define SCRUTINIZE_OUTPUT 0
 
 #if WANT_PARROT_CHECK
 #define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
@@ -434,13 +454,15 @@ typedef struct {
     struct dictslot *entry;
 } DICT;
 
+#define WANT_OLD_NODES 1
+#if WANT_OLD_NODES
 struct treeslot {
     ChildIndex tabl;
     ChildIndex link;
-    struct node *ptr;
+    struct treenode *ptr;
 	};
 
-typedef struct node {
+typedef struct treenode {
     UsageCnt childsum; /* sum of children's count */
     UsageCnt thevalue; /* my count */
     WordNum symbol;
@@ -449,7 +471,24 @@ typedef struct node {
     ChildIndex branch;
     struct treeslot *children;
 } TREE;
+#else
+typedef unsigned NodeNum, NodeIdx;
+#define NODE_NUM_NIL ((NodeNum) -1)
+#define NODE_IDX_NIL ((NodeIdx) -1)
+struct nnode {
+	struct hnode {
+		NodeIdx head,link;
+		} num,partok, par;
+	NodeNum num,pnum; /* persistant number + parent number */
+	WordNum tok;
+	Stamp stamp;
+	UsageCnt childsum;
+	UsageCnt thevalue;
+	UsageCnt maxvalue;
+	};
+#endif
 
+#if WANT_OLD_NODES
 typedef struct {
     Count order;
     TREE *forward;
@@ -457,6 +496,14 @@ typedef struct {
     TREE **context;
     DICT *dict;
 } MODEL;
+#else
+typedef struct {
+    Count order;
+    NodeNum fwd,rev;
+    NodeNum context[10];
+    DICT *dict;
+} MODEL;
+#endif
 
 struct memstat {
 	unsigned word_cnt;
@@ -468,14 +515,6 @@ struct memstat {
 	unsigned treedel;
 	} volatile memstats = {0,0,0,0,0,0,0} ;
 
-typedef enum { UNKNOWN, QUIT, EXIT, SAVE, DELAY, HELP, SPEECH, VOICELIST, VOICE, BRAIN, QUIET} COMMAND_WORDS;
-
-typedef struct {
-    STRING word;
-    char *helpstring;
-    COMMAND_WORDS command;
-} COMMAND;
-
 /*===========================================================================*/
 static char *errorfilename = "megahal.log";
 static char *statusfilename = "megahal.txt";
@@ -484,10 +523,10 @@ static int glob_order = ORDER_WANTED;
 static int glob_timeout = DEFAULT_TIMEOUT;
 
 static int noprompt = 0;
-static int noprogres = 0;
+static int noprogress = 0;
 static int nowrap = 0;
 static int nobanner = 0;
-static int quiet = FALSE;
+static int quiet = 0;
 static FILE *errorfp;
 static FILE *statusfp;
 
@@ -496,6 +535,9 @@ unsigned parrot_hash[WANT_PARROT_CHECK] = {0,};
 unsigned parrot_hash2[WANT_PARROT_CHECK+1] = {0,};
 #endif /* WANT_PARROT_CHECK */
 
+#if DONT_WANT_THIS
+static bool used_key;
+#endif
 static MODEL *glob_model = NULL;
 	/* Refers to a dup'd fd for the brainfile, used for locking */
 static int glob_fd = -1;
@@ -516,6 +558,13 @@ static char *glob_directory = NULL;
 static char *last_directory = NULL;
 
 static Stamp stamp_min = 0, stamp_max=0;
+
+
+#ifndef ALZHEIMER_NODE_COUNT
+#define ALZHEIMER_NODE_COUNT (16*1024*1024)
+#endif
+#define NODE_COUNT (ALZHEIMER_NODE_COUNT+(2*1024*1024))
+struct treenode nodes[NODE_COUNT];
 
 STATIC int resize_tree(TREE *tree, unsigned newsize);
 
@@ -546,13 +595,13 @@ STATIC char *format_output(char *);
 STATIC void empty_dict(DICT *dict);
 STATIC void free_model(MODEL *);
 STATIC void free_tree(TREE *);
+STATIC void free_string(STRING word);
 
 STATIC void initialize_context(MODEL *);
 STATIC void initialize_dict(DICT *);
-
-
+STATIC DICT *read_dict(char *filename);
 STATIC void load_dict(FILE *, DICT *);
-STATIC bool load_model(char *path, MODEL *mp);
+STATIC int load_model(char *path, MODEL *mp);
 STATIC void load_personality(MODEL **);
 STATIC TREE * load_tree(FILE *);
 STATIC void load_word(FILE *, DICT *);
@@ -596,7 +645,7 @@ STATIC int myiswhite(int ch);
 STATIC int buffer_is_usable(char *buf, unsigned len);
 STATIC int dont_need_white_l(STRING string);
 STATIC int dont_need_white_r(STRING string);
-int word_is_allcaps(STRING string);
+STATIC int word_is_allcaps(STRING string);
 STATIC int word_has_highbit(STRING string);
 STATIC int word_classify(STRING org);
 #define TOKEN_LOWER 1
@@ -609,7 +658,6 @@ STATIC int word_classify(STRING org);
 #define TOKEN_MISC 8
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
-void del_word_dofree(DICT *dict, STRING word);
 void free_tree_recursively(TREE *tree);
 STATIC unsigned model_alzheimer(MODEL * model, unsigned maxnodecount);
 STATIC unsigned symbol_alzheimer_recurse(TREE *tree, unsigned lev, unsigned lim);
@@ -619,7 +667,6 @@ STATIC int check_interval(Stamp min, Stamp max, Stamp this);
 #define STAMP_ABOVE 1
 
 void read_dict_from_ascii(DICT *dict, char *name);
-
 static DICT *alz_dict = NULL;
 
 STATIC void dump_model(MODEL * model, char *path, int flags);
@@ -687,15 +734,17 @@ STATIC void sentence_reverse(struct sentence *ptr);
 STATIC struct sentence *one_reply(MODEL *);
 STATIC void change_personality(struct sentence *, unsigned int, MODEL **);
 STATIC void make_keywords(MODEL *mp, struct sentence *src);
-STATIC int dissimilar(struct sentence *one, struct sentence *two);
 STATIC WordNum babble(MODEL *model, struct sentence *words);
 STATIC char *make_output(struct sentence *src);
 
 	/* The lean statistics department.
 	*/
+#if WANT_PARROT_CHECK
 STATIC double penalize_two_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1);
-STATIC double fact2 (unsigned expected, unsigned seen);
 STATIC unsigned long long dragon_denominator2(unsigned long nslot, unsigned long nitem);
+#else
+STATIC bool dissimilar(struct sentence *one, struct sentence *two);
+#endif
 
 void megahal_setquiet(void)
 {
@@ -707,9 +756,9 @@ void megahal_setnoprompt(void)
     noprompt = 1;
 }
 
-void megahal_setnoprogres(void)
+void megahal_setnoprogress(void)
 {
-    noprogres = 1;
+    noprogress = 1;
 }
 
 void megahal_setnowrap (void)
@@ -800,7 +849,7 @@ char *megahal_do_reply(char *input, int want_log)
 
     make_words(input, glob_input);
     if (glob_input->mused < 3) return NULL;
-    if (glob_timeout <=0 ) learn_from_input(glob_model, glob_input);
+    if (glob_timeout <= 0 ) learn_from_input(glob_model, glob_input);
     else {
         show_config(stderr);
 	output = generate_reply(glob_model, glob_input);
@@ -873,6 +922,7 @@ void megahal_cleanup(void)
     show_memstat("Cleanup" );
     exithal();
 }
+
 
 
 /*---------------------------------------------------------------------------*/
@@ -1060,7 +1110,6 @@ STATIC void initialize_status(char *filename)
 {
     if (statusfp != stdout) fclose(statusfp);
     if (!filename) return ;
-
     statusfp = fopen(filename, "a");
     if (!statusfp) {
 	statusfp = stdout;
@@ -1120,12 +1169,6 @@ STATIC void log_output(char *output)
     char *formatted;
     char *bit;
 
-    // speak(output);
-
-    // glob_width = 75;
-    // formatted = format_output(output);
-    // delay(formatted);
-    // glob_width = 64;
     formatted = format_output(output);
 
     bit = strtok(formatted, "\n");
@@ -1236,6 +1279,8 @@ return *np;
 
 }
 
+#if NEVER
+STATIC void del_word_dofree(DICT *dict, STRING word);
 /* FIXME: this is (semantically) wrong:
 ** if we shift down the words, their symbols (indexes)
 ** will change (decremented) as well.
@@ -1244,7 +1289,7 @@ return *np;
 ** the symbols to be stable after a deletion.
 ** --> the symbols (WordNums) should NOT be considered stable.
 */
-void del_word_dofree(DICT *dict, STRING word)
+STATIC void del_word_dofree(DICT *dict, STRING word)
 {
 WordNum *np,this,top;
 
@@ -1313,16 +1358,9 @@ if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
     }
 return ;
 }
-
+#endif
 /*---------------------------------------------------------------------------*/
 
-/*
- *		Function:	Find_Word
- *
- *		Purpose:		Return the symbol corresponding to the word specified.
- *						We assume that the word with index zero is equal to a
- *						NULL word, indicating an error condition.
- */
 STATIC WordNum find_word(DICT *dict, STRING string)
 {
 WordNum *np;
@@ -1502,8 +1540,8 @@ if (!dict || symbol >= dict->size ) return 0;
 
 if (dict->entry[ symbol ].stats.nnode == 0 ) dict->stats.nonzero += 1;
 dict->entry[ symbol ].stats.nnode += nnode;
-dict->stats.nnode += nnode;
 dict->entry[ symbol ].stats.valuesum += valuesum;
+dict->stats.nnode += nnode;
 dict->stats.valuesum += valuesum;
 
 return dict->entry[ symbol ].stats.valuesum;
@@ -1516,8 +1554,8 @@ if (!dict || symbol >= dict->size ) return 0;
 
 dict->entry[ symbol ].stats.nnode -= nnode;
 if (dict->entry[ symbol ].stats.nnode == 0 ) dict->stats.nonzero -= 1;
-dict->stats.nnode -= nnode;
 dict->entry[ symbol ].stats.valuesum -= valuesum;
+dict->stats.nnode -= nnode;
 dict->stats.valuesum -= valuesum;
 
 return dict->entry[ symbol ].stats.valuesum;
@@ -1670,18 +1708,12 @@ STATIC TREE *node_new(unsigned nchild)
 {
     TREE *node = NULL;
 
-    /*
-     *		Allocate memory for the new node
-     */
     node = malloc(sizeof *node);
     if (!node) {
 	error("node_new", "Unable to allocate the node.");
 	return NULL;
     }
 
-    /*
-     *		Initialise the contents of the node
-     */
     node->symbol = WORD_ERR;
     node->childsum = 0;
     node->thevalue = 0;
@@ -2000,8 +2032,7 @@ ChildIndex *ip;
 
 ip = node_hnd(node, symbol);
 
-/* if (!ip) return NULL; */
-if (!ip || *ip == CHILD_NIL) { /* not found: create one */
+if ( !ip || *ip == CHILD_NIL) { /* not found: create one */
     if (node->branch >= node->msize) {
         unsigned newsize ;
         newsize = node->branch+sqrt(1+node->branch);
@@ -2012,7 +2043,7 @@ if (!ip || *ip == CHILD_NIL) { /* not found: create one */
 		}
         /* after realloc ip might be stale: need to obtain a new one */
         ip = node_hnd(node, symbol);
-        if (!ip) {
+        if ( !ip) {
             warn("Find_symbol_add", "Ip was NULL after resize, symbol=%u", symbol );
             return NULL;
             }
@@ -2077,7 +2108,7 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
 		, oldsize, newsize
 		, tree->thevalue, tree->childsum);
 #endif
-			treeslots_sort(old, tree->branch );
+		treeslots_sort(old, tree->branch );
 		}
 
         for (item =0 ; item < tree->branch; item++) {
@@ -2103,7 +2134,7 @@ STATIC int resize_tree(TREE *tree, unsigned newsize)
     return 0; /* success */
 }
 
-STATIC void format_treeslots(struct treeslot  *slots , unsigned size)
+STATIC void format_treeslots(struct treeslot *slots , unsigned size)
 {
     unsigned idx;
 
@@ -2120,29 +2151,39 @@ STATIC int treeslots_cmp(const void *vl, const void *vr)
 const struct treeslot  *sl=vl;
 const struct treeslot  *sr=vr;
 
-if (!sl->ptr && ! sr->ptr) return 0;
-if (!sl->ptr ) return 1;
-if (!sr->ptr ) return -1;
+if ( !sl->ptr && !sr->ptr) return 0;
+if ( !sl->ptr ) return 1;
+if ( !sr->ptr ) return -1;
 
-if (sl->ptr->thevalue < sr->ptr->thevalue ) return 1;
-if (sl->ptr->thevalue > sr->ptr->thevalue ) return -1;
+if ( sl->ptr->thevalue < sr->ptr->thevalue ) return 1;
+if ( sl->ptr->thevalue > sr->ptr->thevalue ) return -1;
 
-if (sl->ptr->symbol < sr->ptr->symbol ) return -1;
-if (sl->ptr->symbol > sr->ptr->symbol ) return 1;
+if ( sl->ptr->symbol < sr->ptr->symbol ) return -1;
+if ( sl->ptr->symbol > sr->ptr->symbol ) return 1;
 return 0;
 }
 
-#if 1
-/* NOTE: quicksort is a bad choice here, since the childnodes are "almost ordered",
+/* NOTE: quicksort is a bad choice here, since the childnodes are "almost sorted",
  * The sorting does not consume enough CPU to justify a mergesort or insertion sort variant.
  * (when training, qsort ate 10% CPU, most of it in the compare function)
+ *
  * This is a "one pass bubblesort":
  * It will /eventually/ get the array sorted.
  * Having the array sorted is not that important: babble() may need only a few steps
- * extra on an unsorted array.
+ * extra on an almost sorted array.
  * treeslots_cmp(left,right) returns positive if left < right (which is the intended order)
- * NOTE 2013-10-14 we start at the top of the array, since that is where the new entries emerge.
+ *
+ * NOTE 2013-10-14 we start at the top of the array, since that is
+ * where the new entries emerge and the old ones fade away.
  */
+
+#if 0
+STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
+{
+	qsort(slots, count, sizeof *slots, treeslots_cmp);
+}
+#else
+
 STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
 {
 unsigned idx;
@@ -2159,19 +2200,14 @@ for (idx = count; --idx > 0; ) {
 	}
 }
 
-#else
-
-
-STATIC void treeslots_sort(struct treeslot  *slots , unsigned count)
-{
-qsort(slots, count, sizeof *slots, treeslots_cmp);
-}
-
 #endif
 
-/* Profiling shows that node_hnd() is the biggest CPU consumer
+/*
+** Find the place where the index to 'symbol' lives. (or should live)
+**
+** Profiling shows that node_hnd() is the biggest CPU consumer
 ** (unless Alzheimer kicks in ;-)
-** I don't see a way to speed this thing up, apart from maybe making it static.
+** I don't see a way to speed this thing up, apart from making it static.
 */
 STATIC ChildIndex *node_hnd(TREE *node, WordNum symbol)
 {
@@ -2179,6 +2215,9 @@ ChildIndex *ip;
 unsigned slot;
 
 if (!node->msize) return NULL;
+
+	/* Symbol-numbers are considered uniform "random" enough
+	** , so don't need hashing */
 slot = symbol % node->msize;
 for (ip = &node->children[ slot ].tabl; *ip != CHILD_NIL; ip = &node->children[ *ip ].link ) {
 #if WANT_MAXIMAL_PARANOIA
@@ -2203,7 +2242,7 @@ void initialize_context(MODEL *model)
 {
     unsigned int iord;
 
-    for(iord = 0; iord < 2+model->order; iord++) model->context[iord] = NULL;
+    for (iord = 0; iord < 2+model->order; iord++) model->context[iord] = NULL;
     if (model->forward) model->forward->stamp = stamp_max;
     if (model->backward) model->backward->stamp = stamp_max;
 }
@@ -2248,14 +2287,13 @@ if (altsym != WORD_NIL) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
 	, (unsigned long long)dict->stats.valuesum
 	);
 #endif
-/*		, (double ) dict->entry[i].stats.nnode * dict->size / dict->stats.node */
 
-if (altsym==WORD_NIL) {
-	/* this is to catch and ignore typos.
+	/* This is to catch and ignore typos.
 	** Typos have an initial score of 2*(1+glob_order) 
 	** will never get any hits, (and will decay soon)
 	*/
 #define TRESHOLD (2*(1+glob_order))
+if (altsym==WORD_NIL) {
 	if (dict->entry[symbol].stats.valuesum < TRESHOLD) return 0.00099;
 	if (dict->entry[symbol].stats.nnode < TRESHOLD) return 0.00088;
 	// 20120224
@@ -2492,7 +2530,7 @@ void show_dict(DICT *dict)
 
     fp = fopen("megahal.dic", "w");
     if (!fp) {
-	warn("show_dict", "Unable to open file");
+	warn("show_dict", "Unable to open file: %s", "megahal.dic");
 	return;
     }
 
@@ -2711,7 +2749,7 @@ return ptr;
  *
  *		Purpose:		Load a model into memory.
  */
-STATIC bool load_model(char *filename, MODEL *model)
+STATIC int load_model(char *filename, MODEL *model)
 {
     FILE *fp;
     char cookie[16];
@@ -2719,14 +2757,14 @@ STATIC bool load_model(char *filename, MODEL *model)
     size_t kuttje;
 
 
-    if (!filename) return FALSE;
+    if (!filename) return -1;
 
     // fp = fopen(filename, "rb");
     fp = fopen(filename, "rb+"); //lockf needs write permission
 
     if (!fp) {
 	warn("load_model", "Unable to open file `%s'", filename);
-	return FALSE;
+	return -1;
     }
     while (1) {
 	int rc;
@@ -2736,7 +2774,7 @@ STATIC bool load_model(char *filename, MODEL *model)
 		rc = errno;
 		warn("load_model", "Unable to dup2 file `%s' err=%d(%s) ", filename, rc, strerror(rc) );
 		fclose (fp);
-		return FALSE;
+		return -1;
 		}
 		/* F_TLOCK locks, but returns -1 on failure */
 	rc = lockf( glob_fd, F_TLOCK, sizeof cookie );
@@ -2795,7 +2833,7 @@ STATIC bool load_model(char *filename, MODEL *model)
         }
 #endif
 
-    return TRUE;
+    return 0;
 
 fail:
     fclose(fp);
@@ -2834,7 +2872,6 @@ STATIC void make_words(char * src, struct sentence * target)
             }
         if (buffer_is_usable(src+pos,chunk)) {
             word.word = src+pos;
-            word.type = 0;
             word.length = chunk;
 	    add_word_to_sentence(target, word);
 	    }
@@ -3035,7 +3072,7 @@ if (ch == '\f') return 1;
 return 0;
 }
 
-int word_is_allcaps(STRING string)
+STATIC int word_is_allcaps(STRING string)
 {
 unsigned idx, nupp=0, nlow=0, noth=0;
 
@@ -3108,6 +3145,7 @@ for(idx = 0; idx < string.length; idx++) switch( string.word[idx] ) {
 	}
 return 0;
 }
+
 STATIC int dont_need_white_r(STRING string)
 {
 unsigned idx;
@@ -3129,6 +3167,8 @@ return 0;
 void show_config(FILE *fp)
 {
     fprintf(fp, "Compiled-in constant settings:\n" );
+    fprintf(fp, "NODE_COUNT=%d\n", NODE_COUNT);
+    fprintf(fp, "ALZHEIMER_NODE_COUNT=%d\n", ALZHEIMER_NODE_COUNT);
     fprintf(fp, "MIN_REPLY_SIZE=%d\n", MIN_REPLY_SIZE);
     fprintf(fp, "INTENDED_REPLY_SIZE=%d\n", INTENDED_REPLY_SIZE);
     fprintf(fp, "MAX_REPLY_CHARS=%d\n", MAX_REPLY_CHARS);
@@ -3161,6 +3201,9 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     unsigned count;
     int basetime;
     double penalty;
+#if WANT_PARROT_CHECK
+    double penalty1;
+#endif
 
     /* show_config(stderr); */
 
@@ -3202,11 +3245,12 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 {
     unsigned pidx;
     fprintf(stderr, "\nParrot1={" );
-    for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, " %u", parrot_hash[pidx] ); }
+    for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, " %u", parrot_hash[ pidx] ); }
     fprintf(stderr, "}\n" );
+    /* fprintf(stderr, "} Sum=%u Ssq=%u Exp=%f Rat=%f\n" , sum1, ssq1, calc1, penalty1 ); */
 
     fprintf(stderr, "Parrot2={" );
-    for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { fprintf(stderr, " %u", parrot_hash2[pidx] ); }
+    for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { fprintf(stderr, " %u", parrot_hash2[ pidx] ); }
     fprintf(stderr, "}\n" );
 
     fprintf(stderr, "Penal= %f Raw=%f, Max=%f, Surp=%f"
@@ -3241,24 +3285,18 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     return output;
 }
 
+#if !WANT_PARROT_CHECK
 /*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Dissimilar
- *
- *		Purpose:		Return TRUE or FALSE depending on whether the dictionaries
- *						are the same or not.
- */
-STATIC int dissimilar(struct sentence *one, struct sentence *two)
+STATIC bool dissimilar(struct sentence *one, struct sentence *two)
 {
     unsigned int iwrd;
 
     if (one->mused != two->mused) return TRUE;
     for(iwrd = 0; iwrd < one->mused; iwrd++)
-	if (wordcmp(one->entry[iwrd].string , two->entry[iwrd].string ) ) return 1;
-    return 0;
+	if (wordcmp(one->entry[iwrd].string , two->entry[iwrd].string ) ) return TRUE;
+    return FALSE;
 }
-
+#endif
 /*---------------------------------------------------------------------------*/
 
 STATIC void make_keywords(MODEL *model, struct sentence *src)
@@ -3279,10 +3317,15 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
     if (cross_dict_size < CROSS_DICT_SIZE_MIN) cross_dict_size = CROSS_DICT_SIZE_MIN ;
     if (cross_dict_size > CROSS_DICT_SIZE_MAX) cross_dict_size = CROSS_DICT_SIZE_MAX ;
 
+#if 0
+    if (glob_crosstab) crosstab_resize(glob_crosstab,cross_dict_size);
+    else glob_crosstab = crosstab_init(cross_dict_size);
+#else
     if (glob_crosstab) crosstab_free(glob_crosstab);
     glob_crosstab = crosstab_init(cross_dict_size);
-
+#endif
     rotor = echocount = 0;
+
     for(iwrd = 0; iwrd < src->mused; iwrd++) {
 	/*
 	 *		Find the symbol ID of the word.  If it doesn't exist in
@@ -3340,11 +3383,17 @@ STATIC struct sentence *one_reply(MODEL *model)
      */
     initialize_context(model);
     model->context[0] = model->forward;
+#if DONT_WANT_THIS
+    used_key = FALSE;
+#endif
 
     /*
      *		Generate the reply in the forward direction.
      */
     for (symbol = seed(model); symbol > WORD_FIN ; symbol = babble(model, zereply) ) {
+	/*
+	 *		Append the symbol to the reply dictionary.
+	 */
 	add_word_to_sentence(zereply, model->dict->entry[symbol].string );
 	/*
 	 *		Extend the current context of the model with the current symbol.
@@ -3353,14 +3402,16 @@ STATIC struct sentence *one_reply(MODEL *model)
     }
 
     /*
-     *		Re-create the context of the model from the current reply
-     *		sentence so that we can generate backwards to reach the
-     *		beginning of the string.
      *		Start off by making sure that the model's context is empty.
      */
     initialize_context(model);
     model->context[0] = model->backward;
 
+    /*
+     *		Re-create the context of the model from the current reply
+     *		dictionary so that we can generate backwards to reach the
+     *		beginning of the string.
+     */
     for(widx = MIN(zereply->mused, 1+model->order); widx-- > 0; ) {
 	symbol = find_word(model->dict, zereply->entry[ widx ].string );
 	update_context(model, symbol);
@@ -3725,18 +3776,18 @@ STATIC char *make_output(struct sentence *src)
 /*---------------------------------------------------------------------------*/
 
 /*
- *		Function:	Babble
+ *	Function:	Babble
  *
- *		Purpose:		Return a random symbol from the current context, or a
- *						zero symbol identifier if we've reached either the
- *						start or end of the sentence.  Select the symbol based
- *						on probabilities, favouring keywords.  In all cases,
- *						use the longest available context to choose the symbol.
+ *	Purpose:		Return a random symbol from the current context, or a
+ *				zero symbol identifier if we've reached either the
+ *				start or end of the sentence.  Select the symbol based
+ *				on probabilities. (ie weighted by ptr->thevalue)
+ *				In all cases, use the longest available context to choose the symbol.
  */
 STATIC WordNum babble(MODEL *model, struct sentence *src)
 {
     TREE *node;
-    unsigned int oidx,cidx;
+    unsigned int oidx,cidx=0;
     unsigned credit;
     WordNum symbol = WORD_ERR;
 
@@ -3757,21 +3808,13 @@ STATIC WordNum babble(MODEL *model, struct sentence *src)
      *		Choose a symbol at random from this context.
      *		weighted by ->thevalue
      */
-    // cidx = urnd(node->branch);
-    // credit = urnd( (1+node->childsum)/2);
-    cidx = 0;
     credit = urnd( node->childsum );
-    while(1) {
-	/*
-	 *		If the symbol occurs as a keyword, then use it.  Only use an
-	 *		auxilliary keyword if a normal keyword has already been used.
-	 */
-	symbol = node->children[cidx].ptr->symbol;
-	if (credit < node->children[cidx].ptr->thevalue) break;
+    for (cidx = 0; 1; cidx = (cidx+1) % node->branch ) {
+	if (credit < node->children[cidx].ptr->thevalue) break; /* found it */
         /* 20120203 if (node->children[cidx].ptr->thevalue == 0) credit--; */
 	credit -= node->children[cidx].ptr->thevalue;
-	cidx = (cidx+1) % node->branch;
     }
+    symbol = node->children[cidx].ptr->symbol;
 done:
     // fprintf(stderr, "{+%u}", symbol );
     return symbol;
@@ -3932,6 +3975,36 @@ return (penalty);
 /*---------------------------------------------------------------------------*/
 
 /*
+ *		Purpose:		Read a dictionary from a file.
+ */
+STATIC DICT *read_dict(char *filename)
+{
+    DICT *this;
+    FILE *fp = NULL;
+    static char buffer[1024];
+    static STRING word ={0,0,buffer};
+
+    this = new_dict();
+
+    if (!filename) return this;
+
+    fp = fopen(filename, "r");
+    if ( !fp ) return this;
+
+    while( fgets(buffer, sizeof buffer, fp) ) {
+        size_t len;
+	if (buffer[0] == '#') continue;
+        word.length = len = strcspn (buffer, "\t \n#" );
+        if (!len) continue;
+	add_word_dodup(this, word);
+    }
+
+    fclose(fp);
+    return this;
+}
+/*---------------------------------------------------------------------------*/
+
+/*
  *		Function:	Ignore
  *
  *		Purpose:		Log the occurrence of a signal, but ignore it.
@@ -3986,7 +4059,7 @@ while(1)	{
 #if WANT_RDTSC_RANDOM
     val = rdtsc_rand();
 #else
-    val = lrand48();
+    val =  lrand48();
 #endif
 /* we need this to avoid oversampling of the lower values.
  * Oversampling the lower values becomes more of a problem if (UNSIGNED_MAX/range) gets smaller
@@ -4029,16 +4102,16 @@ return val;
 void progress(char *message, unsigned long done, unsigned long todo)
 {
     static int last = 0;
-    static char first = 0;
+    static int first = 0;
 
-    if (noprogres) return ; //FALSE;
+    if (noprogress) return ;
     /*
      *    We have already hit 100%, and a newline has been printed, so nothing
      *    needs to be done.
      *    WP: we could avoid div/zero.
      */
     if (!todo) todo = done?done:1;
-    if (done*100/todo == 100 && !first ) return ; // TRUE;
+    if (done*100/todo == 100 && !first ) return ;
 
     /*
      *    Nothing has changed since the last time this function was called,
@@ -4049,7 +4122,7 @@ void progress(char *message, unsigned long done, unsigned long todo)
 	    fprintf(stderr, "%s: %3lu%%", message, done*100/todo);
 	    first = 1;
 	}
-	return ; // TRUE;
+	return ;
     }
 
     /*
@@ -4064,7 +4137,7 @@ void progress(char *message, unsigned long done, unsigned long todo)
      *    We have hit 100%, so reset static variables and print a newline.
      */
     if (last == 100) {
-	first = 0;
+	first = FALSE;
 	last = 0;
 	fprintf(stderr, "\n");
     }
@@ -4123,7 +4196,7 @@ void load_personality(MODEL **model)
 
     close( glob_fd  ); glob_fd = -1;
     sprintf(filename, "%s%smegahal.brn", glob_directory, SEP);
-    if ( load_model(filename, *model) == FALSE) {
+    if ( load_model(filename, *model) ) {
 	sprintf(filename, "%s%smegahal.trn", glob_directory, SEP);
 	train(*model, filename);
     }
@@ -4164,6 +4237,12 @@ void change_personality(struct sentence *command, unsigned int position, MODEL *
 
 /*---------------------------------------------------------------------------*/
 
+STATIC void free_string(STRING word)
+{
+    free(word.word);
+    word.word = NULL;
+    word.length = 0;
+}
 
 STATIC HashVal hash_word(STRING string)
 {
@@ -4321,7 +4400,7 @@ STATIC unsigned model_alzheimer(MODEL * model, unsigned maxnodecount)
 {
 Stamp limit;
 unsigned step, width;
-unsigned count, totcount;
+unsigned count=0, totcount=0;
 static double density = 0.0;
 static unsigned direction = 0;
 int rc;
@@ -4704,35 +4783,14 @@ return ret;
 }
 
 #if WANT_PARROT_CHECK
-
-#if USE_QSORT
-static int cmp_unsigned_desc(void *vl, void *vr)
+int cmp_unsigned_desc(const void *vl, const void *vr)
 {
-unsigned *ul = vl;
-unsigned *ur = vr;
+unsigned *ul = (unsigned*) vl;
+unsigned *ur = (unsigned*) vr;
 if (*ul < *ur) return 1;
 if (*ul > *ur) return -1;
 return 0;
 }
-#else
-
-STATIC inline void meuksort(unsigned arr[], unsigned siz);
-STATIC inline void meuksort(unsigned arr[], unsigned siz)
-{
-unsigned bot,idx, best,max;
-
-for (bot=0; bot < siz; bot++) {
-	max = arr[best=bot];
-	for (idx=bot+1; idx < siz; idx++ ) {
-		if (arr[idx] <= max) continue;
-		max = arr[best=idx];
-		}
-	if (best == bot) continue;
-	arr[best] = arr[bot];
-	arr[bot] = max;
-	}
-}
-#endif /* USE_QSORT */
 
 STATIC double penalize_two_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1)
 {
@@ -4741,14 +4799,9 @@ unsigned ssq,sum;
 double penalty;
 unsigned long long red_dragon;
 
-#if USE_QSORT
 qsort ( arr1, siz1, sizeof arr1[0], cmp_unsigned_desc);
 qsort ( arr2, siz1+1, sizeof arr2[0], cmp_unsigned_desc);
 
-#else /* USE_QSORT */
-meuksort ( arr1, siz1);
-meuksort ( arr2, siz1+1);
-#endif /* USE_QSORT */
 sum=ssq=0;
 for (idx=0; idx < siz1 ; idx++) { 
     sum += arr1[idx] + arr2[idx] ;
@@ -4779,11 +4832,69 @@ penalty = pow ( (double)ssq/red_dragon, PARROT_POWER );
 if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
 if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
 
+return penalty;
+}
+
+/* expected value for ssq when dividing nitems over nslots */
+STATIC unsigned long long dragon_denominator2(unsigned long nslot, unsigned long nitem)
+{
+
+unsigned long long result;
+result = ((unsigned long long)nitem * (nitem+2*nslot-1)) / (nslot) ;
+/* fprintf (stderr, "Denominator (%lu,%lu) := %llu\n" , nslot, nitem, result); */
+return result;
+}
+#endif
+
+
+int do_check_interval(Stamp min, Stamp max, Stamp this)
+{
+return check_interval(min, max, this);
+}
+
+#if 0 /* !WANT_DOUBLE_PARROT */
+#define WANT_DOUBLE_PARROT 1
+STATIC double penalize_parrot(unsigned arr[], unsigned siz);
+STATIC double fact2 (unsigned expected, unsigned seen);
+
+STATIC double penalize_parrot(unsigned arr[], unsigned siz)
+{
+unsigned idx;
+unsigned ssq,sum;
+double calc,penalty;
+unsigned long long red_dragon;
+
+sum=ssq=0;
+for (idx=0; idx < siz ; idx++) { 
+    sum += arr[idx] ;
+    ssq += arr[idx] * (1+arr[idx]) ;
+    }
+if (sum <= 1) return 0.0;
+
+
+/* Formula from hashtable-site www.strchr.com/hash_functions/
+**     Sum ( chainlen * (chainlen+1)) / 2    ## Chainlen := number of items/slot
+**     ------------------------------
+**          (n/2m)* (n+2m -1)
+**
+** N= nitem; m=nslot
+** for ease of computation, 2*nominator and 2*denominator are used here.
+** The result is a ratio that should be ~1 for perfect hashing/spread.
+** I penalize higher ratios by raising to a higher power (around 1.5)
+*/
+
+red_dragon = dragon_denominator2( siz, sum);
+
+penalty = pow ( (double)ssq/red_dragon, PARROT_POWER );
+
+/* fprintf(stderr, "Sum=%u Siz=%u Ssq= %lu/%llu := %f\n" , sum, siz, ssq, red_dragon, penalty ); */
+
+if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
+if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
+
 
 return penalty;
 }
-#endif /* WANT_PARROT_CHECK */
-
 STATIC double fact2 (unsigned expected,unsigned seen) 
 {
 unsigned val;
@@ -4797,61 +4908,189 @@ for (val =1; seen > expected; seen--) {
 /* if (expected) val/= expected; */
 return val;
 }
-
-/* expected value for ssq when dividing nitems over nslots */
-STATIC unsigned long long dragon_denominator2(unsigned long nslot, unsigned long nitem)
-{
-
-unsigned long long result;
-result = ((unsigned long long)nitem * (nitem+2*nslot-1)) / (nslot) ;
-/* fprintf (stderr, "Denominator (%lu,%lu) := %llu\n" , nslot, nitem, result); */
-return result;
-}
-
-int do_check_interval(Stamp min, Stamp max, Stamp this)
-{
-return check_interval(min, max, this);
-}
+#endif
 /* Eof */
 
-#if WANT_BAGGER
-DICT *read_dict(char *filename);
-/*---------------------------------------------------------------------------*/
 
+#if DONT_WANT_THIS
+static bool speech = FALSE;
+static bool typing_delay = FALSE;
+
+typedef enum { UNKNOWN, QUIT, EXIT, SAVE, DELAY, HELP, SPEECH, VOICELIST, VOICE, BRAIN, QUIET} COMMAND_WORDS;
+
+typedef struct {
+    STRING word;
+    char *helpstring;
+    COMMAND_WORDS command;
+} COMMAND;
+
+STATIC COMMAND_WORDS execute_command(struct sentence *, unsigned int *position);
+STATIC void make_greeting(struct sentence *dst);
+STATIC void do_help(void);
+STATIC void changevoice(struct sentence *, unsigned int);
+STATIC void typein(char);
+
+STATIC void listvoices(void);
+STATIC void delay(char *);
+STATIC void die(int);
+STATIC void free_words(DICT *words);
 /*
- *		Purpose:		Read a dictionary from a file.
- */
-DICT *read_dict(char *filename)
+   megahal_command --
+   Check to see if input is a megahal command, and if so, act upon it.
+   Returns 1 if it is a command, 0 if it is not.
+  */
+
+int megahal_command(char *input)
 {
-    DICT *this;
-    FILE *fp = NULL;
-    static char buffer[1024];
-    static STRING word ={0,0,buffer};
+    unsigned int position = 0;
+    char *output;
 
-    this = new_dict();
-
-    if (!filename) return this;
-
-    fp = fopen(filename, "r");
-    if ( !fp ) return this;
-
-    while( fgets(buffer, sizeof buffer, fp) ) {
-        size_t len;
-	if (buffer[0] == '#') continue;
-        word.length = len = strcspn (buffer, "\t \n#" );
-        if (!len) continue;
-	add_word_dodup(this, word);
+    make_words(input,glob_input);
+    switch(execute_command(glob_input, &position)) {
+    case EXIT:
+	exithal();
+	return 1;
+	break;
+    case QUIT:
+	save_model("megahal.brn", glob_model);
+	exithal();
+	return 2;
+	break;
+    case SAVE:
+	save_model("megahal.brn", glob_model);
+	break;
+    case DELAY:
+	typing_delay = !typing_delay;
+	printf(MY_NAME " typing is now %s.\n", typing_delay?"on":"off");
+	return 1;
+    case SPEECH:
+	speech = !speech;
+	printf(MY_NAME " speech is now %s.\n", speech?"on":"off");
+	return 1;
+    case HELP:
+	do_help();
+	return 1;
+    case VOICELIST:
+	listvoices();
+	return 1;
+    case VOICE:
+	changevoice(glob_input, position);
+	return 1;
+    case BRAIN:
+	change_personality(glob_input, position, &glob_model);
+	make_greeting(glob_greets);
+	output = generate_reply(glob_model, glob_greets);
+	log_output(output);
+	return 1;
+    case QUIET:
+	quiet = !quiet;
+	return 1;
+    default:
+	return 0;
     }
+    return 0;
+}
+/*
+ *		Function:	Execute_Command
+ *
+ *		Purpose:		Detect whether the user has typed a command, and
+ *						execute the corresponding function.
+ */
+STATIC COMMAND_WORDS execute_command(struct sentence *src, unsigned int *position)
+{
+    unsigned int iwrd;
+    unsigned int j;
 
-    fclose(fp);
-    return this;
+    /*
+     *		If there is only one word, then it can't be a command.
+     */
+    *position = src->mused+1;
+    if (src->mused <= 1) return UNKNOWN;
+
+    /*
+     *		Search through the word array.  If a command prefix is found,
+     *		then try to match the following word with a command word.  If
+     *		a match is found, then return a command identifier.  If the
+     *		Following word is a number, then change the judge.  Otherwise,
+     *		continue the search.
+     */
+    for(iwrd = 0; iwrd < src->mused-1; iwrd++) {
+	/*
+	 *		The command prefix was found.
+	 */
+	if (src->entry[iwrd].string.word[src->entry[iwrd].string.length - 1] != '#') continue;
+	    /*
+	     *		Look for a command word.
+	     */
+	for(j = 0; j < COUNTOF(commands); j++)
+	if (!strncasecmp(commands[j].word.word, src->entry[iwrd + 1].string.word, src->entry[iwrd + 1].string.length) ) {
+	    *position = iwrd + 1;
+	    return commands[j].command;
+		}
+	}
+
+    return UNKNOWN;
+}
+static COMMAND commands[] = {
+    { { 4,0, "QUIT" }, "quits the program and saves MegaHAL's brain", QUIT },
+    { { 4,0, "EXIT" }, "exits the program *without* saving MegaHAL's brain", EXIT },
+    { { 4,0, "SAVE" }, "saves the current MegaHAL brain", SAVE },
+    { { 5,0, "DELAY" }, "toggles MegaHAL's typing delay (off by default)", DELAY },
+    { { 6,0, "SPEECH" }, "toggles MegaHAL's speech (off by default)", SPEECH },
+    { { 6,0, "VOICES" }, "list available voices for speech", VOICELIST },
+    { { 5,0, "VOICE" }, "switches to voice specified", VOICE },
+    { { 5,0, "BRAIN" }, "change to another MegaHAL personality", BRAIN },
+    { { 4,0, "HELP" }, "displays this message", HELP },
+    { { 5,0, "QUIET" }, "toggles MegaHAL's responses (on by default)",QUIET},
+    /*
+      { { 5,0, "STATS" }, "Display stats", STATS},
+      { { 5,0, "STATS-SESSION" }, "Display stats for this session only",STATS_SESSION},
+      { { 5,0, "STATS-ALL" },"Display stats for the whole lifetime",STATS-ALL},
+	*/
+};
+void do_help(void)
+{
+    unsigned int j;
+
+    for(j = 0; j < COUNTOF(commands); j++) {
+	printf("#%-7s: %s\n", commands[j].word.word, commands[j].helpstring);
+    }
+    show_config(stdout);
 }
 
+char *megahal_initial_greeting(void)
+{
+    char *output;
+
+    make_greeting(glob_greets);
+    output = generate_reply(glob_model, glob_greets);
+    return output;
+}
 /*---------------------------------------------------------------------------*/
+/*
+ *		Function:	Make_Greeting
+ *		Purpose:		Put some special words into the dictionary so that the
+ *						program will respond as if to a new judge.
+ */
+STATIC void make_greeting(struct sentence *target)
+{
+    // unsigned int iwrd;
+    // for(iwrd = 0; iwrd < target->mused; iwrd++) free(target->entry[iwrd].string.word);
+    target->mused = 0;
+    // if (glob_grt->mused > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->mused) ].string );
+}
+
 
 /*
+ *		Function:	changevoice
+ *		Purpose:		change voice of speech output.
+ */
+void changevoice(struct sentence* src, unsigned int position)
+{
+}
+/*---------------------------------------------------------------------------*/
+/*
  *		Function:	Delay
- *
  *		Purpose:		Display the string to stdout as if it was typed by a human.
  */
 void delay(char *string)
@@ -4874,9 +5113,19 @@ void delay(char *string)
 
 /*---------------------------------------------------------------------------*/
 
+STATIC void free_words(DICT *words)
+{
+    unsigned int iwrd;
+
+    if ( !words ) return;
+
+    if (words->entry != NULL)
+	for(iwrd = 0; iwrd < words->size; iwrd++) free_string(words->entry[iwrd].string);
+}
+
+
 /*
  *		Function:	Typein
- *
  *		Purpose:		Display a character to stdout as if it was typed by a human.
  */
 void typein(char c)
@@ -4895,116 +5144,12 @@ void typein(char c)
 	usleep(D_THINK+urnd(V_THINK)-urnd(V_THINK));
 }
 
-STATIC void delay(char *);
-STATIC void die(int);
-static bool typing_delay = FALSE;
-STATIC void do_help(void);
-/*---------------------------------------------------------------------------*/
-
-void do_help(void)
-{
-    unsigned int j;
-
-    for(j = 0; j < COUNTOF(commands); j++) {
-	printf("#%-7s: %s\n", commands[j].word.word, commands[j].helpstring);
-    }
-    show_config(stdout);
-}
-
-static COMMAND commands[] = {
-    { { 4,0, "QUIT" }, "quits the program and saves MegaHAL's brain", QUIT },
-    { { 4,0, "EXIT" }, "exits the program *without* saving MegaHAL's brain", EXIT },
-    { { 4,0, "SAVE" }, "saves the current MegaHAL brain", SAVE },
-    { { 5,0, "DELAY" }, "toggles MegaHAL's typing delay (off by default)", DELAY },
-    { { 6,0, "SPEECH" }, "toggles MegaHAL's speech (off by default)", SPEECH },
-    { { 6,0, "VOICES" }, "list available voices for speech", VOICELIST },
-    { { 5,0, "VOICE" }, "switches to voice specified", VOICE },
-    { { 5,0, "BRAIN" }, "change to another MegaHAL personality", BRAIN },
-    { { 4,0, "HELP" }, "displays this message", HELP },
-    { { 5,0, "QUIET" }, "toggles MegaHAL's responses (on by default)",QUIET},
-    /*
-      { { 5,0, "STATS" }, "Display stats", STATS},
-      { { 5,0, "STATS-SESSION" }, "Display stats for this session only",STATS_SESSION},
-      { { 5,0, "STATS-ALL" },"Display stats for the whole lifetime",STATS-ALL},
-	*/
-};
-
-STATIC void listvoices(void);
-
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	changevoice
- *
- *		Purpose:		change voice of speech output.
- */
-void changevoice(struct sentence* src, unsigned int position)
-{
-}
-
-/*---------------------------------------------------------------------------*/
-
 /*
  *		Function:	listvoices
- *
  *		Purpose:		Display the names of voices for speech output.
  */
 void listvoices(void)
 {
 }
 
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Speak
- */
-void speak(char *output)
-{
-    if (speech == FALSE) return;
-}
-
-STATIC void speak(char *);
-static bool speech = FALSE;
-STATIC void free_words(DICT *words);
-/*---------------------------------------------------------------------------*/
-
-STATIC void free_words(DICT *words)
-{
-    unsigned int iwrd;
-
-    if ( !words ) return;
-
-    if (words->entry != NULL)
-	for(iwrd = 0; iwrd < words->size; iwrd++) free_string(words->entry[iwrd].string);
-}
-
-STATIC void free_string(STRING word);
-STATIC void free_string(STRING word)
-{
-    free(word.word);
-    word.word = NULL;
-    word.length = 0;
-}
-
-
-STATIC void typein(char);
-
-STATIC void changevoice(struct sentence *, unsigned int);
-STATIC COMMAND_WORDS execute_command(struct sentence *, unsigned int *position);
-#define P_THINK 40
-#define D_KEY 100000
-#define V_KEY 50000
-#define D_THINK 500000
-#define V_THINK 250000
-
-STATIC void make_greeting(struct sentence *dst);
-
-STATIC void make_greeting(struct sentence *target)
-{
-    // unsigned int iwrd;
-    // for(iwrd = 0; iwrd < target->mused; iwrd++) free(target->entry[iwrd].string.word);
-    target->mused = 0;
-    // if (glob_grt->mused > 0) add_word_dodup(target, glob_grt->entry[ urnd(glob_grt->mused) ].string );
-}
-
-#endif /* BAGGER */
+#endif /* DONT_WANT_THIS */
