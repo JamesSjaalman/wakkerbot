@@ -314,16 +314,14 @@ for ( ; slot < newsize; slot++) {
 	}
 
 	/* find end of freelist */
-	/* FIXME: freelist could point beyibd the new size */
+	/* FIXME: (when shrinking) freelist could point beyond the new size */
 for (up = &ptr->freelist; *up != IDX_NIL; ) {
-	unsigned int num;
-	num = *up;
-	*up = oldrow[num].hash.link;
-	if (num < cpysize) up = &ptr->table[num].hash.link;
+	if (*up < cpysize) up = &ptr->table[*up].hash.link;
+	else *up = oldrow[*up].hash.link;
 	}
 
 free (oldrow);
-	/* append new slots to freelist */
+	/* (when growing) append new slots to freelist */
 for (slot = oldsize; slot < newsize; slot++) {
 	*up = slot;
 	up = &ptr->table[slot].hash.link;
@@ -1088,7 +1086,6 @@ for (idx=0; idx < cnt; idx++) {
 	}
 arr [cnt-1].link = 0xffffffff;
 }
-
 
 /* Eof */
 #endif /* WANT_SPARSE */
