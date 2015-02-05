@@ -328,15 +328,6 @@ extern char *strdup(const char *);
 	*/
 #define WANT_STORE_HASH 0
 
-	/* this is an ugly hack to cast a string pointer named 'str' to an unsigned char
-	** This is absolutely necessary for the isXXXX() functions which
-	** expect an int in the range 0...255 OR -a (for EOF)
-	** Using a signed char would sign-extend the argument to -128...127,
-	** which causes the ctype[] array to be indexed out of bounds
-	*/
-#undef UCPstr ((unsigned char *)str)
-#define UCPstr str
-
 	/* some develop/debug switches. 0 to disable */
 #define WANT_DUMP_REHASH_TREE 0
 #define WANT_DUMP_DELETE_DICT 0
@@ -884,8 +875,8 @@ void megahal_learn_no_reply(char *input, int want_log)
 
 void megahal_output(char *output)
 {
-    if (!quiet)
-	log_output(output);
+    if (!quiet) log_output(output);
+    printf("%s", output );
 }
 
 /*
@@ -3173,6 +3164,7 @@ void show_config(FILE *fp)
     fprintf(fp, "INTENDED_REPLY_SIZE=%d\n", INTENDED_REPLY_SIZE);
     fprintf(fp, "MAX_REPLY_CHARS=%d\n", MAX_REPLY_CHARS);
     fprintf(fp, "STOP_WORD_TRESHOLD=%f\n", STOP_WORD_TRESHOLD);
+    fprintf(fp, "WANT_KEYWORD_WEIGHTS=%d\n", WANT_KEYWORD_WEIGHTS);
     fprintf(fp, "CROSS_TAB_FRAC=%f\n", CROSS_TAB_FRAC);
     fprintf(fp, "CROSS_DICT_SIZE_MIN=%d\n", CROSS_DICT_SIZE_MIN);
     fprintf(fp, "CROSS_DICT_SIZE_MAX=%d\n", CROSS_DICT_SIZE_MAX);
@@ -3201,9 +3193,6 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     unsigned count;
     int basetime;
     double penalty;
-#if WANT_PARROT_CHECK
-    double penalty1;
-#endif
 
     /* show_config(stderr); */
 
@@ -3309,15 +3298,17 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
     /* array for retaining the sliding WINDOW[distance] with previous words. */
     WordNum echobox[CROSS_DICT_WORD_DISTANCE] = {0,};
     unsigned rotor,echocount;
-    unsigned other;
+    unsigned oldsize, other;
 
-	fprintf(stderr, "Make_keywords: Old xdict=%u, src->mused =%u\n", cross_dict_size, src->mused);
     if (!src->mused) return;
+    oldsize = cross_dict_size ;
     cross_dict_size = sqrt(src->mused);
     if (cross_dict_size < CROSS_DICT_SIZE_MIN) cross_dict_size = CROSS_DICT_SIZE_MIN ;
     if (cross_dict_size > CROSS_DICT_SIZE_MAX) cross_dict_size = CROSS_DICT_SIZE_MAX ;
 
-#if 0
+    fprintf(stderr, "Make_keywords: Old xdict=%u, src->mused =%u Newsize=%u\n", oldsize, src->mused, cross_dict_size);
+
+#if 1 /* FIXME */
     if (glob_crosstab) crosstab_resize(glob_crosstab,cross_dict_size);
     else glob_crosstab = crosstab_init(cross_dict_size);
 #else
@@ -3472,7 +3463,9 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update1;
+	// if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update1;
+	// if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update1;
+	if (kfrac < CROSS_TAB_FRAC ) goto update1;
 	probability = 0.0;
         count = 0;
         totcount++;
@@ -3542,7 +3535,9 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
-	if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update2;
+	// if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update2;
+	// if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update2;
+	if (kfrac < CROSS_TAB_FRAC ) goto update2;
         probability = 0.0;
         count = 0;
         totcount++;
