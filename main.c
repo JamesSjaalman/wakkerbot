@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -44,8 +43,7 @@ extern bool nobanner;
 extern bool typing_delay;
 extern bool speech;
 */
-int my_learn_only=0;
-int mynogreet=0;
+int myquiet=0;
  
 static struct option long_options[] = {
     {"no-prompt", 0, NULL, 'p'},
@@ -59,15 +57,14 @@ static struct option long_options[] = {
 void usage()
 {
     puts("usage: megahal [-[pqrgwbh]]\n" \
-	 "\t-h --help: show usage\n" \
+	 "\t-h : show usage\n" \
 	 "\t-p --no-prompt:  inhibit prompts\n" \
-	 "\t-q : quiet mode (learn mode, no replies) enabled at start\n" \
+	 "\t-q : quiet mode (no replies) enabled at start\n" \
 	 "\t-r : inhibit progress display\n" \
 	 "\t-g : inhibit initial greeting\n" \
 	 "\t-b --no-banner: inhibit banner display at startup\n" \
-	 "\t-t <value>: set timeout to <value>\n" \
-         "\t-d --directory <dir>: sets the directory where your megahal files are to <dir>\n");
-    show_config(stdout);
+	 "\t-t -value: set timeout to value\n" \
+         "\t-d : sets the directory where your megahal files are\n");
 }
 
 /*===========================================================================*/
@@ -85,9 +82,10 @@ int main(int argc, char **argv)
     char *input=NULL;
     char *output=NULL;
     char *my_directory = NULL;
-    int directory_set = 0;
+    int directory_set;
     int c, option_index = 0;
     
+    directory_set = 0;
 
     while(1) {
 	if((c = getopt_long(argc, argv, "hpqrgbd:t:", long_options,
@@ -95,23 +93,17 @@ int main(int argc, char **argv)
 	    break;
 	switch(c) {
 	case 'q':
-		my_learn_only = 1;
+		myquiet = 1;
 	    megahal_setquiet();
 		break;
-	case 'g':
-		mynogreet = 1;
-	    break;
 	case 'p':
 	    megahal_setnoprompt();
 	    break;
-	case 'w':
-	    megahal_setnowrap();
-	    break;
 	case 'r':
-	    megahal_setnoprogres();
+	    megahal_setnoprogress();
 	    break;
         case 't':
-            megahal_settimeout (optarg);
+            megahal_settimeout(optarg);
             break;
         case 'd':
             megahal_setdirectory (optarg);
@@ -126,11 +118,14 @@ int main(int argc, char **argv)
 	}
     }
 
-    if (!directory_set ) {
-        if ((my_directory = getenv("MEGAHAL_DIR"))) {
+    if (!directory_set) {
+        if ((my_directory = getenv("MEGAHAL_DIR")))
+        {
             megahal_setdirectory (my_directory);
             directory_set = 1;
-        } else {
+        }
+        else
+        {
             struct stat dir_stat;
 
             my_directory = getenv ("HOME");
@@ -142,8 +137,7 @@ int main(int argc, char **argv)
             my_directory = malloc (12 + strlen (my_directory));
             strcpy (my_directory, getenv ("HOME"));
             strcat (my_directory, "/.megahal");
-            if (stat (my_directory, &dir_stat))
-            {
+            if (stat (my_directory, &dir_stat)) {
                 if (errno == ENOENT)
                 {
                     directory_set = mkdir (my_directory, S_IRWXU);
@@ -156,16 +150,12 @@ int main(int argc, char **argv)
                     megahal_setdirectory (my_directory);
                     directory_set = 1;
                 }
-            }
-            else
-            {
+            } else {
                 if (S_ISDIR(dir_stat.st_mode))
                 {
                     megahal_setdirectory (my_directory);
                     directory_set = 1;
-                }
-                else
-                {
+                } else {
                     fprintf (stderr, "Could not use megahal directory %s.\n", 
                              my_directory);
                     exit (1);
@@ -174,26 +164,13 @@ int main(int argc, char **argv)
         }
     }
 	
+    fprintf (stderr, "mypid=%d\n", getpid() );
+    fprintf (stderr, "myquiet=%d\n", myquiet);
     /*
      *		Do some initialisation 
      */
     megahal_initialize();
-    
-	
-    /*
-     *		Create a dictionary which will be used to hold the segmented
-     *		version of the user's input.
-     */
 
-    /*
-     *		Load the default MegaHAL personality.
-     */
-    if (!mynogreet ) {
-#if 0
-    	output = megahal_initial_greeting();
-    	megahal_output(output);
-#endif
-	}
     /*
      *		Read input, formulate a reply and display it as output
      */
@@ -201,31 +178,17 @@ int main(int argc, char **argv)
 
 	input = megahal_input("> ");
 	if (!input) break;
-	/*
-	 *		If the input was a command, then execute it
-	 */
-#if 0
-	switch (megahal_command(input) ) {
-	case 0: break;
-	case 2: goto quit;
-	case 1: /* goto quit; */
-	default: continue;
-		}
-#endif
 
-	if (my_learn_only) {
-		megahal_learn_no_reply(input, 0); // No echo
-	} else	{
-		output = megahal_do_reply(input, 0); // No echo
-		if (output) {
-			megahal_output(output);
-			fprintf(stdout, "%s\n", output);
-			}
+	if (myquiet) { megahal_learn_no_reply(input, 0); }
+	else 	{
+		output = megahal_do_reply(input, 0);
+    /* fprintf (stderr, "Output=%s\n", output? output : "NoThing!"); */
+		if (output) megahal_output(output);
 		}
 
     }
 quit:
 
-    if (my_learn_only) megahal_cleanup();
+    megahal_cleanup();
     exit(0);
 }
