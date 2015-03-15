@@ -295,12 +295,6 @@ extern char *strdup(const char *);
 #endif
 
 
-#define P_THINK 40
-#define D_KEY 100000
-#define V_KEY 50000
-#define D_THINK 500000
-#define V_THINK 250000
-
 #define MIN(a,b) ((a)<(b))?(a):(b)
 
 /* Changed Cookie and restarted version numbering, because the sizes have changed */
@@ -310,8 +304,8 @@ extern char *strdup(const char *);
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 #define STATIC static
+#define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
@@ -391,12 +385,9 @@ extern char *strdup(const char *);
 
 #define SEP "/"
 
-#undef FALSE
-#undef TRUE
-typedef enum { FALSE, TRUE } bool;
-
 typedef unsigned char StrLen;
 typedef unsigned char StrType;
+typedef unsigned char StrFlag;
 typedef unsigned int WordNum;
 typedef unsigned int ChildIndex;
 typedef unsigned int DictSize;
@@ -417,7 +408,8 @@ BigThing rdtsc_rand(void);
 
 typedef struct {
     StrLen length;
-    StrType type;	/* type is not stored in the brainfile but recomputed on loading */
+    StrType ztype;	/* type is not stored in the brainfile but recomputed on loading */
+    StrFlag zflag;	/* flag not stored in the brainfile recomputed on loading */
     char *word;
 } STRING;
 
@@ -512,6 +504,7 @@ static char *statusfilename = "megahal.txt";
 static int glob_width = 45;
 static int glob_order = ORDER_WANTED;
 static int glob_timeout = DEFAULT_TIMEOUT;
+static int glob_dirt = 0;
 
 static int noprompt = 0;
 static int noprogress = 0;
@@ -538,11 +531,6 @@ static int glob_fd = -1;
 unsigned int cross_dict_size=0;
 struct crosstab *glob_crosstab = NULL;
 
-	/* This is ugly: a copy of model->dict is needed just for formatting the symbols
-	** in the callback for the print-crosstab function.
-	** (it should have been a context in the callback function)
-	*/
-// static DICT *glob_dict = NULL;
 #endif
 
 static char *glob_directory = NULL;
@@ -866,17 +854,14 @@ void megahal_learn_no_reply(char *input, int want_log)
 
 /*
    megahal_output --
-
    This function pretty prints output.
-
    Wrapper function to have things in the right namespace.
-
 */
 
 void megahal_output(char *output)
 {
     if (!quiet) log_output(output);
-    printf("%s", output );
+    printf( "%s", output );
 }
 
 /*
@@ -1113,9 +1098,6 @@ STATIC void initialize_status(char *filename)
 /*---------------------------------------------------------------------------*/
 
 /*
- *		Function:	Status
- *
- *		Purpose:		Print the specified message to the status file.
  */
 STATIC void status(char *fmt, ...)
 {
@@ -1147,7 +1129,8 @@ STATIC void print_header(FILE *fp)
     strftime(timestamp, 1024, "Start at: [%Y/%m/%d %H:%M:%S]\n", local);
 
     fprintf(fp, "MegaHALv8\n");
-    fprintf(fp, "Copyright (C) 1998 Jason Hutchens\nCompiled Wakkerbot %s %s\n%s"
+    fprintf(fp, "Copyright (C) 1998 Jason Hutchens\n"
+		"Compiled Wakkerbot %s %s\n%s"
 	, __DATE__ , __TIME__, timestamp);
     fflush(fp);
 
@@ -1240,14 +1223,6 @@ return ;
 }
 /*---------------------------------------------------------------------------*/
 
-/*
- *		Function:	Add_Word
- *
- *		Purpose:		Add a word to a dictionary, and return the identifier
- *						assigned to the word.  If the word already exists in
- *						the dictionary, then return its current identifier
- *						without adding it again.
- */
 STATIC WordNum add_word_dodup(DICT *dict, STRING word)
 {
 WordNum *np;
@@ -1349,7 +1324,7 @@ if (!dict->size || dict->size <= dict->msize - DICT_SIZE_SHRINK) {
     }
 return ;
 }
-#endif
+#endif /* Never */
 /*---------------------------------------------------------------------------*/
 
 STATIC WordNum find_word(DICT *dict, STRING string)
@@ -1365,19 +1340,17 @@ return *np;
 
 STATIC STRING new_string(char *str, size_t len)
 {
-STRING this;
+STRING this = {0,0,0,NULL};
 
 if (str) {
      if (!len) len = strlen(str);
      if (len) { this.word = malloc(len); memcpy(this.word, str, len); }
      else { this.word = malloc(1); memset(this.word, 0, 1); }
      this.length = len;
-     this.type = word_classify(this);
+     this.ztype = word_classify(this);
      }
 else	{
-     this.word = NULL;
-     this.length = 0;
-     this.type = 0;
+     // this.word = NULL;
      }
 return this;
 }
@@ -1476,8 +1449,8 @@ STATIC void initialize_dict(DICT *dict)
 /* NOTE: The constants 0 AND 1 refering to thes two array elements
 ** are hardcoded at a few places in the source..
 */
-    static STRING word = {7,0, "<ERROR>" };
-    static STRING end = {5,0, "<FIN>" };
+    static STRING word = {7,0,0, "<ERROR>" };
+    static STRING end = {5,0,0, "<FIN>" };
 
     dict->stats.valuesum = 0;
     dict->stats.nnode = 0;
@@ -1637,8 +1610,8 @@ STATIC void load_dict(FILE *fp, DICT *dict)
 
 	/* Avoid a lot of resizing by pre-allocating size+INITSIZE items. */
     kuttje = fread(&size, sizeof size, 1, fp);
-    // resize_dict(dict, dict->msize+size + sqrt(size) / 2); // 20131011
-    resize_dict(dict, dict->msize+size );
+    resize_dict(dict, dict->msize+size + kuttje + sqrt(size)); // 20150222
+    /* resize_dict(dict, dict->msize+size ); */
     status("Load_dictSize=%u Initial_dictSize=%u\n", size, dict->msize);
     progress("Loading dictionary", 0, 1);
     for(iwrd = 0; iwrd < size; iwrd++) {
@@ -1673,17 +1646,17 @@ STATIC void save_word(FILE *fp, STRING word)
 STATIC void load_word(FILE *fp, DICT *dict)
 {
     static char zzz[1+STRLEN_MAX];
-    static STRING word = {0,0,zzz};
+    static STRING word = {0,0,0,zzz};
     size_t kuttje;
 
     kuttje = fread(&word.length, sizeof word.length, 1, fp);
     // word.word = malloc(word.length);
-    if (!word.word) {
-	error("load_word", "Unable to allocate word");
+    if (!kuttje) {
+	error("load_word", "Unable to allocate kuttje");
 	return;
     }
     kuttje = fread(&word.word[0], word.length, 1, fp);
-    add_word_dodup(dict, word);
+    if (kuttje) add_word_dodup(dict, word);
     // free(word.word);
 }
 
@@ -1769,8 +1742,8 @@ STATIC void update_model(MODEL *model, WordNum symbol)
     if (symbol == WORD_NIL) return;
     if (symbol == WORD_ERR) return;
     /*
-     *		Update all of the models in the current context with the specified
-     *		symbol.
+     *	Update all of the models in the current context with the specified
+     *	symbol.
      */
     for(iord = model->order+1; iord > 0; iord--) {
 	if ( !model->context[iord-1] ) continue;
@@ -1801,11 +1774,9 @@ STATIC void update_context(MODEL *model, WordNum symbol)
 /*---------------------------------------------------------------------------*/
 
 /*
- *		Function:	Add_Symbol
- *
- *		Purpose:		Update the statistics of the specified tree with the
- *						specified symbol, which may mean growing the tree if the
- *						symbol hasn't been seen in this context before.
+ *	Update the statistics of the specified tree with the
+ *	specified symbol, which may mean growing the tree if the
+ *	symbol hasn't been seen in this context before.
  */
 STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
 {
@@ -1832,6 +1803,7 @@ STATIC TREE *add_symbol(TREE *tree, WordNum symbol)
 	tree->childsum -= 1;
     }
 
+    glob_dirt += 1;
     return node;
 }
 
@@ -1861,7 +1833,7 @@ STATIC void dump_model_recursive(FILE *fp, TREE *tree, DICT *dict, int indent)
 {
 unsigned slot;
 WordNum sym;
-static STRING null = {0,0,""};
+static STRING null = {0,0,0,""};
 unsigned nnode=0,valuesum=0;
 STRING str;
 if (!tree) return;
@@ -2013,16 +1985,15 @@ return node->children[*ip].ptr ;
  *		Function:	Find_Symbol_Add
  *
  *		Purpose:		This function is conceptually similar to find_symbol,
- *						apart from the fact that if the symbol is not found,
- *						a new node for this symbol is allocated and added under the
- *						tree.
+ *apart from the fact that if the symbol is not found,
+ *a new node for this symbol is allocated and added under the
+ *tree.
  */
 STATIC TREE *find_symbol_add(TREE *node, WordNum symbol)
 {
 ChildIndex *ip;
 
 ip = node_hnd(node, symbol);
-
 if ( !ip || *ip == CHILD_NIL) { /* not found: create one */
     if (node->branch >= node->msize) {
         unsigned newsize ;
@@ -2303,11 +2274,11 @@ if (altsym==WORD_NIL) {
 STATIC STRING word_dup_othercase(STRING org)
 {
 static char zzz[1+STRLEN_MAX];
-STRING new = {0,0,zzz};
+STRING new = {0,0,0,zzz};
 unsigned ii,chg;
 
-if (!org.type) org.type =  word_classify(org);
-switch (org.type) {
+if (!org.ztype) org.ztype =  word_classify(org);
+switch (org.ztype) {
 case TOKEN_INITCAPS: return word_dup_lowercase(org);
 case TOKEN_CAMEL: return word_dup_lowercase(org);
 case TOKEN_UPPER: return word_dup_lowercase(org);
@@ -2335,11 +2306,11 @@ return new;
 STATIC STRING word_dup_lowercase(STRING org)
 {
 static char zzz[1+STRLEN_MAX];
-STRING new = {0,0,zzz};
+STRING new = {0,0,0,zzz};
 unsigned ii;
 
 new.length = org.length;
-new.type = TOKEN_LOWER;
+new.ztype = TOKEN_LOWER;
 
 for (ii = 0; ii < org.length; ii++) {
 	if (myisupper( org.word[ii] )) new.word[ii] = org.word[ii] + ('a' - 'A');
@@ -2351,11 +2322,11 @@ return new;
 STATIC STRING word_dup_initcaps(STRING org)
 {
 static char zzz[1+STRLEN_MAX];
-STRING new = {0,0,zzz};
+STRING new = {0,0,0,zzz};
 unsigned ii;
 
 new.length = org.length;
-new.type = TOKEN_INITCAPS;
+new.ztype = TOKEN_INITCAPS;
 
 if (myislower( org.word[0] )) new.word[0] = org.word[0] - ('a' - 'A');
 for (ii = 1; ii < org.length; ii++) {
@@ -2557,7 +2528,7 @@ void read_dict_from_ascii(DICT *dict, char *name)
     unsigned long int nnode,valuesum;
     int pos;
     size_t len;
-    STRING word = {0,0,NULL};
+    STRING word = {0,0,0,NULL};
 
 
     if (!dict) return;
@@ -2577,7 +2548,7 @@ while (fgets(buff, sizeof buff, fp)) {
         if (!len) continue;
         word.word= buff+pos;
         word.length = len;
-        word.type = word_classify(word);
+        word.ztype = word_classify(word);
         add_word_dodup(dict, word);
     }
 memstats.word_cnt = dict->size;
@@ -2598,6 +2569,10 @@ STATIC void save_model(char *modelname, MODEL *model)
     static char *filename = NULL;
     unsigned forw,back;
 
+    if (!glob_dirt ) {
+	status ("Not dirty; not written" );
+        goto skip;
+        }
     filename = realloc(filename, strlen(glob_directory)+strlen(SEP)+12);
     if (!filename) error("save_model","Unable to allocate filename");
 
@@ -2618,11 +2593,14 @@ STATIC void save_model(char *modelname, MODEL *model)
     forw = save_tree(fp, model->forward);
     back = save_tree(fp, model->backward);
     save_dict(fp, model->dict);
-    status("Saved %lu(%lu+%lu) nodes, %u words.\n"
-	, memstats.node_cnt, forw, back
-	,memstats.word_cnt);
+    status("Glob_dirt=%d: Saved %lu(%lu+%lu) nodes, %u words.\n"
+      , glob_dirt
+      , memstats.node_cnt, forw, back
+      , memstats.word_cnt);
     fclose(fp);
-    close( glob_fd  ); glob_fd = -1;
+    
+skip:
+    close(glob_fd); glob_fd = -1;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2674,9 +2652,9 @@ STATIC TREE * load_tree(FILE *fp)
 
     kuttje = fread(&this.symbol, sizeof this.symbol, 1, fp);
     if (level==0 && this.symbol==0) this.symbol=1;
-    kuttje = fread(&this.childsum, sizeof this.childsum, 1, fp);
-    kuttje = fread(&this.thevalue, sizeof this.thevalue, 1, fp);
-    kuttje = fread(&this.stamp, sizeof this.stamp, 1, fp);
+    kuttje += fread(&this.childsum, sizeof this.childsum, 1, fp);
+    kuttje += fread(&this.thevalue, sizeof this.thevalue, 1, fp);
+    kuttje += fread(&this.stamp, sizeof this.stamp, 1, fp);
 #if 0
     if ( this.stamp > stamp_max) stamp_max = this.stamp;
     else if ( this.stamp < stamp_min) stamp_min = this.stamp;
@@ -2696,8 +2674,9 @@ STATIC TREE * load_tree(FILE *fp)
 	}
     }
 #endif
-    kuttje = fread(&this.branch, sizeof this.branch, 1, fp);
+    kuttje += fread(&this.branch, sizeof this.branch, 1, fp);
     // if (this.branch == 0) return NULL;
+    if (kuttje < 5) return NULL;
 
     ptr = node_new( this.branch );
     if (!ptr) {
@@ -2785,7 +2764,7 @@ STATIC int load_model(char *filename, MODEL *model)
 	exit(1);
 	}
     if (memcmp(cookie, COOKIE, strlen(COOKIE)) ) {
-	warn("Load_model", "File `%s' is not a MegaHAL brain: coockie='%s' (expected '%s')"
+	warn("Load_model", "File `%s' is not a Wakkerbot brain: coockie='%s' (expected '%s')"
 		, filename , cookie,COOKIE);
 	goto fail;
     }
@@ -2828,7 +2807,7 @@ STATIC int load_model(char *filename, MODEL *model)
 
 fail:
     fclose(fp);
-    return FALSE;
+    return -1;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2843,12 +2822,11 @@ fail:
 STATIC void make_words(char * src, struct sentence * target)
 {
     size_t len, pos, chunk;
-    STRING word ;
-    static STRING period = {1,0, "." }  ;
+    STRING word ={0,0,0,NULL};
+    static STRING period = {1,0,0, "." }  ;
     int state = 0; /* FIXME: this could be made static to allow for multi-line strings */
 
     target->mused = 0;
-
     len = strlen(src);
     if (!len) return;
 
@@ -2858,7 +2836,8 @@ STATIC void make_words(char * src, struct sentence * target)
         if (!chunk) { /* maybe we should reset state here ... */ pos++; continue; }
         if (chunk > STRLEN_MAX) {
             if (!buffer_is_usable(src+pos,chunk)) { continue; } /* ignore large stretches of WS */
-            warn( "Make_words", "Truncated too long string(%u) at %s\n", (unsigned) chunk, src+pos);
+            warn( "Make_words", "Truncated too long string(%u) at %s\n"
+		, (unsigned) chunk, src+pos);
             chunk = STRLEN_MAX;
             }
         if (buffer_is_usable(src+pos,chunk)) {
@@ -3157,7 +3136,7 @@ return 0;
 }
 void show_config(FILE *fp)
 {
-    fprintf(fp, "Compiled-in constant settings:\n" );
+    fprintf(fp, "[Pid=%d]Compiled-in constant settings:\n", getpid() );
     fprintf(fp, "NODE_COUNT=%d\n", NODE_COUNT);
     fprintf(fp, "ALZHEIMER_NODE_COUNT=%d\n", ALZHEIMER_NODE_COUNT);
     fprintf(fp, "MIN_REPLY_SIZE=%d\n", MIN_REPLY_SIZE);
@@ -3308,7 +3287,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 
     fprintf(stderr, "Make_keywords: Old xdict=%u, src->mused =%u Newsize=%u\n", oldsize, src->mused, cross_dict_size);
 
-#if 1 /* FIXME */
+#if 1 /* FIXME resize instead of free+alloc*/
     if (glob_crosstab) crosstab_resize(glob_crosstab,cross_dict_size);
     else glob_crosstab = crosstab_init(cross_dict_size);
 #else
@@ -3336,7 +3315,6 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
         // if (model->dict->entry[symbol].stats.nnode > model->dict->stats.nnode / model->dict->stats.nonzero ) continue;
         // if (model->dict->entry[symbol].stats.valuesum > model->dict->stats.valuesum / model->dict->stats.nonzero ) continue;
 	/* 20120119:i We use the wordweight of the canonical form */
-	// if (symbol_weight(model->dict, symbol, 0) < STOP_WORD_TRESHOLD) continue;
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
@@ -3355,6 +3333,7 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
 
 #if CROSS_DICT_SIZE
 	crosstab_show(stderr, glob_crosstab, symbol_format_callback, symbol_weight_callback);
+        /* NOTE: the callbacks set .zflag */
 #endif
 }
 
@@ -3374,16 +3353,13 @@ STATIC struct sentence *one_reply(MODEL *model)
      */
     initialize_context(model);
     model->context[0] = model->forward;
-#if DONT_WANT_THIS
-    used_key = FALSE;
-#endif
 
     /*
      *		Generate the reply in the forward direction.
      */
     for (symbol = seed(model); symbol > WORD_FIN ; symbol = babble(model, zereply) ) {
 	/*
-	 *		Append the symbol to the reply dictionary.
+	 *		Append the symbol to the reply sentence.
 	 */
 	add_word_to_sentence(zereply, model->dict->entry[symbol].string );
 	/*
@@ -3400,7 +3376,7 @@ STATIC struct sentence *one_reply(MODEL *model)
 
     /*
      *		Re-create the context of the model from the current reply
-     *		dictionary so that we can generate backwards to reach the
+     *		sentence so that we can generate backwards to reach the
      *		beginning of the string.
      */
     for(widx = MIN(zereply->mused, 1+model->order); widx-- > 0; ) {
@@ -3456,16 +3432,22 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	tweetsize += 1+sentence->entry[widx].string.length;
 
 	symbol = find_word(model->dict, sentence->entry[widx].string );
-
+	if (symbol >= model->dict->msize) continue;
 	/* Only crosstab-keywords contribute to the scoring
 	*/
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
+#if 1
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
 	// if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update1;
+	// if (kfrac < CROSS_TAB_FRAC ) goto update1;
 	// if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update1;
-	if (kfrac < CROSS_TAB_FRAC ) goto update1;
+	if (model->dict->entry[symbol].string.zflag ) kwhit++;
+	// else goto update1;
+	else kfrac = 1.0 / sentence->mused;
+#else
+#endif
 	probability = 0.0;
         count = 0;
         totcount++;
@@ -3473,7 +3455,8 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
             if ( !model->context[iord] ) continue;
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
-            if (!count++) kwhit++;
+            // if (!count++) kwhit++;
+            count++;
 		/* too unique: don't count them */
             /* if (node->thevalue < 2) continue; 20131207 */
             if (node->thevalue < 1) continue; 
@@ -3483,11 +3466,12 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
         if (!(probability > 0.0)) goto update1;
 
         term = (double) probability / count;
+#if WANT_KEYWORD_WEIGHTS
         gfrac = symbol_weight(model->dict, symbol, 0);
         weight = kfrac * log(1.0+gfrac);
-#if WANT_KEYWORD_WEIGHTS
         entropy -= weight * log(term);
 #else
+        gfrac = weight = 1.0;
         entropy -= log(term);
 #endif
 
@@ -3530,14 +3514,21 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
 
     for(widx = sentence->mused; widx-- > 0; ) {
 	symbol = find_word(model->dict, sentence->entry[widx].string );
-
+	if (symbol >= model->dict->msize) continue;
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
         if (canonsym >= model->dict->size) canonsym = symbol;
+#if 1
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
 	// if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update2;
+	// if (kfrac < CROSS_TAB_FRAC ) goto update2;
 	// if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update2;
-	if (kfrac < CROSS_TAB_FRAC ) goto update2;
+	if (model->dict->entry[symbol].string.zflag ) kwhit++;
+	else kfrac = 1.0 / sentence->mused;
+	// else goto update2;
+#else
+	kfrac = model->dict->entry[symbol].string.zflag ? 0.1 : 0.01;
+#endif
         probability = 0.0;
         count = 0;
         totcount++;
@@ -3545,7 +3536,8 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
             if ( !model->context[iord] ) continue;
             node = find_symbol(model->context[iord], symbol);
             if (!node) continue;
-            if (!count++) kwhit++;
+            // if (!count++) kwhit++;
+            count++;
             /* if (node->thevalue < 2) continue; Too unique */
             if (node->thevalue < 1) continue; /* Too unique */
             probability += (0.1+node->thevalue) / (0.1 + model->context[iord]->childsum);
@@ -3555,11 +3547,12 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
         if (!(probability > 0.0)) goto update2;
 
         term = (double) probability / count;
+#if WANT_KEYWORD_WEIGHTS
         gfrac = symbol_weight(model->dict, symbol, 0);
         weight = kfrac * log(1.0+gfrac);
-#if WANT_KEYWORD_WEIGHTS
         entropy -= weight * log(term);
 #else
+        gfrac = weight = 1.0;
         entropy -= log(term);
 #endif
 
@@ -3622,6 +3615,7 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 	init_val_rev = end_penalty(model, sentence->entry[widx-1].string );
         entropy -= sqrt(init_val_fwd);
         entropy -= sqrt(init_val_rev);
+	entropy *= sqrt(1+kwhit);
 	}
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
 fprintf(stderr, "####[Corrected] =%6.4f\n", (double) entropy
@@ -3633,11 +3627,6 @@ fprintf(stderr, "####[Corrected] =%6.4f\n", (double) entropy
 
 /*---------------------------------------------------------------------------*/
 
-/*
- *		Function:	Make_Output
- *
- *		Purpose:		Generate a string from the dictionary of reply words.
- */
 STATIC char *make_output(struct sentence *src)
 {
     static char *output = NULL;
@@ -3804,6 +3793,9 @@ STATIC WordNum babble(MODEL *model, struct sentence *src)
      *		weighted by ->thevalue
      */
     credit = urnd( node->childsum );
+#if 0
+    credit += urnd( node->childsum -credit ); /* 201501314 */
+#endif
     for (cidx = 0; 1; cidx = (cidx+1) % node->branch ) {
 	if (credit < node->children[cidx].ptr->thevalue) break; /* found it */
         /* 20120203 if (node->children[cidx].ptr->thevalue == 0) credit--; */
@@ -3861,9 +3853,9 @@ double penalty =999;
 if (!model || !model->forward || !model->dict) return penalty;
 
 symbol = find_word(model->dict, word);
-init_typ_fwd = word.type;
+init_typ_fwd = word.ztype;
 if (/* symbol <= WORD_ERR || */ symbol == WORD_NIL) return penalty;
-init_typ_fwd = model->dict->entry[symbol].string.type;
+init_typ_fwd = model->dict->entry[symbol].string.ztype;
 node = find_symbol(model->forward, symbol);
 if (!node) return 100.0;
 
@@ -3942,7 +3934,7 @@ if (!model || !model->backward || !model->dict) return -11.11;
 
 symbol = find_word(model->dict, word);
 if (/* symbol <= WORD_ERR || */ symbol == WORD_NIL) return 111;
-type = model->dict->entry[symbol].string.type;
+type = model->dict->entry[symbol].string.ztype;
 node = find_symbol(model->backward, symbol);
 
 
@@ -3977,7 +3969,7 @@ STATIC DICT *read_dict(char *filename)
     DICT *this;
     FILE *fp = NULL;
     static char buffer[1024];
-    static STRING word ={0,0,buffer};
+    static STRING word ={0,0,0,buffer};
 
     this = new_dict();
 
@@ -4075,12 +4067,12 @@ BigThing rdtsc_rand(void)
 static BigThing val=0x0000111100001111ULL;
 
 #if WANT_RDTSC_RANDOM
-static BigThing old;
+// static BigThing old;
 BigThing new;
 
 rdtscll(new);
 val ^= (val >> 15) ^ (val << 14) ^ (new << 13); /* PT approved */
-old = new;
+// old = new;
 #else
 val ^= (val >> 15) ^ (val << 14) ^ 9 ;
 #endif
@@ -4132,12 +4124,12 @@ void progress(char *message, unsigned long done, unsigned long todo)
      *    We have hit 100%, so reset static variables and print a newline.
      */
     if (last == 100) {
-	first = FALSE;
+	first = 0;
 	last = 0;
 	fprintf(stderr, "\n");
     }
 
-    return ; // TRUE;
+    return ;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4237,6 +4229,8 @@ STATIC void free_string(STRING word)
     free(word.word);
     word.word = NULL;
     word.length = 0;
+    word.ztype = 0;
+    word.zflag = 0;
 }
 
 STATIC HashVal hash_word(STRING string)
@@ -4597,7 +4591,8 @@ STATIC size_t symbol_format_callback(char *buff, WordNum sym)
 DICT *this_dict = glob_model->dict;
 if ( !this_dict ) return sprintf(buff, "<NoDict>" );
 else if (sym >= this_dict->size) return sprintf(buff, "<%u>", sym );
-else return word_format(buff, this_dict->entry[sym].string );
+this_dict->entry[sym].string.zflag = 1;
+return word_format(buff, this_dict->entry[sym].string );
 }
 
 STATIC double symbol_weight_callback(WordNum sym)
@@ -4778,6 +4773,7 @@ return ret;
 }
 
 #if WANT_PARROT_CHECK
+#if USE_QSORT
 int cmp_unsigned_desc(const void *vl, const void *vr)
 {
 unsigned *ul = (unsigned*) vl;
@@ -4787,6 +4783,33 @@ if (*ul > *ur) return -1;
 return 0;
 }
 
+#else
+STATIC inline void meuksort(unsigned arr[], unsigned siz);
+STATIC inline void meuksort(unsigned arr[], unsigned siz)
+{
+unsigned bot,idx, best,max;
+
+	/* remove zeros by putting them beyond the end */
+for (bot=0; bot < siz; ) {
+	if( !arr[bot]) { arr[bot] = arr[--siz]; arr[siz] = 0; }
+	else bot++;
+	}
+
+	/* Selection sort: find elements better than [bot] */
+for (bot=0; bot < siz; bot++) {
+	max = arr[best=bot];
+	for (idx=bot+1; idx < siz; idx++ ) {
+		if (arr[idx] <= max) continue;
+		max = arr[best=idx];
+		}
+	if (best == bot) continue;
+	arr[best] = arr[bot];
+	arr[bot] = max;
+	}
+}
+#endif /* USE_QSORT */
+
+/* siz1 is the size of the first array; the second one has 1 item extra */
 STATIC double penalize_two_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1)
 {
 unsigned idx;
@@ -4794,11 +4817,17 @@ unsigned ssq,sum;
 double penalty;
 unsigned long long red_dragon;
 
+#if USE_QSORT
 qsort ( arr1, siz1, sizeof arr1[0], cmp_unsigned_desc);
 qsort ( arr2, siz1+1, sizeof arr2[0], cmp_unsigned_desc);
+#else
+meuksort ( arr1, siz1);
+meuksort ( arr2, siz1+1);
+#endif
 
 sum=ssq=0;
 for (idx=0; idx < siz1 ; idx++) { 
+    // if ( !arr1[idx] || !arr2[idx] ) break;
     sum += arr1[idx] + arr2[idx] ;
     ssq += arr1[idx] * arr2[idx] ;
     }
@@ -4808,7 +4837,7 @@ if (sum <= 2) return 0.0;
 
 
 /* Formula from hashtable-site www.strchr.com/hash_functions/
-**     Sum ( chainlen * (chainlen+1)) / 2    ## Chainlen := number of items/slot
+**     SUM ( chainlen * (chainlen+1)) / 2    ## Chainlen := number of items/slot
 **     ------------------------------
 **          (n/2m)* (n+2m -1)
 **
@@ -4908,6 +4937,16 @@ return val;
 
 
 #if DONT_WANT_THIS
+#define P_THINK 40
+#define D_KEY 100000
+#define V_KEY 50000
+#define D_THINK 500000
+#define V_THINK 250000
+
+#undef FALSE
+#undef TRUE
+
+/* typedef enum { FALSE, TRUE } bool; */
 static bool speech = FALSE;
 static bool typing_delay = FALSE;
 
