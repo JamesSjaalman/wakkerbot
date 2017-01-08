@@ -268,7 +268,7 @@
 #include <stdarg.h>
 
 #pragma define _BSD_SOURCE 1
-#pragma define _XOPEN_SOURCE
+#pragma define _XOPEN_SOURCE 1
 #define __USE_MISC
 #include <unistd.h>    // lockf()
 #undef __USE_MISC
@@ -364,6 +364,7 @@ extern char *strdup(const char *);
 
 	/* add some copy cat detection */
 #ifndef WANT_PARROT_CHECK
+#define USE_QSORT 0
 #define WANT_PARROT_CHECK 11
 #endif
 	/* Flags for converting strings to/from latin/utf8
@@ -496,7 +497,8 @@ struct memstat {
 	unsigned alzheimer;
 	unsigned symdel;
 	unsigned treedel;
-	} volatile memstats = {0,0,0,0,0,0,0} ;
+        unsigned long long tokens_read;
+	} volatile memstats = {0,0,0,0,0,0,0,0} ;
 
 /*===========================================================================*/
 static char *errorfilename = "megahal.log";
@@ -634,7 +636,9 @@ STATIC int word_classify(STRING org);
 #define TOKEN_AFKO 5
 #define TOKEN_NUMBER 6
 #define TOKEN_PUNCT 7
-#define TOKEN_MISC 8
+#define TOKEN_ATAAP 8
+#define TOKEN_HEKHASH 9
+#define TOKEN_MISC 10
 
 STATIC void del_symbol_do_free(TREE *tree, WordNum symbol);
 void free_tree_recursively(TREE *tree);
@@ -1068,11 +1072,12 @@ STATIC void show_memstat(char *msg)
 if (!msg) msg = "..." ;
 
 status( "[ stamp Min=%u Max=%u ]\n", (unsigned) stamp_min, (unsigned) stamp_max);
-status ("Memstat %s: {wordcnt=%u nodecnt=%u alloc=%u free=%u alzheimer=%u symdel=%u treedel=%u}\n"
+status ("Memstat %s: {wordcnt=%u nodecnt=%u alloc=%u free=%u alzheimer=%u symdel=%u treedel=%u} tokens_read=%llu\n"
 	, msg
 	, memstats.word_cnt , memstats.node_cnt
 	, memstats.alloc , memstats.free
 	, memstats.alzheimer , memstats.symdel , memstats.treedel
+	, memstats.tokens_read
 	);
 }
 /*---------------------------------------------------------------------------*/
@@ -2258,6 +2263,9 @@ if (altsym != WORD_NIL) fprintf(stderr, "AltSym %u/%u:%u ('%*.*s') %u/%llu\n"
 if (altsym==WORD_NIL) {
 	if (dict->entry[symbol].stats.valuesum < TRESHOLD) return 0.00099;
 	if (dict->entry[symbol].stats.nnode < TRESHOLD) return 0.00088;
+	// 20150324
+	if (dict->entry[symbol].string.ztype == TOKEN_ATAAP) return 0.00077;
+	if (dict->entry[symbol].string.ztype == TOKEN_HEKHASH) return 0.00066;
 	// 20120224
 	// if (dict->entry[symbol].stats.valuesum == dict->entry[symbol].stats.nnode) return 0.00777;
 #undef TRESHOLD
@@ -2339,7 +2347,7 @@ return new;
 STATIC int word_classify(STRING org)
 {
 unsigned ii;
-unsigned upper=0, lower=0,number=0,high=0,other=0, initcaps=0;
+unsigned upper=0, lower=0,number=0,high=0,other=0, initcaps=0, initaap=0, inithash=0;
 
 if (!org.length) return 0; /* ajuus */
 for (ii = 0; ii < org.length; ii++) {
@@ -2347,12 +2355,16 @@ for (ii = 0; ii < org.length; ii++) {
 	else if (org.word[ii] >= 'a' && org.word[ii] <= 'z' ) lower++;
 	else if (org.word[ii] >= '0' && org.word[ii] <= '9' ) number++;
 	else if (org.word[ii] & 0x80 ) high++;
+	else if (org.word[ii] == '@' ) { if (ii) other++; else initaap++; }
+	else if (org.word[ii] == '#' ) { if (ii) other++; else inithash++; }
 	else other++;
 	}
 if (lower == ii) return TOKEN_LOWER; /* pvda */
 if (upper+initcaps == ii) return TOKEN_UPPER; /* PVDA */
 if (lower+initcaps == ii) return TOKEN_INITCAPS; /* Pvda */
 if (lower+upper+initcaps == ii) return TOKEN_CAMEL; /* PvdA */
+if (lower+upper+number+initaap == ii) return TOKEN_ATAAP; /* @PvdA */
+if (lower+upper+number+inithash == ii) return TOKEN_HEKHASH; /* #PvdA */
 if (other == ii) return TOKEN_PUNCT; /* ... */
 if (lower+upper+initcaps+other == ii) return TOKEN_AFKO; /* P.v.d.A */
 if (lower+upper+other+initcaps+number == ii) return TOKEN_NUMBER; /* P.v.d.6 */
@@ -2848,6 +2860,7 @@ STATIC void make_words(char * src, struct sentence * target)
 
         // if (pos+chunk >= len) break;
     }
+    memstats.tokens_read += target->mused;
 
     /*
      *		If the last word isn't punctuation, then add a full-stop character.
@@ -3442,7 +3455,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
 	// if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update1;
 	// if (kfrac < CROSS_TAB_FRAC ) goto update1;
-	// if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update1;
+	if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update1;
 	if (model->dict->entry[symbol].string.zflag ) kwhit++;
 	// else goto update1;
 	else kfrac = 1.0 / sentence->mused;
@@ -3522,7 +3535,7 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
 	kfrac = crosstab_ask(glob_crosstab, canonsym);
 	// if (kfrac < CROSS_TAB_FRAC / (cross_dict_size) ) goto update2;
 	// if (kfrac < CROSS_TAB_FRAC ) goto update2;
-	// if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update2;
+	if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update2;
 	if (model->dict->entry[symbol].string.zflag ) kwhit++;
 	else kfrac = 1.0 / sentence->mused;
 	// else goto update2;
@@ -3787,23 +3800,31 @@ STATIC WordNum babble(MODEL *model, struct sentence *src)
 
     if (!node ) goto done;
     if (node->branch == 0) goto done;
-
+    // if (node->branch == 1) { symbol = node->children[0].ptr->symbol; goto done; }
     /*
      *		Choose a symbol at random from this context.
      *		weighted by ->thevalue
      */
+#if 1
     credit = urnd( node->childsum );
 #if 0
     credit += urnd( node->childsum -credit ); /* 201501314 */
+    fprintf(stderr, "{%u/%u}", credit, node->childsum);
 #endif
     for (cidx = 0; 1; cidx = (cidx+1) % node->branch ) {
 	if (credit < node->children[cidx].ptr->thevalue) break; /* found it */
         /* 20120203 if (node->children[cidx].ptr->thevalue == 0) credit--; */
 	credit -= node->children[cidx].ptr->thevalue;
     }
+#else
+    cidx = urnd( node->branch );
+#endif
     symbol = node->children[cidx].ptr->symbol;
 done:
-    // fprintf(stderr, "{+%u}", symbol );
+#if 0
+    fprintf(stderr, "[%u/%u]", cidx, node->branch);
+    fprintf(stderr, "=%u", symbol );
+#endif
     return symbol;
 }
 
@@ -3915,6 +3936,9 @@ misc:	/* The altsym refers tot the Initcaps version
 case TOKEN_PUNCT:
 	penalty = 3.0;
 	break;
+case TOKEN_ATAAP:
+case TOKEN_HEKHASH:
+	penalty = 7.0; break;
 case TOKEN_NUMBER:
 default:
 	penalty = 2.0; break;
@@ -3943,6 +3967,8 @@ case TOKEN_INITCAPS:
 case TOKEN_LOWER:
 case TOKEN_UPPER:
 case TOKEN_MISC:	/* Anything, including high ascii */
+case TOKEN_ATAAP: /* mentions */
+case TOKEN_HEKHASH: /* hashtag */
 case TOKEN_CAMEL: /* mostly typos */
 default:
 	penalty = 4;
@@ -4476,6 +4502,7 @@ for(  totcount = 0; memstats.node_cnt > maxnodecount;	) {
 	, (unsigned)memstats.node_cnt, (unsigned)maxnodecount
 	, (unsigned)stamp_min, (unsigned)stamp_max,(unsigned)(stamp_max-stamp_min)
 	,step, density);
+    show_memstat("Alzheimer" );
 #endif
 
     fprintf(alz_file,  "Model_alzheimer(%u:%s) Count=%6u %u/%u Stamp=[%u,%u] Width=%u Step=%u Dens=%6.4f\n"
@@ -5187,3 +5214,4 @@ void listvoices(void)
 }
 
 #endif /* DONT_WANT_THIS */
+
