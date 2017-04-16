@@ -8,6 +8,7 @@
 #undef NDEBUG
 #include <assert.h>
 
+#define WANT_FIX 0
 #include "crosstab.h"
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
@@ -18,10 +19,11 @@
 	** if convergence is not reached.
 	 */
 #define PITER_FRAC_LIMIT 0.1
-#define PITER_ITER_MAX 100
+#define PITER_ITER_MAX 20
 
 #define SHOW_CALLS 0
 #define SHOW_FUZZ 0
+	/* Poweriteration */
 #define SHOW_ITER 0
 #define SHOW_GEHANNUS 0
 #define SHOW_PERMUTE 0
@@ -132,7 +134,10 @@ unsigned int slot = IDX_NIL;
 
 	/* Nuke some entries until the freelist is non-empty */
 for (slot = ptr->freelist ; slot == IDX_NIL; slot = ptr->freelist) {
-	crosstab_reduce( ptr, ptr->msize - sqrt(ptr->msize) );
+	unsigned nsize;
+	nsize = ptr->msize - sqrt(ptr->msize);
+	if (nsize < 2 || nsize >= ptr->msize) break;
+	crosstab_reduce( ptr, nsize );
 	}
 
 	/* remove it from the freelist */
@@ -155,7 +160,7 @@ static void cross_wipe_slot(struct crosstab *ptr,unsigned int slot)
 unsigned int xy,zzz;
 
 #if SHOW_CALLS
-fprintf(stderr, "wipe_slot(%u->%u)\n", slot, ptr->table[slot].hash.key );
+fprintf(stderr, "Wipe_slot(%u->%u)\n", slot, ptr->table[slot].hash.key );
 #endif
 if (ptr->table[slot].hash.key == IDX_NIL ) return;
 	/* grand total */
@@ -356,7 +361,11 @@ double oldval,frac,limit;
 
 if (!ptr || !ptr->msize) return;
 
-limit = PITER_FRAC_LIMIT / (1+sqrt(ptr->total.uniq));
+limit = PITER_FRAC_LIMIT / (sqrt(1+ptr->total.uniq));
+/***
+Iter= 0 Score=2.6471 Frac=0.00000
+Cnt=17 Uniq=16 limit = 0.02000
+*/
 
 #if SHOW_ITER
 	fprintf(stderr, "Cnt=%2u Uniq=%u limit = %6.5f\n" , ptr->total.sum, ptr->total.uniq, limit);
@@ -365,12 +374,13 @@ limit = PITER_FRAC_LIMIT / (1+sqrt(ptr->total.uniq));
 for (slot=0; slot < ptr->msize; slot++ ) {
 	ptr->scores[slot] = (double) 0.5 * ptr->table[slot].payload.sum / ptr->total.sum;
 	}
+
 for (iter =0; iter < PITER_ITER_MAX; iter++) {
 	oldval = ptr->score;
 	ptr->score = iterding (ptr->scores, ptr->matrix, ptr->msize );
-	frac = (ptr->score-oldval) / ptr->score;
+	frac = (ptr->score - oldval) / ptr->score;
 #if SHOW_ITER
-	fprintf(stderr, "Iter=%2u val=%6.4f %6.5f\n" , iter, ptr->score, frac);
+	fprintf(stderr, "Iter=%2u Score=%6.4f Frac=%6.5f\n" , iter, ptr->score, frac);
 #endif
 	if (fabs(frac) <= limit) break;
 	}
@@ -391,6 +401,8 @@ tmp = malloc (cnt * sizeof *tmp);
 for (i=0; i < cnt; i++) {
 	tmp[i] = 0;
 	}
+
+	/* vector = matrix * vector */
 sum = 0;
 for (i=0; i < cnt; i++) {
 	for (j=0; j < cnt; j++) {
@@ -399,6 +411,8 @@ for (i=0; i < cnt; i++) {
 		}
 	sum += tmp [ i ];
 	}
+
+	/* normalise */
 for (i=0; i < cnt; i++) {
 	vec [ i ] = tmp[ i ] / sum;
 	}
@@ -410,8 +424,16 @@ return sum;
 void crosstab_reduce(struct crosstab * ptr, unsigned int newsize)
 {
 
+
+#if (SHOW_CALLS || SHOW_FUZZ)
+fprintf(stderr, "crosstab_reduce( oldsize=%u newsize=%u)\n", ptr->msize, newsize);
+#endif
+
 if (!ptr || newsize >= ptr->msize) return;
 
+#if WANT_FIX
+if (newsize <= ptr->nfixed) return;
+#endif
 #if 0
 {	unsigned idx,slot;
 	/* Pick a victim: a random slot from idx[0] ... idx[newsize]
@@ -430,7 +452,11 @@ crosstab_recalc(ptr);
 	/* reshuffle the index, such that index[0] ... idx[newsize-1]
 	**  contain the indexes of the best/worst items.
 	*/
+#if WANT_FIX
+index_doubles(ptr->index+ptr->nfixed, ptr->scores-ptr->nfixed, ptr->msize-ptr->nfixed);
+#else
 index_doubles(ptr->index, ptr->scores, ptr->msize);
+#endif
 
 #if (SHOW_ITER >= 2)
 {	unsigned idx,slot;
@@ -459,21 +485,25 @@ unsigned int *index_2d;
 if (!ptr) return;
 	/* do power-iteration and reshuffle index */
 crosstab_recalc(ptr);
+#if WANT_FIX
+index_doubles(ptr->index+ptr->nfixed, ptr->scores-ptr->nfixed, ptr->msize-ptr->nfixed);
+#else
 index_doubles(ptr->index, ptr->scores, ptr->msize);
+#endif
 
 #if (SHOW_ITER >= 2)
-{unsigned idx,slot;
-fprintf(stderr, "NewIdx " );
-for (idx=0; idx < ptr->msize; idx++ ) {
-	fprintf(stderr, " | %5u ", ptr->index[idx] );
+	{unsigned idx,slot;
+	fprintf(stderr, "NewIdx " );
+	for (idx=0; idx < ptr->msize; idx++ ) {
+		fprintf(stderr, " | %5u ", ptr->index[idx] );
+		}
+	fprintf(stderr, "\nTheVect" );
+	for (idx=0; idx < ptr->msize; idx++ ) {
+		slot = ptr->index[idx];
+		fprintf(stderr, " | %6.4f", ptr->scores[slot] );
+		}
+	fprintf(stderr, " | %6.4f\n", ptr->score);
 	}
-fprintf(stderr, "\nTheVect" );
-for (idx=0; idx < ptr->msize; idx++ ) {
-	slot = ptr->index[idx];
-	fprintf(stderr, " | %6.4f", ptr->scores[slot] );
-	}
-fprintf(stderr, " | %6.4f\n", ptr->score);
-}
 #endif
 
 	/* we need not only permute the 1d elements (ptr->scores, ptr->table)
@@ -523,21 +553,20 @@ for (idx=slot =0 ; slot < ptr->msize; slot++) {
 #if SHOW_GEHANNUS
 		fprintf(stderr, "[isFree %u]", slot);
 #endif
+		continue;
 		}
-	else	{
 #if SHOW_GEHANNUS
-		fprintf(stderr, "[Keep %u <<-- %u]", idx, slot);
+	fprintf(stderr, "[Keep %u <<-- %u]", idx, slot);
 #endif
-		up = crosstab_hnd(ptr, ptr->table[slot].hash.key );
-		if ( idx != slot) ptr->table[idx].payload = ptr->table[slot].payload;
-		*up = idx++;
-		}
+	up = crosstab_hnd(ptr, ptr->table[slot].hash.key );
+	if ( idx != slot) ptr->table[idx].payload = ptr->table[slot].payload;
+	*up = idx++;
 	}
 
 	/* reset freelist */
 ptr->freelist = IDX_NIL;
+	/* append remainig slots to freelist */
 fp = &ptr->freelist;
-	/* append to freelist */
 for ( slot = idx ; slot < ptr->msize; slot++) {
 #if SHOW_GEHANNUS
 	fprintf(stderr, "[AbsAddFree %u]", slot);
@@ -560,7 +589,7 @@ unsigned int idx,slot,totsize;
 unsigned int *up, *fp;
 
 totsize = ptr->msize;
-#if SHOW_CALLS
+#if (SHOW_CALLS || SHOW_FUZZ)
 fprintf(stderr, "Crosstab_reclaim(%u) Totsize=%u\n", newsize, totsize);
 #endif
 
@@ -726,7 +755,11 @@ char buff [500];
 
 	/* do power-iteration and reshuffle index */
 crosstab_recalc(ptr);
+#if WANT_FIX
+index_doubles(ptr->index+ptr->nfixed, ptr->scores-ptr->nfixed, ptr->msize-ptr->nfixed);
+#else
 index_doubles(ptr->index, ptr->scores, ptr->msize);
+#endif
 
 fprintf(fp, "\n[%4u]:        |%6u/%3u| %6.3f | weight |\n"
 	, ptr->freelist!=IDX_NIL? ptr->freelist:9999, ptr->total.sum,ptr->total.uniq,  ptr->score );
@@ -752,7 +785,7 @@ for (idx=0; idx < ptr->msize; idx++ ) {
 	}
 crosstab_bin_dump(ptr);
 }
-	/* we need this ugly global to supply 
+	/* We need this ugly global to supply 
 	** qsort() with a hidden 3rd argument
 	 */
 static double * anchor_double=NULL;
@@ -772,6 +805,9 @@ else if (*ul < *ur ) return -2;
 else return 0;
 }
 
+	/* sort an array of unsigned
+	** which are the indexes into another array of doubles.
+	*/
 static void index_doubles( unsigned *index, double *values, unsigned cnt)
 {
 /* unsigned idx;
@@ -781,6 +817,9 @@ anchor_double= values;
 qsort (index, cnt, sizeof index[0], cmp_ranked_double);
 }
 
+	/* Use an 1 dim array index[] (containing offsets)
+	** to construct a 2dim half-matrix target[] (also containing offsets)
+	*/
 static void index2_2d( unsigned *target, unsigned *index, unsigned cnt)
 {
 unsigned x_dst,y_dst,x_src,y_src,z_dst,z_src;
@@ -799,6 +838,11 @@ for (y_dst = 0; y_dst < cnt; y_dst++) {
 	}
 }
 
+	/* Permute an (unsigned int) array values[]
+	** , given the array index[] (containing offsets)
+	** shufling is performed in-place.
+	** the index[]arrray is modified, too.
+	*/
 static unsigned permute_unsigned( unsigned *values, unsigned *index, unsigned cnt)
 {
 unsigned start, dst, src, count;
@@ -818,7 +862,7 @@ for (count=start = 0 ; start < cnt; start++) {
 		count++;
 		src = index[ dst ] ;
 		if (src == start) break;
-		if (src == dst) break; /* Huh ? */
+		if (src == dst) break; /* Huh ? */ /* ... must be an 1-cycle ... */
 #if SHOW_PERMUTE
 		fprintf(stderr, "%u <<-- %u\n", dst, src);
 #endif
@@ -834,6 +878,7 @@ for (count=start = 0 ; start < cnt; start++) {
 return count;
 }
 
+	/* Permute an array of doubles */
 static unsigned permute_doubles( double *values, unsigned *index, unsigned cnt)
 {
 unsigned start, dst, src, count;
@@ -869,6 +914,7 @@ for (count=start = 0 ; start < cnt; start++) {
 return count;
 }
 
+	/* Permute whole rows, given a permutation array index[] */
 static unsigned permute_rows( struct crossrow *rows, unsigned *index, unsigned cnt)
 {
 unsigned start, dst, src, count;
