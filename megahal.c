@@ -279,6 +279,7 @@
 #include <string.h>
 #include <strings.h> /* strncasecmp */
 extern char *strdup(const char *);
+
 #include <errno.h>
 #include <signal.h>
 
@@ -304,8 +305,8 @@ extern char *strdup(const char *);
 #define MY_NAME "MegaHAL"
 #define MY_NAME "PlasBot"
 
-#define STATIC static
 #define STATIC /* EMPTY:: For profiling, to avoid inlining of STATIC functions. */
+#define STATIC static
 
 #define COUNTOF(a) (sizeof(a) / sizeof(a)[0])
 #define MYOFFSETOF(p,m) ((size_t)( ((char*)(&((p)->(m)))) - ((char*)(p) )))
@@ -380,8 +381,16 @@ extern char *strdup(const char *);
 #define SCRUTINIZE_OUTPUT 0
 
 #if WANT_PARROT_CHECK
-#define PARROT_ADD(x) parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1,parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1
-#define PARROT_RESURRECT(dum) memset (parrot_hash, 0, sizeof parrot_hash), memset (parrot_hash2, 0, sizeof parrot_hash2)
+#define PARROT_ADD(x) do { \
+	parrot_hash[ (x) % COUNTOF(parrot_hash)] += 1; \
+	parrot_hash2[ (x) % COUNTOF(parrot_hash2)] += 1; \
+	} while(0)
+
+#define PARROT_RESURRECT(dum) do { \
+	memset (parrot_hash, 0, sizeof parrot_hash); \
+	memset (parrot_hash2, 0, sizeof parrot_hash2); \
+	} while(0)
+
 #endif /* WANT_PARROT_CHECK */
 
 #define SEP "/"
@@ -521,9 +530,6 @@ unsigned parrot_hash[WANT_PARROT_CHECK] = {0,};
 unsigned parrot_hash2[WANT_PARROT_CHECK+1] = {0,};
 #endif /* WANT_PARROT_CHECK */
 
-#if DONT_WANT_THIS
-static bool used_key;
-#endif
 static MODEL *glob_model = NULL;
 	/* Refers to a dup'd fd for the brainfile, used for locking */
 static int glob_fd = -1;
@@ -540,6 +546,7 @@ static char *last_directory = NULL;
 
 static Stamp stamp_min = 0, stamp_max=0;
 
+volatile sig_atomic_t signal_caught = 0;
 
 #ifndef ALZHEIMER_NODE_COUNT
 #define ALZHEIMER_NODE_COUNT (16*1024*1024)
@@ -557,14 +564,16 @@ STATIC size_t tokenize(char *string, int *sp);
 
 STATIC void error(char *, char *, ...);
 STATIC void exithal(void);
+void sig_lethal(int signum);
+void sig_ignore(int);
+void show_config(FILE *fp);
+STATIC void initialize_error(char *);
+STATIC void initialize_status(char *);
+
 STATIC TREE *find_symbol(TREE *node, WordNum symbol);
 STATIC TREE *find_symbol_add(TREE *, WordNum);
 
 STATIC WordNum find_word(DICT *, STRING);
-void show_config(FILE *fp);
-STATIC void ignore(int);
-STATIC void initialize_error(char *);
-STATIC void initialize_status(char *);
 STATIC DICT *new_dict(void);
 
 STATIC char *read_input(char * prompt);
@@ -590,7 +599,6 @@ STATIC MODEL *new_model(int);
 STATIC TREE *node_new(unsigned nchild);
 STATIC STRING new_string(char *str, size_t len);
 STATIC void print_header(FILE *);
-void progress(char *message, unsigned long done, unsigned long todo);
 STATIC void save_dict(FILE *, DICT *);
 STATIC unsigned save_tree(FILE *, TREE *);
 STATIC void save_word(FILE *, STRING);
@@ -724,9 +732,9 @@ STATIC char *make_output(struct sentence *src);
 	*/
 #if WANT_PARROT_CHECK
 STATIC double penalize_two_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1);
+STATIC double penalize_one_parrot(unsigned arr[], unsigned siz);
+STATIC double penalize_both_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1);
 STATIC unsigned long long dragon_denominator2(unsigned long nslot, unsigned long nitem);
-#else
-STATIC bool dissimilar(struct sentence *one, struct sentence *two);
 #endif
 
 void megahal_setquiet(void)
@@ -772,6 +780,10 @@ void megahal_setdirectory (char *dir)
 void megahal_settimeout (char *string)
 {
     sscanf(string, "%d", &glob_timeout);
+    if (glob_timeout) {
+      alarm(2+glob_timeout);
+      signal(SIGALRM, sig_lethal);
+    }
 }
 
 /*
@@ -793,22 +805,8 @@ void megahal_initialize(void)
 
     initialize_error(errorfilename);
     initialize_status(statusfilename);
-    ignore(0);
+    sig_ignore(0);
 
-    if (!nobanner)
-	fprintf(stdout,
-		"+------------------------------------------------------------------------+\n"
-		"|                                                                        |\n"
-		"|  #    #  ######   ####     ##    #    #    ##    #                     |\n"
-		"|  ##  ##  #       #    #   #  #   #    #   #  #   #               ###   |\n"
-		"|  # ## #  #####   #       #    #  ######  #    #  #              #   #  |\n"
-		"|  #    #  #       #  ###  ######  #    #  ######  #       #   #   ###   |\n"
-		"|  #    #  #       #    #  #    #  #    #  #    #  #        # #   #   #  |\n"
-		"|  #    #  ######   ####   #    #  #    #  #    #  ######    #     ###r6 |\n"
-		"|                                                                        |\n"
-		"|                    Copyright(C) 1998 Jason Hutchens                    |\n"
-		"+------------------------------------------------------------------------+\n"
-		);
 
     glob_input = sentence_new();
     // glob_greets = sentence_new();
@@ -1427,14 +1425,14 @@ STATIC void free_tree(TREE *tree)
     if (!tree) return;
 
     if (tree->children != NULL) {
-	if (level == 0) progress("Freeing tree", 0, 1);
+	// if (level == 0) progress("Freeing tree", 0, 1);
 	for(ikid = 0; ikid < tree->branch; ikid++) {
 	    level++;
 	    free_tree(tree->children[ikid].ptr);
 	    level--;
-	    if (level == 0) progress(NULL, ikid, tree->branch);
+	    // if (level == 0) progress(NULL, ikid, tree->branch);
 	}
-	if (level == 0) progress(NULL, 1, 1);
+	// if (level == 0) progress(NULL, 1, 1);
 	free(tree->children);
     }
     free(tree);
@@ -1591,12 +1589,12 @@ STATIC void save_dict(FILE *fp, DICT *dict)
     unsigned int iwrd;
 
     fwrite(&dict->size, sizeof dict->size, 1, fp);
-    progress("Saving dictionary", 0, 1);
+    // progress("Saving dictionary", 0, 1);
     for(iwrd = 0; iwrd < dict->size; iwrd++) {
 	save_word(fp, dict->entry[iwrd].string );
-	progress(NULL, iwrd, dict->size);
+	// progress(NULL, iwrd, dict->size);
     }
-    progress(NULL, 1, 1);
+    // progress(NULL, 1, 1);
     memstats.word_cnt = iwrd;
 }
 
@@ -1618,12 +1616,12 @@ STATIC void load_dict(FILE *fp, DICT *dict)
     resize_dict(dict, dict->msize+size + kuttje + sqrt(size)); // 20150222
     /* resize_dict(dict, dict->msize+size ); */
     status("Load_dictSize=%u Initial_dictSize=%u\n", size, dict->msize);
-    progress("Loading dictionary", 0, 1);
+    // progress("Loading dictionary", 0, 1);
     for(iwrd = 0; iwrd < size; iwrd++) {
 	load_word(fp, dict);
-	progress(NULL, iwrd, size);
+	// progress(NULL, iwrd, size);
     }
-    progress(NULL, 1, 1);
+    // progress(NULL, 1, 1);
     memstats.word_cnt = size;
 }
 
@@ -1968,12 +1966,6 @@ if (!tree) return;
 
 /*---------------------------------------------------------------------------*/
 
-/*
- *		Function:	Find_Symbol
- *
- *		Purpose:		Search the node. If one of its direct children
- *						refers to 'symbol' return a pointer to that child.
- */
 STATIC TREE *find_symbol(TREE *node, WordNum symbol)
 {
 ChildIndex *ip;
@@ -1986,14 +1978,6 @@ return node->children[*ip].ptr ;
 
 /*---------------------------------------------------------------------------*/
 
-/*
- *		Function:	Find_Symbol_Add
- *
- *		Purpose:		This function is conceptually similar to find_symbol,
- *apart from the fact that if the symbol is not found,
- *a new node for this symbol is allocated and added under the
- *tree.
- */
 STATIC TREE *find_symbol_add(TREE *node, WordNum symbol)
 {
 ChildIndex *ip;
@@ -2451,26 +2435,20 @@ STATIC void train(MODEL *model, char *filename)
 {
     FILE *fp;
     static struct sentence *exercise = NULL;
-    int length;
     char buffer[4*1024];
 
     if (!filename) return;
 
     fp = fopen(filename, "r");
     if (!fp) {
-	printf("Unable to find the personality %s\n", filename);
+	fprintf(stderr, "Unable to find the personality %s\n", filename);
 	return;
     }
-
-    fseek(fp, 0, 2);
-    length = ftell(fp);
-    rewind(fp);
 
     if (!exercise) exercise = sentence_new();
     else exercise->mused = 0;
     
 
-    progress("Training from file", 0, 1);
     while( fgets(buffer, sizeof buffer, fp) ) {
 	if (buffer[0] == '#') continue;
 
@@ -2479,10 +2457,8 @@ STATIC void train(MODEL *model, char *filename)
 	make_words(buffer, exercise);
 	learn_from_input(model, exercise);
 
-	progress(NULL, ftell(fp), length);
 
     }
-    progress(NULL, 1, 1);
 
     fclose(fp);
 }
@@ -2591,6 +2567,7 @@ STATIC void save_model(char *modelname, MODEL *model)
     show_dict(model->dict);
     if (!filename) return;
 
+    alarm(0);
     sprintf(filename, "%s%smegahal.brn", glob_directory, SEP);
     fp = fopen(filename, "wb");
     if (!fp) {
@@ -2634,14 +2611,11 @@ STATIC unsigned save_tree(FILE *fp, TREE *node)
     fwrite(&node->stamp, sizeof node->stamp, 1, fp);
     fwrite(&node->branch, sizeof node->branch, 1, fp);
     memstats.node_cnt++;
-    if (level == 0) progress("Saving tree", 0, 1);
     for(ikid = 0; ikid < node->branch; ikid++) {
 	level++;
 	count += save_tree(fp, node->children[ikid].ptr );
 	level--;
-	if (level == 0) progress(NULL, ikid, node->branch);
     }
-    if (level == 0) progress(NULL, 1, 1);
     return count;
 }
 
@@ -2702,7 +2676,6 @@ STATIC TREE * load_tree(FILE *fp)
     ptr->branch = this.branch;
     /* ptr->children  and ptr->msize are set by node_new() */
 
-    if (level == 0) progress("Loading tree", 0, 1);
     childsum = 0;
     for(cidx = 0; cidx < ptr->branch; cidx++) {
 	level++;
@@ -2713,14 +2686,12 @@ STATIC TREE * load_tree(FILE *fp)
 	symbol = ptr->children[cidx].ptr ? ptr->children[cidx].ptr->symbol: cidx;
 	ip = node_hnd(ptr, symbol );
 	if (ip) *ip = cidx;
-	if (level == 0) progress(NULL, cidx, ptr->branch);
     }
     if (childsum != ptr->childsum) {
 		fprintf(stderr, "Oldvalue = %llu <- Newvalue= %llu\n"
 		, (unsigned long long) ptr->childsum , (unsigned long long) childsum);
 		ptr->childsum = childsum;
 		}
-    if (level == 0) progress(NULL, 1, 1);
 return ptr;
 }
 
@@ -3175,6 +3146,20 @@ void show_config(FILE *fp)
  *                which may vaguely be construed as containing a reply to
  *                whatever is in the input string.
  */
+void check_entropy(void)
+{
+double quality5, quality10;
+unsigned five[] = {1,1,1,1,1};
+unsigned six[] = {1,1,1,1,1,1};
+unsigned ten[] = {1,1,1,1,1,1,1,1,1,1};
+unsigned eleven[] = {1,1,1,1,1,1,1,1,1,1,1};
+
+quality5 = penalize_both_parrots(five, six, 5 );
+quality10 = penalize_both_parrots(ten, eleven, 10 );
+
+fprintf(stderr, "*** quality5=%f quality10=%f\n", quality5, quality10 );
+}
+
 STATIC char *generate_reply(MODEL *model, struct sentence *src)
 {
     static char *output_none = "Geert! doe er wat aan!" ;
@@ -3184,8 +3169,9 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     char *output;
     unsigned count;
     int basetime;
-    double penalty;
+    double penalty, quality;
 
+    // check_entropy();
     /* show_config(stderr); */
 
 #if ALZHEIMER_FACTOR
@@ -3203,23 +3189,27 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     output = output_none;
 
     max_surprise = -100.0;
-    penalty = 0.0;
+    quality = penalty = 0.0;
     count = 0;
     basetime = time(NULL);
-    progress("Generating reply", 0, 1);
     do {
 	zeresult = one_reply(model);
 	rawsurprise = evaluate_reply(model, zeresult);
 	count++;
 #if WANT_PARROT_CHECK
 	/* I'm not dead yet ... */
+#if 0
 	penalty = penalize_two_parrots(parrot_hash, parrot_hash2, COUNTOF(parrot_hash) );
-
         surprise = rawsurprise / penalty ;
+#else
+	
+	// quality = penalize_one_parrot(parrot_hash, COUNTOF(parrot_hash) );
+	quality = penalize_both_parrots(parrot_hash, parrot_hash2, COUNTOF(parrot_hash) );
+	if (penalty/quality > 1.1) continue; /* too nuch decrease */
+        surprise = rawsurprise * quality ;
+#endif
         if ( (surprise - max_surprise) <= (10*DBL_EPSILON) ) continue;
 
-#else /* WANT_PARROT_CHECK */
-	if (surprise <= max_surprise || !dissimilar(src, zeresult) ) continue;
 #endif /* WANT_PARROT_CHECK */
 
 #if WANT_PARROT_CHECK
@@ -3227,8 +3217,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     unsigned pidx;
     fprintf(stderr, "\nParrot1={" );
     for (pidx=0; pidx < COUNTOF(parrot_hash); pidx++) { fprintf(stderr, " %u", parrot_hash[ pidx] ); }
-    fprintf(stderr, "}\n" );
-    /* fprintf(stderr, "} Sum=%u Ssq=%u Exp=%f Rat=%f\n" , sum1, ssq1, calc1, penalty1 ); */
+    fprintf(stderr, "} quality=%f\n", quality );
 
     fprintf(stderr, "Parrot2={" );
     for (pidx=0; pidx < COUNTOF(parrot_hash2); pidx++) { fprintf(stderr, " %u", parrot_hash2[ pidx] ); }
@@ -3239,7 +3228,7 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 
 }
 #endif /* WANT_PARROT_CHECK */
-
+	penalty = quality;
 	max_surprise = surprise;
 	output = make_output(zeresult);
 #if WANT_DUMP_ALL_REPLIES
@@ -3251,9 +3240,13 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
 	, output);
 }
 #endif
-	progress(NULL, (time(NULL)-basetime), glob_timeout);
+    if (signal_caught) {
+		fprintf(stderr, "\n*** Timer eleapsed signal=%d\n", signal_caught);
+		break;
+		}
     } while(time(NULL)-basetime < glob_timeout);
-    progress(NULL, 1, 1);
+
+    alarm(0);
 
 #if WANT_DUMP_ALL_REPLIES
 	fprintf(stderr, "ReplyProbed=%u cross_dict_size=%u\n"
@@ -3266,18 +3259,6 @@ STATIC char *generate_reply(MODEL *model, struct sentence *src)
     return output;
 }
 
-#if !WANT_PARROT_CHECK
-/*---------------------------------------------------------------------------*/
-STATIC bool dissimilar(struct sentence *one, struct sentence *two)
-{
-    unsigned int iwrd;
-
-    if (one->mused != two->mused) return TRUE;
-    for(iwrd = 0; iwrd < one->mused; iwrd++)
-	if (wordcmp(one->entry[iwrd].string , two->entry[iwrd].string ) ) return TRUE;
-    return FALSE;
-}
-#endif
 /*---------------------------------------------------------------------------*/
 
 STATIC void make_keywords(MODEL *model, struct sentence *src)
@@ -3325,8 +3306,6 @@ STATIC void make_keywords(MODEL *model, struct sentence *src)
         if (symbol >= model->dict->size) continue;
 
 		/* we may or may not like frequent words */
-        // if (model->dict->entry[symbol].stats.nnode > model->dict->stats.nnode / model->dict->stats.nonzero ) continue;
-        // if (model->dict->entry[symbol].stats.valuesum > model->dict->stats.valuesum / model->dict->stats.nonzero ) continue;
 	/* 20120119:i We use the wordweight of the canonical form */
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
@@ -3422,7 +3401,7 @@ STATIC struct sentence *one_reply(MODEL *model)
  *		Purpose:		Measure the average surprise of keywords relative to the
  *						language model.
  */
-STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
+STATIC double evaluate_reply(MODEL *model, struct sentence *de_zin)
 {
     unsigned int widx, iord, count, totcount, kwhit;
     WordNum symbol, canonsym;
@@ -3431,7 +3410,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
     STRING canonword;
     unsigned tweetsize=0;
 
-    if (sentence->mused == 0) return -100000.0;
+    if (de_zin->mused == 0) return -100000.0;
 
     initialize_context(model);
     model->context[0] = model->forward;
@@ -3441,10 +3420,10 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 #endif /* WANT_PARROT_CHECK */
 
     kwhit = totcount = 0, entropy = 0.0;
-    for (widx = 0; widx < sentence->mused; widx++) {
-	tweetsize += 1+sentence->entry[widx].string.length;
+    for (widx = 0; widx < de_zin->mused; widx++) {
+	tweetsize += 1+de_zin->entry[widx].string.length;
 
-	symbol = find_word(model->dict, sentence->entry[widx].string );
+	symbol = find_word(model->dict, de_zin->entry[widx].string );
 	if (symbol >= model->dict->msize) continue;
 	/* Only crosstab-keywords contribute to the scoring
 	*/
@@ -3458,7 +3437,7 @@ STATIC double evaluate_reply(MODEL *model, struct sentence *sentence)
 	if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update1;
 	if (model->dict->entry[symbol].string.zflag ) kwhit++;
 	// else goto update1;
-	else kfrac = 1.0 / sentence->mused;
+	else kfrac = 1.0 / de_zin->mused;
 #else
 #endif
 	probability = 0.0;
@@ -3493,9 +3472,9 @@ fprintf(stderr, "#### '%*.*s'\n"
 "Valsum=%9lu/%9llu Nnode=%9lu/%9llu\n"
 "Gfrac=%6.4e Kfrac=%6.4e W=%6.4e\n"
 "Prob=%6.4e/Cnt=%u/%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
-        , (int) sentence->entry[widx].string.length
-        , (int) sentence->entry[widx].string.length
-        , sentence->entry[widx].string.word
+        , (int) de_zin->entry[widx].string.length
+        , (int) de_zin->entry[widx].string.length
+        , de_zin->entry[widx].string.word
         , (unsigned long) model->dict->entry[symbol].stats.valuesum
         , (unsigned long long) model->dict->stats.valuesum
         , (unsigned long) model->dict->entry[symbol].stats.nnode
@@ -3516,7 +3495,8 @@ update1:
            }
 	if (node) { PARROT_ADD(node->stamp); }
 #endif /* WANT_PARROT_CHECK */
-    }
+	} /* For-loop */
+
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
 fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
 	);
@@ -3525,8 +3505,8 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
     initialize_context(model);
     model->context[0] = model->backward;
 
-    for(widx = sentence->mused; widx-- > 0; ) {
-	symbol = find_word(model->dict, sentence->entry[widx].string );
+    for(widx = de_zin->mused; widx-- > 0; ) {
+	symbol = find_word(model->dict, de_zin->entry[widx].string );
 	if (symbol >= model->dict->msize) continue;
 	canonword = word_dup_lowercase(model->dict->entry[symbol].string);
 	canonsym = find_word( model->dict, canonword);
@@ -3537,7 +3517,7 @@ fprintf(stderr, "####[%u] =%6.4f\n", widx,(double) entropy
 	// if (kfrac < CROSS_TAB_FRAC ) goto update2;
 	if (kfrac < CROSS_TAB_FRAC / sqrt(cross_dict_size) ) goto update2;
 	if (model->dict->entry[symbol].string.zflag ) kwhit++;
-	else kfrac = 1.0 / sentence->mused;
+	else kfrac = 1.0 / de_zin->mused;
 	// else goto update2;
 #else
 	kfrac = model->dict->entry[symbol].string.zflag ? 0.1 : 0.01;
@@ -3574,9 +3554,9 @@ fprintf(stderr, "#### Rev '%*.*s'\n"
 "Valsum=%9lu/%9llu Nnode=%9lu/%9llu\n"
 "Gfrac=%6.4e Kfrac=%6.4e W=%6.4e\n"
 "Prob=%6.4e/Cnt=%u/%u:=Term=%6.4e w*log(Term)=%6.4e Entr=%6.4e\n"
-        , (int) sentence->entry[widx].string.length
-        , (int) sentence->entry[widx].string.length
-        , sentence->entry[widx].string.word
+        , (int) de_zin->entry[widx].string.length
+        , (int) de_zin->entry[widx].string.length
+        , de_zin->entry[widx].string.word
         , (unsigned long) model->dict->entry[symbol].stats.valuesum
         , (unsigned long long) model->dict->stats.valuesum
         , (unsigned long) model->dict->entry[symbol].stats.nnode
@@ -3595,7 +3575,7 @@ update2:
 	    node = model->context[iord] ;
            if (node) break;
            }
-	if (node) { PARROT_ADD(node->stamp); }
+	if (node) PARROT_ADD(node->stamp);
 #endif /* WANT_PARROT_CHECK */
     }
 #if (WANT_DUMP_KEYWORD_WEIGHTS & 1)
@@ -3613,7 +3593,7 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 	/* extra penalty for sentences that don't start at <END> or don't stop at <END> */
 	/* extra penalty for sentences that don't start with a capitalized letter */
 	/* extra penalty for incomplete sentences */
-    widx = sentence->mused;
+    widx = de_zin->mused;
     if (widx && widx != INTENDED_REPLY_SIZE) {
 #if 1
 	if (widx > INTENDED_REPLY_SIZE) {
@@ -3624,8 +3604,8 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 		}
 #endif
         if (tweetsize >= MAX_REPLY_CHARS) entropy /= 10;
-	init_val_fwd = start_penalty(model, sentence->entry[0].string);
-	init_val_rev = end_penalty(model, sentence->entry[widx-1].string );
+	init_val_fwd = start_penalty(model, de_zin->entry[0].string);
+	init_val_rev = end_penalty(model, de_zin->entry[widx-1].string );
         entropy -= sqrt(init_val_fwd);
         entropy -= sqrt(init_val_rev);
 	entropy *= sqrt(1+kwhit);
@@ -3634,7 +3614,7 @@ fprintf(stderr, "####[both] =%6.4f\n", (double) entropy
 fprintf(stderr, "####[Corrected] =%6.4f\n", (double) entropy
 	);
 #endif
-    sentence->kwhit = kwhit;
+    de_zin->kwhit = kwhit;
     return entropy;
 }
 
@@ -3820,6 +3800,7 @@ STATIC WordNum babble(MODEL *model, struct sentence *src)
     cidx = urnd( node->branch );
 #endif
     symbol = node->children[cidx].ptr->symbol;
+
 done:
 #if 0
     fprintf(stderr, "[%u/%u]", cidx, node->branch);
@@ -4023,16 +4004,24 @@ STATIC DICT *read_dict(char *filename)
  *		Purpose:		Log the occurrence of a signal, but ignore it.
  * WP: using printf() and friends from within a signal handler is not a good idea.
  */
-void ignore(int sig)
+void sig_ignore(int sig)
 {
     if (sig != 0) warn("ignore", MY_NAME " received signal %d", sig);
 
-#if !defined(DOS)
     /* signal(SIGINT, saveandexit);*/
     /* signal(SIGILL, die);*/
     /*    signal(SIGSEGV, die);*/
-#endif
     /*    signal(SIGFPE, die);*/
+
+    signal(SIGINT, sig_lethal);
+    signal(SIGILL, sig_lethal);
+    signal(SIGFPE, sig_lethal);
+}
+
+void sig_lethal(int signum)
+{
+signal_caught = signum;
+// abort();
 }
 
 
@@ -4105,59 +4094,6 @@ val ^= (val >> 15) ^ (val << 14) ^ 9 ;
 
 return val;
 }
-/*---------------------------------------------------------------------------*/
-
-/*
- *		Function:	Progress
- *
- *		Purpose:		Display a progress indicator as a percentage.
- */
-void progress(char *message, unsigned long done, unsigned long todo)
-{
-    static int last = 0;
-    static int first = 0;
-
-    if (noprogress) return ;
-    /*
-     *    We have already hit 100%, and a newline has been printed, so nothing
-     *    needs to be done.
-     *    WP: we could avoid div/zero.
-     */
-    if (!todo) todo = done?done:1;
-    if (done*100/todo == 100 && !first ) return ;
-
-    /*
-     *    Nothing has changed since the last time this function was called,
-     *    so do nothing, unless it's the first time!
-     */
-    if (done*100/todo == last) {
-	if (done == 0 && !first ) {
-	    fprintf(stderr, "%s: %3lu%%", message, done*100/todo);
-	    first = 1;
-	}
-	return ;
-    }
-
-    /*
-     *    Erase what we printed last time, and print the new percentage.
-     */
-    last = done*100/todo;
-
-    if (done > 0) fprintf(stderr, "\b\b\b\b");
-    fprintf(stderr, "%3lu%%", done*100/todo);
-
-    /*
-     *    We have hit 100%, so reset static variables and print a newline.
-     */
-    if (last == 100) {
-	first = 0;
-	last = 0;
-	fprintf(stderr, "\n");
-    }
-
-    return ;
-}
-
 /*---------------------------------------------------------------------------*/
 
 void load_personality(MODEL **model)
@@ -4897,6 +4833,86 @@ return result;
 }
 #endif
 
+STATIC double penalize_both_parrots(unsigned arr1[], unsigned arr2[], unsigned siz1)
+{
+unsigned idx;
+unsigned sum;
+double pn,entropy,penalty;
+
+if (siz1 < 1) return 0.0;
+sum=0;
+for (idx=0; idx < siz1 ; idx++) { 
+    sum += arr1[idx] ;
+    sum += arr2[idx] ;
+    }
+sum += arr2[idx] ;
+if (sum < 3) return 0.0;
+
+entropy = 0.0;
+for (idx=0; idx < siz1 ; idx++) { 
+    if (arr1[idx] ) {
+    	if (arr1[idx] == sum) { entropy = 0.0; break; }
+    	pn = (0.0+arr1[idx]) / sum;
+    	entropy += pn * log(pn);
+	}
+    if (arr2[idx] ) {
+    	if (arr2[idx] == sum) { entropy = 0.0; break; }
+    	pn = (0.0+arr2[idx]) / sum;
+    	entropy += pn * log(pn);
+	}
+    }
+if (arr2[idx] && arr2[idx] != sum) {
+    pn = (0.0+arr2[idx]) / sum;
+    entropy += pn * log(pn);
+    }
+
+penalty =  exp( -entropy);
+/***
+fprintf(stderr, "sum=%u entropy=%lf, penalty=%lf\n"
+	 , sum , entropy, penalty);
+***/
+// penalty =  ( 1.0/ -penalty);
+
+// if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
+// if (penalty >= WAKKER_INF) penalty = 0; /* Check for Inf */
+
+return penalty/ (2*siz1+1);
+}
+
+STATIC double penalize_one_parrot(unsigned arr[], unsigned siz)
+{
+unsigned idx;
+unsigned sum;
+double pn,entropy,penalty;
+
+if (siz < 1) return 0.0;
+sum=0;
+for (idx=0; idx < siz ; idx++) { 
+    sum += arr[idx] ;
+    }
+if (sum < 2) return 0.0;
+
+entropy = 0.0;
+for (idx=0; idx < siz ; idx++) { 
+    if (arr[idx] < 1) continue;
+    if (arr[idx] == sum) { entropy = 0.0; break; }
+    pn = (0.0+arr[idx]) / sum;
+    entropy += pn * log(pn);
+    }
+
+penalty =  exp( -entropy);
+/***
+fprintf(stderr, "sum=%u entropy=%lf, penalty=%lf\n"
+	 , sum , entropy, penalty);
+***/
+// penalty =  ( 1.0/ -penalty);
+
+if (penalty != penalty) penalty = WAKKER_INF; /* Check for NaN */
+if (penalty >= WAKKER_INF) penalty = WAKKER_INF; /* Check for Inf */
+	/* inverse entropy ? */
+return penalty;
+}
+
 
 int do_check_interval(Stamp min, Stamp max, Stamp this)
 {
@@ -5211,6 +5227,59 @@ void typein(char c)
  */
 void listvoices(void)
 {
+}
+
+/*---------------------------------------------------------------------------*/
+
+/*
+ *		Function:	Progress
+ *		Purpose:		Display a progress indicator as a percentage.
+ */
+void progress(char *message, unsigned long done, unsigned long todo);
+void progress(char *message, unsigned long done, unsigned long todo)
+{
+    static int last = 0;
+    static int first = 0;
+
+    if (noprogress) return ;
+    /*
+     *    We have already hit 100%, and a newline has been printed, so nothing
+     *    needs to be done.
+     *    WP: we could avoid div/zero.
+     */
+    if (!todo) todo = done?done:1;
+    if (done*100/todo == 100 && !first ) return ;
+
+    /*
+     *    Nothing has changed since the last time this function was called,
+     *    so do nothing, unless it's the first time!
+     */
+    if (done*100/todo == last) {
+	if (done == 0 && !first ) {
+	    fprintf(stderr, "%s: %3lu%%", message, done*100/todo);
+	    first = 1;
+	}
+	return ;
+    }
+
+    /*
+     *    Erase what we printed last time, and print the new percentage.
+     */
+    last = done*100/todo;
+
+    if (done > 0) fprintf(stderr, "\b\b\b\b");
+    fprintf(stderr, "%3lu%%", done*100/todo);
+
+    /*
+     *    We have hit 100%, so reset static variables and print a newline.
+     */
+    if (last == 100) {
+	first = 0;
+	last = 0;
+	fprintf(stderr, "\n");
+    }
+
+    return ;
 }
 
 #endif /* DONT_WANT_THIS */
